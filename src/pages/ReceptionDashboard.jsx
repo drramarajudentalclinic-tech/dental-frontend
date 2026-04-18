@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import BillingSection from "./BillingSection.jsx";
+import BillingSection from "./Billingsection.jsx";
 import { useNavigate, useLocation } from "react-router-dom";
 import api from "../api/api";
 
