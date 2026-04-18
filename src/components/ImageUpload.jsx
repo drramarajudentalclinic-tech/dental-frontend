@@ -1172,6 +1172,7 @@ function CBCTUploadSection({ visitId, disabled }) {
   };
 
   const openCBCTInNewTab = (id) => {
+    localStorage.setItem("cbct_viewer_params", JSON.stringify({ volumeId: id, apiBase: CBCT_API }));
     window.open(`/cbct-viewer?volumeId=${id}`, "_blank", "noopener");
   };
 
