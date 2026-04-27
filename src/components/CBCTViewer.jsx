@@ -1,829 +1,1196 @@
 /**
- * CBCTViewer.jsx
+ * CBCTViewer.jsx  –  Production-grade CBCT / DICOM MPR Viewer
  *
- * Full-featured CBCT viewer — drop-in React component.
- *
- * Props:
- *   volumeId   {number}   CBCT volume ID from the DB
- *   volumeMeta {object}   Meta object from GET /api/cbct/:id/meta  (optional, fetched if omitted)
- *   apiBase    {string}   e.g. "/api"  (default "/api")
- *   onClose    {function} Called when user clicks ✕
- *
- * Usage:
- *   <CBCTViewer volumeId={42} onClose={() => setOpen(false)} />
+ * Features:
+ *   • Axial / Coronal / Sagittal MPR panels with crosshair sync
+ *   • 3D volume preview panel
+ *   • Window / Level (W/L) adjustment via right-click drag
+ *   • Zoom & Pan on each panel
+ *   • Distance & Angle measurement tools
+ *   • HU density probe
+ *   • Implant planning (Nobel Active, Straumann BLT, Zimmer TSV, etc.)
+ *   • IAN nerve tracing
+ *   • Annotation save/load via API
+ *   • Cine / auto-scroll
+ *   • Screenshot export (client-side canvas)
+ *   • Server-side composite PNG export
+ *   • Full keyboard shortcuts
  */
 
 import React, {
-  useState, useEffect, useRef, useCallback, useMemo
+  useState, useEffect, useRef, useCallback, useMemo, useReducer
 } from "react";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
+const VIEWS = ["axial", "coronal", "sagittal"];
 
-const AXES = ["axial", "coronal", "sagittal"];
-const AXIS_LABELS = { axial: "Axial (Z)", coronal: "Coronal (Y)", sagittal: "Sagittal (X)" };
-const AXIS_COLORS = { axial: "#22d3ee", coronal: "#f97316", sagittal: "#a78bfa" };
+const VIEW_LABELS = { axial: "AX", coronal: "COR", sagittal: "SAG" };
+const VIEW_COLORS = { axial: "#38bdf8", coronal: "#34d399", sagittal: "#f472b6" };
 
-const TOOLS = [
-  { id: "pan",      icon: "✋", label: "Pan" },
-  { id: "window",   icon: "☀️", label: "Window / Level" },
-  { id: "measure",  icon: "📏", label: "Measure Distance" },
-  { id: "angle",    icon: "📐", label: "Measure Angle" },
-  { id: "implant",  icon: "🦷", label: "Place Implant" },
-  { id: "nerve",    icon: "🧠", label: "Trace Nerve (IAN)" },
-  { id: "annotate", icon: "✏️", label: "Annotate" },
-  { id: "roi",      icon: "⬜", label: "ROI / Crop" },
-  { id: "probe",    icon: "🔬", label: "HU Probe" },
-  { id: "erase",    icon: "🗑️", label: "Erase" },
+const TOOLS = {
+  SCROLL:   "scroll",
+  PAN:      "pan",
+  ZOOM:     "zoom",
+  WL:       "wl",
+  DISTANCE: "distance",
+  ANGLE:    "angle",
+  HU:       "hu",
+  IMPLANT:  "implant",
+  IAN:      "ian",
+  ERASE:    "erase",
+};
+
+const IMPLANTS = [
+  { brand: "Nobel Active",      diameter: 4.3, length: 13, color: "#60a5fa" },
+  { brand: "Nobel Active",      diameter: 3.5, length: 11, color: "#60a5fa" },
+  { brand: "Straumann BLT",     diameter: 4.1, length: 12, color: "#34d399" },
+  { brand: "Straumann BLT",     diameter: 3.3, length: 10, color: "#34d399" },
+  { brand: "Zimmer TSV",        diameter: 4.7, length: 14, color: "#f472b6" },
+  { brand: "Zimmer TSV",        diameter: 3.7, length: 12, color: "#f472b6" },
+  { brand: "Osstem TSIII",      diameter: 4.0, length: 10, color: "#fb923c" },
+  { brand: "Dentium SuperLine", diameter: 4.0, length: 11, color: "#a78bfa" },
 ];
 
-const DEFAULT_WW = 3000;
-const DEFAULT_WC = 400;
-
-const WINDOW_PRESETS = [
-  { label: "Bone",        wc:  400, ww: 1500 },
-  { label: "Soft Tissue", wc:   40, ww:  400 },
-  { label: "Enamel",      wc: 2500, ww: 4000 },
-  { label: "Airway",      wc: -800, ww: 1000 },
-  { label: "Full Range",  wc:  400, ww: 4000 },
-];
-
-const IMPLANT_SYSTEMS = [
-  { brand: "Nobel Active",  lengths: [8,10,11.5,13,15,18], diameters: [3.0,3.5,4.3,5.0] },
-  { brand: "Straumann BL",  lengths: [8,10,12,14,16],      diameters: [3.3,4.1,4.8,6.5] },
-  { brand: "Zimmer TSV",    lengths: [8,10,11.5,13,16],    diameters: [3.7,4.7,5.7]     },
-  { brand: "Generic",       lengths: [8,10,11,13,15,18],   diameters: [3.0,3.5,4.0,4.5,5.0] },
-];
+const DEFAULT_WL = { window: 2500, level: 500 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
-function dist2D(a, b) { return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2); }
-function angleDeg(a, b, c) {
-  const ab = { x: a.x - b.x, y: a.y - b.y };
-  const cb = { x: c.x - b.x, y: c.y - b.y };
-  const dot = ab.x * cb.x + ab.y * cb.y;
-  const cross = Math.abs(ab.x * cb.y - ab.y * cb.x);
-  return (Math.atan2(cross, dot) * 180) / Math.PI;
-}
-
 function getToken() {
   return localStorage.getItem("token") || sessionStorage.getItem("token") || "";
 }
-
 function authHeaders(extra = {}) {
-  const token = getToken();
-  return token
-    ? { Authorization: `Bearer ${token}`, ...extra }
-    : { ...extra };
+  const t = getToken();
+  return t ? { Authorization: `Bearer ${t}`, ...extra } : extra;
+}
+function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
+function dist2(a, b) {
+  return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2);
+}
+function angleDeg(a, b, c) {
+  const ab  = { x: a.x - b.x, y: a.y - b.y };
+  const cb  = { x: c.x - b.x, y: c.y - b.y };
+  const dot = ab.x * cb.x + ab.y * cb.y;
+  const mag = dist2(a, b) * dist2(c, b);
+  return mag < 1e-9 ? 0 : Math.round((Math.acos(clamp(dot / mag, -1, 1)) * 180) / Math.PI);
 }
 
-// ─── Slice Panel ──────────────────────────────────────────────────────────────
+// ─── Annotation reducer ───────────────────────────────────────────────────────
+function annoReducer(state, action) {
+  switch (action.type) {
+    case "LOAD":   return action.payload;
+    case "ADD":    return [...state, action.item];
+    case "REMOVE": return state.filter((_, i) => i !== action.index);
+    case "CLEAR":  return [];
+    default:       return state;
+  }
+}
 
-function SlicePanel({
-  axis, volumeId, sliceIndex, totalSlices,
-  wc, ww, apiBase,
-  tool, zoom, pan,
-  crosshair,
-  onCrosshairChange,
-  annotations, onAnnotationAdd,
-  onSliceChange,
-  onWindowChange,
-  onPanChange,
-  onZoomChange,
-  active, onActivate,
+// ─── Single MPR Canvas Panel ──────────────────────────────────────────────────
+function MPRPanel({
+  view, volumeData, sliceIndex, totalSlices,
+  wl, zoom, pan, crosshair,
+  activeTool, activeImplant, annotations,
+  onSliceChange, onWLChange, onZoomChange, onPanChange, onCrosshairChange,
+  onAnnotationAdd, onAnnotationRemove,
+  highlighted,
+  onClick,
 }) {
   const canvasRef  = useRef(null);
-  const imgRef     = useRef(new window.Image());
+  const overlayRef = useRef(null);
   const dragRef    = useRef(null);
-  const annPtsRef  = useRef([]);
+  const [hoverPos,      setHoverPos]      = useState(null);
+  const [drawingPoints, setDrawingPoints] = useState([]);
 
-  const sliceUrl = useMemo(() =>
-    `${apiBase}/cbct/${volumeId}/slice/${axis}/${sliceIndex}`,
-    [apiBase, volumeId, axis, sliceIndex]
-  );
-
+  // ── Draw slice on canvas ─────────────────────────────────────────────────
   useEffect(() => {
-    const img = imgRef.current;
-    img.crossOrigin = "anonymous";
-    // Attach token as query param since img.src doesn't support headers
-    const token = getToken();
-    img.src = token ? `${sliceUrl}?token=${token}` : sliceUrl;
-    img.onload = () => render();
-  }, [sliceUrl]);
-
-  useEffect(() => { render(); }, [wc, ww, zoom, pan, crosshair, annotations, sliceIndex]);
-
-  function render() {
+    if (!volumeData || !canvasRef.current) return;
     const canvas = canvasRef.current;
+    const ctx    = canvas.getContext("2d");
+    const { width, height } = canvas;
+
+    const sliceData = volumeData.slices?.[view]?.[sliceIndex];
+    if (!sliceData) {
+      ctx.fillStyle = "#0a0a0f";
+      ctx.fillRect(0, 0, width, height);
+      ctx.fillStyle = "#1e293b";
+      ctx.font = "13px monospace";
+      ctx.fillText("No slice data", width / 2 - 46, height / 2);
+      return;
+    }
+
+    const img = new Image();
+    img.onload = () => {
+      ctx.save();
+      ctx.clearRect(0, 0, width, height);
+      ctx.fillStyle = "#000";
+      ctx.fillRect(0, 0, width, height);
+      ctx.translate(pan.x + width / 2, pan.y + height / 2);
+      ctx.scale(zoom, zoom);
+      ctx.translate(-width / 2, -height / 2);
+      ctx.drawImage(img, 0, 0, width, height);
+      ctx.restore();
+    };
+    img.src = `data:image/jpeg;base64,${sliceData}`;
+  }, [volumeData, view, sliceIndex, zoom, pan]);
+
+  // ── Draw annotations + crosshair on overlay ──────────────────────────────
+  useEffect(() => {
+    const canvas = overlayRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
-    const W = canvas.width, H = canvas.height;
-    ctx.clearRect(0, 0, W, H);
-    ctx.fillStyle = "#000";
-    ctx.fillRect(0, 0, W, H);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    const img = imgRef.current;
-    if (img.complete && img.naturalWidth) {
-      const sw = W * zoom, sh = H * zoom;
-      const sx = (W - sw) / 2 + pan.x;
-      const sy = (H - sh) / 2 + pan.y;
-      ctx.drawImage(img, sx, sy, sw, sh);
-    }
-
+    // Crosshair
     if (crosshair) {
-      const cx = crosshair.x * W, cy = crosshair.y * H;
-      ctx.strokeStyle = AXIS_COLORS[axis] + "99";
-      ctx.lineWidth = 1;
+      const cx = crosshair.x * canvas.width;
+      const cy = crosshair.y * canvas.height;
+      ctx.save();
+      ctx.globalAlpha = 0.5;
       ctx.setLineDash([4, 4]);
-      ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, H); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(0, cy); ctx.lineTo(W, cy); ctx.stroke();
-      ctx.setLineDash([]);
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = VIEW_COLORS[view === "axial" ? "coronal" : "axial"];
+      ctx.beginPath(); ctx.moveTo(0, cy); ctx.lineTo(canvas.width, cy); ctx.stroke();
+      ctx.strokeStyle = VIEW_COLORS["sagittal"];
+      ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, canvas.height); ctx.stroke();
+      ctx.restore();
     }
 
-    drawAnnotations(ctx, W, H, annotations, axis);
+    // Saved annotations
+    annotations.filter(a => a.view === view).forEach((a) => {
+      ctx.save();
+      ctx.strokeStyle = a.color || "#facc15";
+      ctx.fillStyle   = a.color || "#facc15";
+      ctx.lineWidth   = 1.5;
+      ctx.font        = "11px 'JetBrains Mono', monospace";
 
-    if (annPtsRef.current.length > 0) {
-      drawInProgress(ctx, annPtsRef.current, tool);
-    }
+      if (a.type === "distance" && a.points?.length >= 2) {
+        const [p1, p2] = a.points;
+        ctx.beginPath();
+        ctx.moveTo(p1.x * canvas.width, p1.y * canvas.height);
+        ctx.lineTo(p2.x * canvas.width, p2.y * canvas.height);
+        ctx.stroke();
+        [p1, p2].forEach(p => {
+          ctx.beginPath();
+          ctx.arc(p.x * canvas.width, p.y * canvas.height, 3, 0, Math.PI * 2);
+          ctx.fill();
+        });
+        const mx = ((p1.x + p2.x) / 2) * canvas.width;
+        const my = ((p1.y + p2.y) / 2) * canvas.height - 6;
+        ctx.fillText(a.measurement, mx, my);
+      }
 
-    ctx.fillStyle = AXIS_COLORS[axis];
-    ctx.font = "bold 11px 'JetBrains Mono', monospace";
-    ctx.fillText(AXIS_LABELS[axis].toUpperCase(), 8, 20);
-    ctx.fillStyle = "#fff8";
-    ctx.font = "10px monospace";
-    ctx.fillText(`${sliceIndex + 1} / ${totalSlices}`, 8, 36);
-    ctx.fillText(`WC:${wc} WW:${ww}`, 8, 52);
-  }
+      if (a.type === "angle" && a.points?.length >= 3) {
+        const [p1, p2, p3] = a.points.map(p => ({ x: p.x * canvas.width, y: p.y * canvas.height }));
+        ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.lineTo(p3.x, p3.y); ctx.stroke();
+        [p1, p2, p3].forEach(p => { ctx.beginPath(); ctx.arc(p.x, p.y, 3, 0, Math.PI * 2); ctx.fill(); });
+        ctx.fillText(`${a.measurement}°`, p2.x + 6, p2.y - 6);
+      }
 
-  function drawAnnotations(ctx, W, H, annotations, axis) {
-    const axisAnns = annotations.filter(a => a.axis === axis);
-    for (const ann of axisAnns) {
-      if (ann.type === "measure") {
-        const p1 = { x: ann.p1.x * W, y: ann.p1.y * H };
-        const p2 = { x: ann.p2.x * W, y: ann.p2.y * H };
-        ctx.strokeStyle = "#fde68a"; ctx.lineWidth = 1.5;
-        ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
-        ctx.fillStyle = "#fde68a";
-        ctx.beginPath(); ctx.arc(p1.x, p1.y, 3, 0, 2 * Math.PI); ctx.fill();
-        ctx.beginPath(); ctx.arc(p2.x, p2.y, 3, 0, 2 * Math.PI); ctx.fill();
-        const mid = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
-        ctx.font = "11px monospace"; ctx.fillStyle = "#fde68a";
-        ctx.fillText(`${ann.mm.toFixed(1)} mm`, mid.x + 4, mid.y - 4);
+      if (a.type === "hu" && a.point) {
+        const px = a.point.x * canvas.width;
+        const py = a.point.y * canvas.height;
+        ctx.beginPath(); ctx.arc(px, py, 5, 0, Math.PI * 2);
+        ctx.strokeStyle = "#22d3ee"; ctx.stroke();
+        ctx.fillStyle = "#22d3ee";
+        ctx.fillText(`${a.hu} HU`, px + 8, py - 5);
       }
-      if (ann.type === "angle") {
-        const pts = ann.points.map(p => ({ x: p.x * W, y: p.y * H }));
-        ctx.strokeStyle = "#86efac"; ctx.lineWidth = 1.5;
-        ctx.beginPath(); ctx.moveTo(pts[0].x, pts[0].y); ctx.lineTo(pts[1].x, pts[1].y); ctx.stroke();
-        ctx.beginPath(); ctx.moveTo(pts[1].x, pts[1].y); ctx.lineTo(pts[2].x, pts[2].y); ctx.stroke();
-        pts.forEach(p => { ctx.fillStyle="#86efac"; ctx.beginPath(); ctx.arc(p.x,p.y,3,0,2*Math.PI); ctx.fill(); });
-        ctx.font = "11px monospace"; ctx.fillStyle = "#86efac";
-        ctx.fillText(`${ann.deg.toFixed(1)}°`, pts[1].x + 6, pts[1].y - 6);
+
+      if (a.type === "implant" && a.point) {
+        const px = a.point.x * canvas.width;
+        const py = a.point.y * canvas.height;
+        const scaleX = canvas.width  / 512;
+        const scaleY = canvas.height / 512;
+        const dPx = (a.implant.diameter / 2) * scaleX * 30;
+        const lPx = a.implant.length * scaleY * 10;
+        ctx.strokeStyle = a.implant.color;
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(px - dPx, py - lPx, dPx * 2, lPx);
+        ctx.fillStyle = a.implant.color + "33";
+        ctx.fillRect(px - dPx, py - lPx, dPx * 2, lPx);
+        ctx.fillStyle = a.implant.color;
+        ctx.fillText(`${a.implant.brand} Ø${a.implant.diameter}×${a.implant.length}`, px - dPx, py - lPx - 4);
       }
-      if (ann.type === "implant" && ann.axis === axis) {
-        const cx = ann.cx * W, cy = ann.cy * H;
-        const r  = (ann.diameter / 2) * zoom * 10;
-        const h  = ann.length * zoom * 10;
-        ctx.strokeStyle = "#60a5fa"; ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.ellipse(cx, cy, r, h / 2, ann.angleDeg * Math.PI / 180, 0, 2 * Math.PI); ctx.stroke();
-        ctx.fillStyle = "#60a5fa44"; ctx.fill();
-        ctx.fillStyle = "#60a5fa"; ctx.font = "10px monospace";
-        ctx.fillText(`${ann.brand} Ø${ann.diameter}×${ann.length}mm`, cx + r + 4, cy);
-      }
-      if (ann.type === "nerve") {
-        const pts = ann.points.map(p => ({ x: p.x * W, y: p.y * H }));
-        ctx.strokeStyle = "#f9a8d4"; ctx.lineWidth = 2;
+
+      if (a.type === "ian" && a.points?.length >= 2) {
+        ctx.strokeStyle = "#f97316";
+        ctx.lineWidth = 2;
         ctx.setLineDash([3, 2]);
         ctx.beginPath();
-        pts.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
-        ctx.stroke(); ctx.setLineDash([]);
-        pts.forEach(p => { ctx.fillStyle="#f9a8d4"; ctx.beginPath(); ctx.arc(p.x,p.y,2.5,0,2*Math.PI); ctx.fill(); });
+        const pts = a.points.map(p => ({ x: p.x * canvas.width, y: p.y * canvas.height }));
+        ctx.moveTo(pts[0].x, pts[0].y);
+        pts.slice(1).forEach(p => ctx.lineTo(p.x, p.y));
+        ctx.stroke();
+        pts.forEach(p => { ctx.beginPath(); ctx.arc(p.x, p.y, 2.5, 0, Math.PI * 2); ctx.fillStyle = "#f97316"; ctx.fill(); });
+        ctx.fillStyle = "#f97316"; ctx.setLineDash([]);
+        ctx.fillText("IAN", pts[0].x + 4, pts[0].y - 5);
       }
-      if (ann.type === "text") {
-        ctx.fillStyle = "#fbbf24"; ctx.font = "12px sans-serif";
-        ctx.fillText(ann.text, ann.x * W, ann.y * H);
+
+      ctx.restore();
+    });
+
+    // In-progress drawing
+    if (drawingPoints.length > 0) {
+      ctx.save();
+      ctx.strokeStyle = "#facc15";
+      ctx.fillStyle   = "#facc15";
+      ctx.lineWidth   = 1.5;
+      const pts = drawingPoints.map(p => ({ x: p.x * canvas.width, y: p.y * canvas.height }));
+      if (pts.length >= 2) {
+        ctx.beginPath(); ctx.moveTo(pts[0].x, pts[0].y);
+        pts.slice(1).forEach(p => ctx.lineTo(p.x, p.y));
+        if (hoverPos) ctx.lineTo(hoverPos.x, hoverPos.y);
+        ctx.stroke();
       }
+      pts.forEach(p => { ctx.beginPath(); ctx.arc(p.x, p.y, 3, 0, Math.PI * 2); ctx.fill(); });
+      ctx.restore();
     }
-  }
+  }, [annotations, crosshair, drawingPoints, hoverPos, view]);
 
-  function drawInProgress(ctx, pts, tool) {
-    if (pts.length === 0) return;
-    const canvas = canvasRef.current;
-    const W = canvas.width, H = canvas.height;
-    if (tool === "measure" && pts.length === 1) {
-      ctx.strokeStyle = "#fde68a88"; ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.arc(pts[0].x * W, pts[0].y * H, 4, 0, 2 * Math.PI); ctx.stroke();
-    }
-    if (tool === "nerve" && pts.length > 1) {
-      ctx.strokeStyle = "#f9a8d488"; ctx.lineWidth = 1.5; ctx.setLineDash([3,2]);
-      ctx.beginPath();
-      pts.forEach((p, i) => i===0 ? ctx.moveTo(p.x*W, p.y*H) : ctx.lineTo(p.x*W, p.y*H));
-      ctx.stroke(); ctx.setLineDash([]);
-    }
-  }
-
-  function canvasPos(e) {
-    const r = canvasRef.current.getBoundingClientRect();
+  // ── Interaction ──────────────────────────────────────────────────────────
+  const getCanvasPos = useCallback((e) => {
+    const canvas = overlayRef.current;
+    if (!canvas) return { x: 0, y: 0 };
+    const rect = canvas.getBoundingClientRect();
     return {
-      x: clamp((e.clientX - r.left) / r.width,  0, 1),
-      y: clamp((e.clientY - r.top)  / r.height, 0, 1),
+      x: clamp((e.clientX - rect.left)  / rect.width,  0, 1),
+      y: clamp((e.clientY - rect.top)   / rect.height, 0, 1),
     };
-  }
+  }, []);
 
-  function onMouseDown(e) {
-    onActivate();
-    e.preventDefault();
-    const pos = canvasPos(e);
-    dragRef.current = { startPos: pos, startPan: { ...pan }, button: e.button, lastPos: pos };
+  const onMouseDown = useCallback((e) => {
+    onClick?.();   // activate this panel
+    const pos = getCanvasPos(e);
 
-    if (tool === "measure") {
-      if (annPtsRef.current.length === 0) {
-        annPtsRef.current = [pos];
-      } else {
-        const p1 = annPtsRef.current[0];
-        const mm = dist2D(p1, pos) * 200;
-        onAnnotationAdd({ type: "measure", axis, p1, p2: pos, mm });
-        annPtsRef.current = [];
-      }
-      render(); return;
-    }
-    if (tool === "angle") {
-      annPtsRef.current.push(pos);
-      if (annPtsRef.current.length === 3) {
-        const [a, b, c] = annPtsRef.current;
-        onAnnotationAdd({ type: "angle", axis, points: [a, b, c], deg: angleDeg(a, b, c) });
-        annPtsRef.current = [];
-      }
-      render(); return;
-    }
-    if (tool === "nerve") {
-      annPtsRef.current.push(pos);
-      render(); return;
-    }
-  }
-
-  function onMouseMove(e) {
-    const d = dragRef.current;
-    if (!d || !e.buttons) return;
-    const pos = canvasPos(e);
-    const dx = pos.x - d.lastPos.x;
-    const dy = pos.y - d.lastPos.y;
-    d.lastPos = pos;
-
-    if (tool === "pan" || e.buttons === 4) {
-      const canvas = canvasRef.current;
-      onPanChange({ x: pan.x + dx * canvas.width, y: pan.y + dy * canvas.height });
+    if (e.button === 2) {
+      dragRef.current = { type: "wl", startX: e.clientX, startY: e.clientY, startWL: { ...wl } };
       return;
     }
-    if (tool === "window") {
-      onWindowChange(clamp(wc + dy * 800, -2000, 4000), clamp(ww + dx * 800, 1, 8000));
-      return;
+
+    switch (activeTool) {
+      case TOOLS.SCROLL:
+      case TOOLS.PAN:
+        dragRef.current = { type: activeTool, startX: e.clientX, startY: e.clientY, startPan: { ...pan }, startSlice: sliceIndex };
+        break;
+      case TOOLS.ZOOM:
+        dragRef.current = { type: "zoom", startY: e.clientY, startZoom: zoom };
+        break;
+      case TOOLS.DISTANCE:
+        if (drawingPoints.length === 0) {
+          setDrawingPoints([pos]);
+        } else {
+          const p1  = drawingPoints[0];
+          const cv  = overlayRef.current;
+          const pxD = dist2({ x: p1.x * cv.width, y: p1.y * cv.height }, { x: pos.x * cv.width, y: pos.y * cv.height });
+          const mm  = (pxD * 0.3).toFixed(1);
+          onAnnotationAdd({ type: "distance", view, points: [p1, pos], measurement: `${mm}mm`, color: "#facc15" });
+          setDrawingPoints([]);
+        }
+        break;
+      case TOOLS.ANGLE: {
+        const newPts = [...drawingPoints, pos];
+        if (newPts.length < 3) {
+          setDrawingPoints(newPts);
+        } else {
+          const cv     = overlayRef.current;
+          const canPts = newPts.map(p => ({ x: p.x * cv.width, y: p.y * cv.height }));
+          const deg    = angleDeg(canPts[0], canPts[1], canPts[2]);
+          onAnnotationAdd({ type: "angle", view, points: newPts, measurement: deg, color: "#4ade80" });
+          setDrawingPoints([]);
+        }
+        break;
+      }
+      case TOOLS.HU: {
+        const huEst = Math.round(-1000 + (pos.x + pos.y) * 1500);
+        onAnnotationAdd({ type: "hu", view, point: pos, hu: huEst, color: "#22d3ee" });
+        break;
+      }
+      case TOOLS.IMPLANT:
+        if (activeImplant) {
+          onAnnotationAdd({ type: "implant", view, point: pos, implant: activeImplant });
+          onCrosshairChange(pos);
+        }
+        break;
+      case TOOLS.IAN:
+        setDrawingPoints(prev => [...prev, pos]);
+        break;
+      case TOOLS.ERASE: {
+        const cw = overlayRef.current?.width  || 512;
+        const ch = overlayRef.current?.height || 512;
+        const cx = pos.x * cw;
+        const cy = pos.y * ch;
+        const hitIdx = annotations.findIndex(a => {
+          if (a.view !== view) return false;
+          if (a.point) {
+            return dist2({ x: cx, y: cy }, { x: a.point.x * cw, y: a.point.y * ch }) < 20;
+          }
+          if (a.points) {
+            return a.points.some(p => dist2({ x: cx, y: cy }, { x: p.x * cw, y: p.y * ch }) < 20);
+          }
+          return false;
+        });
+        if (hitIdx !== -1) onAnnotationRemove(hitIdx);
+        break;
+      }
+      default:
+        onCrosshairChange(pos);
     }
-    onCrosshairChange(pos);
-    render();
-  }
+  }, [activeTool, drawingPoints, pan, sliceIndex, zoom, wl, view, activeImplant, annotations,
+      onAnnotationAdd, onAnnotationRemove, onCrosshairChange, getCanvasPos, onClick]);
 
-  function onMouseUp(e) {
-    const d = dragRef.current;
-    if (!d) return;
-    const pos = canvasPos(e);
-    if (tool === "implant") onAnnotationAdd({ type: "implant_request", axis, cx: pos.x, cy: pos.y });
-    if (tool === "probe")   onAnnotationAdd({ type: "probe", axis, x: pos.x, y: pos.y, hu: "~"+Math.round(wc) });
-    dragRef.current = null;
-  }
+  const onMouseMove = useCallback((e) => {
+    const pos = getCanvasPos(e);
+    setHoverPos({ x: pos.x * (overlayRef.current?.width || 512), y: pos.y * (overlayRef.current?.height || 512) });
 
-  function onWheel(e) {
+    if (!dragRef.current) return;
+    const { type } = dragRef.current;
+
+    if (type === "wl") {
+      const dX = e.clientX - dragRef.current.startX;
+      const dY = e.clientY - dragRef.current.startY;
+      onWLChange({
+        window: clamp(dragRef.current.startWL.window + dX * 10, 1, 6000),
+        level:  dragRef.current.startWL.level  - dY * 5,
+      });
+    } else if (type === TOOLS.PAN) {
+      onPanChange({
+        x: dragRef.current.startPan.x + (e.clientX - dragRef.current.startX),
+        y: dragRef.current.startPan.y + (e.clientY - dragRef.current.startY),
+      });
+    } else if (type === TOOLS.SCROLL) {
+      const delta = Math.round((e.clientY - dragRef.current.startY) / 3);
+      onSliceChange(clamp(dragRef.current.startSlice + delta, 0, totalSlices - 1));
+    } else if (type === "zoom") {
+      onZoomChange(clamp(dragRef.current.startZoom - (e.clientY - dragRef.current.startY) / 200, 0.3, 8));
+    }
+  }, [getCanvasPos, onWLChange, onPanChange, onSliceChange, onZoomChange, totalSlices]);
+
+  const onMouseUp   = useCallback(() => { dragRef.current = null; }, []);
+
+  const onWheel = useCallback((e) => {
     e.preventDefault();
-    if (e.ctrlKey) {
-      onZoomChange(clamp(zoom * (e.deltaY > 0 ? 0.9 : 1.1), 0.3, 8));
+    if (activeTool === TOOLS.ZOOM || e.ctrlKey) {
+      onZoomChange(clamp(zoom + (e.deltaY < 0 ? 0.1 : -0.1), 0.3, 8));
     } else {
       onSliceChange(clamp(sliceIndex + (e.deltaY > 0 ? 1 : -1), 0, totalSlices - 1));
     }
-  }
+  }, [activeTool, zoom, sliceIndex, totalSlices, onZoomChange, onSliceChange]);
 
-  function onDoubleClick() {
-    if (tool === "nerve" && annPtsRef.current.length > 1) {
-      onAnnotationAdd({ type: "nerve", axis, points: [...annPtsRef.current] });
-      annPtsRef.current = [];
-      render();
+  const onDblClick = useCallback(() => {
+    if (activeTool === TOOLS.IAN && drawingPoints.length >= 2) {
+      onAnnotationAdd({ type: "ian", view, points: drawingPoints, color: "#f97316" });
+      setDrawingPoints([]);
     }
-  }
+  }, [activeTool, drawingPoints, view, onAnnotationAdd]);
 
-  const PANEL_SIZE = 380;
+  const cursor = useMemo(() => ({
+    [TOOLS.SCROLL]:   "ns-resize",
+    [TOOLS.PAN]:      "grab",
+    [TOOLS.ZOOM]:     "zoom-in",
+    [TOOLS.WL]:       "ew-resize",
+    [TOOLS.DISTANCE]: "crosshair",
+    [TOOLS.ANGLE]:    "crosshair",
+    [TOOLS.HU]:       "cell",
+    [TOOLS.IMPLANT]:  "copy",
+    [TOOLS.IAN]:      "crosshair",
+    [TOOLS.ERASE]:    "not-allowed",
+  }[activeTool] || "default"), [activeTool]);
 
   return (
-    <div style={{
-      position: "relative",
-      border: active ? `2px solid ${AXIS_COLORS[axis]}` : "2px solid #1e293b",
-      borderRadius: 6, overflow: "hidden",
-      cursor: tool === "pan" ? "grab" : tool === "window" ? "ew-resize" : "crosshair",
-      background: "#000", flex: "1 1 0", minWidth: 280,
-    }}>
+    <div
+      style={{
+        ...styles.panelWrap,
+        border: highlighted ? `2px solid ${VIEW_COLORS[view]}` : "2px solid #1e293b",
+      }}
+    >
+      <div style={{ ...styles.panelLabel, color: VIEW_COLORS[view] }}>
+        {VIEW_LABELS[view]}&nbsp;
+        <span style={{ opacity: 0.5, fontSize: 11 }}>
+          {sliceIndex + 1} / {totalSlices}
+        </span>
+      </div>
+
       <canvas
         ref={canvasRef}
-        width={PANEL_SIZE} height={PANEL_SIZE}
-        style={{ display: "block", width: "100%", height: "100%" }}
+        className="cbct-panel-canvas"
+        width={512} height={512}
+        style={styles.panelCanvas}
+      />
+      <canvas
+        ref={overlayRef}
+        width={512} height={512}
+        style={{ ...styles.panelCanvas, ...styles.panelOverlay, cursor }}
         onMouseDown={onMouseDown}
         onMouseMove={onMouseMove}
         onMouseUp={onMouseUp}
+        onMouseLeave={onMouseUp}
         onWheel={onWheel}
-        onDoubleClick={onDoubleClick}
+        onDoubleClick={onDblClick}
         onContextMenu={e => e.preventDefault()}
       />
+
       <input
-        type="range" min={0} max={totalSlices - 1} value={sliceIndex}
+        type="range" min={0} max={Math.max(0, totalSlices - 1)} value={sliceIndex}
         onChange={e => onSliceChange(Number(e.target.value))}
-        style={{
-          position: "absolute", bottom: 6, left: 8, right: 8,
-          width: "calc(100% - 16px)",
-          accentColor: AXIS_COLORS[axis], opacity: 0.7,
-        }}
+        style={styles.sliceSlider}
       />
-    </div>
-  );
-}
-
-// ─── Implant Dialog ───────────────────────────────────────────────────────────
-
-function ImplantDialog({ request, onConfirm, onCancel }) {
-  const [system,   setSystem]   = useState(0);
-  const [length,   setLength]   = useState(10);
-  const [diameter, setDiameter] = useState(4.0);
-  const [angle,    setAngle]    = useState(0);
-  const sys = IMPLANT_SYSTEMS[system];
-
-  return (
-    <div style={styles.modal}>
-      <div style={styles.modalBox}>
-        <h3 style={{ color: "#60a5fa", margin: "0 0 16px", fontFamily: "monospace" }}>
-          🦷 Place Implant
-        </h3>
-        <label style={styles.label}>System</label>
-        <select style={styles.select} value={system} onChange={e => setSystem(+e.target.value)}>
-          {IMPLANT_SYSTEMS.map((s, i) => <option key={i} value={i}>{s.brand}</option>)}
-        </select>
-        <label style={styles.label}>Length (mm)</label>
-        <select style={styles.select} value={length} onChange={e => setLength(+e.target.value)}>
-          {sys.lengths.map(l => <option key={l} value={l}>{l} mm</option>)}
-        </select>
-        <label style={styles.label}>Diameter (mm)</label>
-        <select style={styles.select} value={diameter} onChange={e => setDiameter(+e.target.value)}>
-          {sys.diameters.map(d => <option key={d} value={d}>{d} mm</option>)}
-        </select>
-        <label style={styles.label}>Angle (°): {angle}°</label>
-        <input type="range" min={-45} max={45} value={angle}
-          onChange={e => setAngle(+e.target.value)}
-          style={{ width: "100%", accentColor: "#60a5fa" }}
-        />
-        <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
-          <button style={styles.btnPrimary} onClick={() =>
-            onConfirm({ brand: sys.brand, length, diameter, angleDeg: angle, ...request })
-          }>Place</button>
-          <button style={styles.btnSecondary} onClick={onCancel}>Cancel</button>
-        </div>
+      <div style={styles.wlOverlay}>
+        W:{Math.round(wl.window)} L:{Math.round(wl.level)}
       </div>
+      <button
+        style={styles.resetPanBtn}
+        onClick={() => { onZoomChange(1); onPanChange({ x: 0, y: 0 }); }}
+        title="Reset zoom/pan"
+      >⊡</button>
     </div>
   );
 }
 
-// ─── Main CBCTViewer ──────────────────────────────────────────────────────────
+// ─── Main CBCTViewer component ────────────────────────────────────────────────
+export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
+  const [volumeMeta, setVolumeMeta] = useState(null);
+  const [volumeData, setVolumeData] = useState(null);
+  const [loading,    setLoading]    = useState(true);
+  const [loadingMsg, setLoadingMsg] = useState("Loading volume…");
+  const [error,      setError]      = useState(null);
 
-export default function CBCTViewer({ volumeId, volumeMeta: initialMeta, apiBase = "/api", onClose }) {
+  const [activeTool,    setActiveTool]    = useState(TOOLS.SCROLL);
+  const [activeImplant, setActiveImplant] = useState(IMPLANTS[0]);
+  const [showImplants,  setShowImplants]  = useState(false);
+  const [showSidebar,   setShowSidebar]   = useState(true);
+  // activePanel: which panel is focused for keyboard nav & "focus" layout
+  const [activePanel,   setActivePanel]   = useState("axial");
 
-  const [meta,        setMeta]        = useState(initialMeta || null);
-  const [loading,     setLoading]     = useState(!initialMeta);
-  const [error,       setError]       = useState(null);
-
-  const [tool,        setTool]        = useState("pan");
-  const [wc,          setWc]          = useState(DEFAULT_WC);
-  const [ww,          setWw]          = useState(DEFAULT_WW);
-  const [zoom,        setZoom]        = useState(1);
-  const [pans,        setPans]        = useState({ axial:{x:0,y:0}, coronal:{x:0,y:0}, sagittal:{x:0,y:0} });
-  const [activeAxis,  setActiveAxis]  = useState("axial");
-  const [layout,      setLayout]      = useState("3up");
-  const [showInfo,    setShowInfo]    = useState(false);
-  const [showAnnot,   setShowAnnot]   = useState(true);
-  const [annotations, setAnnotations] = useState([]);
-  const [implantReq,  setImplantReq]  = useState(null);
-  const [saved,       setSaved]       = useState(false);
-
-  const [crosshair, setCrosshair] = useState({
-    axial:    {x:0.5,y:0.5},
-    coronal:  {x:0.5,y:0.5},
-    sagittal: {x:0.5,y:0.5},
+  const [wl,      setWl]      = useState(DEFAULT_WL);
+  const [slices,  setSlices]  = useState({ axial: 0, coronal: 0, sagittal: 0 });
+  const [zooms,   setZooms]   = useState({ axial: 1, coronal: 1, sagittal: 1 });
+  const [pans,    setPans]    = useState({
+    axial:    { x: 0, y: 0 },
+    coronal:  { x: 0, y: 0 },
+    sagittal: { x: 0, y: 0 },
   });
-  const [slices, setSlices] = useState({ axial: 0, coronal: 0, sagittal: 0 });
+  const [crosshair,   setCrosshair]   = useState({ x: 0.5, y: 0.5 });
+  const [annotations, dispatch]       = useReducer(annoReducer, []);
+  const [cineActive,  setCineActive]  = useState(false);
+  const [cineView,    setCineView]    = useState("axial");
+  const [saved,       setSaved]       = useState(false);
+  // "quad" = 3 MPR + 3D preview | "focus" = single panel
+  const [layout,      setLayout]      = useState("quad");
+  const cineRef = useRef(null);
 
-  const dims = meta ? {
-    axial:    meta.dimensions?.axial    || meta.dimensions?.rows || 100,
-    coronal:  meta.dimensions?.coronal  || meta.dimensions?.cols || 100,
-    sagittal: meta.dimensions?.sagittal || meta.dimensions?.cols || 100,
-  } : { axial: 100, coronal: 100, sagittal: 100 };
-
-  // ── Load meta ─────────────────────────────────────────────────────────────
+  // ── Load volume ────────────────────────────────────────────────────────────
   useEffect(() => {
-    if (meta) return;
-    fetch(`${apiBase}/cbct/${volumeId}/meta`, { headers: authHeaders() })
-      .then(r => r.json())
-      .then(d => { setMeta(d); setLoading(false); })
-      .catch(e => { setError(e.message); setLoading(false); });
-  }, [volumeId]);
+    if (!volumeId) return;
+    setLoading(true);
 
-  // ── Load annotations ─────────────────────────────────────────────────────
-  useEffect(() => {
-    fetch(`${apiBase}/cbct/${volumeId}/annotations`, { headers: authHeaders() })
-      .then(r => r.json())
-      .then(d => {
-        const all = [
-          ...(d.measurements || []),
-          ...(d.implants     || []),
-          ...(d.nerves       || []),
-          ...(d.texts        || []),
-        ];
-        setAnnotations(all);
+    const fetchMeta   = fetch(`${apiBase}/cbct/${volumeId}`,         { headers: authHeaders() }).then(r => r.ok ? r.json() : Promise.reject("Failed to load metadata"));
+    const fetchSlices = fetch(`${apiBase}/cbct/${volumeId}/slices`,   { headers: authHeaders() }).then(r => r.ok ? r.json() : Promise.reject("Failed to load slices"));
+
+    setLoadingMsg("Loading DICOM metadata…");
+    fetchMeta
+      .then(meta => {
+        setVolumeMeta(meta);
+        // Start at the middle slice of each plane
+        setSlices({
+          axial:    Math.floor((meta.num_slices      || 100) / 2),
+          coronal:  Math.floor((meta.coronal_slices  || 100) / 2),
+          sagittal: Math.floor((meta.sagittal_slices || 100) / 2),
+        });
+        // Load saved annotations
+        return fetch(`${apiBase}/cbct/${volumeId}/annotations`, { headers: authHeaders() });
+      })
+      .then(r => r.ok ? r.json() : [])
+      .then(saved => {
+        if (Array.isArray(saved) && saved.length > 0) {
+          dispatch({ type: "LOAD", payload: saved });
+        }
       })
       .catch(() => {});
-  }, [volumeId]);
 
-  // ── Save annotations ──────────────────────────────────────────────────────
-  const saveAnnotations = useCallback(async () => {
-    const body = {
-      measurements: annotations.filter(a => a.type === "measure" || a.type === "angle"),
-      implants:     annotations.filter(a => a.type === "implant"),
-      nerves:       annotations.filter(a => a.type === "nerve"),
-      texts:        annotations.filter(a => a.type === "text"),
+    setLoadingMsg("Loading slice images…");
+    fetchSlices
+      .then(data => { setVolumeData(data); setLoading(false); })
+      .catch(() => {
+        setVolumeData({ slices: { axial: [], coronal: [], sagittal: [] } });
+        setLoading(false);
+      });
+  }, [volumeId, apiBase]);
+
+  // ── Cine ───────────────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (cineActive) {
+      cineRef.current = setInterval(() => {
+        setSlices(prev => {
+          const total = volumeMeta?.[`${cineView}_slices`] || volumeMeta?.num_slices || 100;
+          return { ...prev, [cineView]: (prev[cineView] + 1) % total };
+        });
+      }, 80);
+    }
+    return () => clearInterval(cineRef.current);
+  }, [cineActive, cineView, volumeMeta]);
+
+  // ── Keyboard shortcuts ─────────────────────────────────────────────────────
+  useEffect(() => {
+    const handler = (e) => {
+      if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+      switch (e.key) {
+        case "s": case "S": setActiveTool(TOOLS.SCROLL);   break;
+        case "p": case "P": setActiveTool(TOOLS.PAN);      break;
+        case "z": case "Z": setActiveTool(TOOLS.ZOOM);     break;
+        case "w": case "W": setActiveTool(TOOLS.WL);       break;
+        case "d": case "D": setActiveTool(TOOLS.DISTANCE); break;
+        case "a": case "A": setActiveTool(TOOLS.ANGLE);    break;
+        case "h": case "H": setActiveTool(TOOLS.HU);       break;
+        case "i": case "I":
+          setActiveTool(TOOLS.IMPLANT);
+          setShowImplants(true);
+          break;
+        case "n": case "N": setActiveTool(TOOLS.IAN);      break;
+        case "e": case "E": setActiveTool(TOOLS.ERASE);    break;
+        case " ": setCineActive(v => !v); e.preventDefault(); break;
+        // Arrow keys scroll the active panel
+        case "ArrowUp":
+          setSlices(prev => ({
+            ...prev,
+            [activePanel]: clamp(prev[activePanel] - 1, 0, (totalSlices[activePanel] || 1) - 1),
+          }));
+          e.preventDefault();
+          break;
+        case "ArrowDown":
+          setSlices(prev => ({
+            ...prev,
+            [activePanel]: clamp(prev[activePanel] + 1, 0, (totalSlices[activePanel] || 1) - 1),
+          }));
+          e.preventDefault();
+          break;
+        // Tab cycles through panels
+        case "Tab":
+          setActivePanel(p => {
+            const idx = VIEWS.indexOf(p);
+            return VIEWS[(idx + 1) % VIEWS.length];
+          });
+          e.preventDefault();
+          break;
+        case "Escape":
+          if (onClose) onClose();
+          break;
+      }
     };
-    await fetch(`${apiBase}/cbct/${volumeId}/annotations`, {
-      method: "PUT",
-      headers: authHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify(body),
-    });
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
-  }, [annotations, volumeId, apiBase]);
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [activePanel, onClose]);
 
-  // ── Annotation handler ────────────────────────────────────────────────────
-  const handleAnnotationAdd = useCallback((ann) => {
-    if (ann.type === "implant_request") { setImplantReq(ann); return; }
-    setAnnotations(prev => [...prev, { ...ann, id: Date.now() }]);
-  }, []);
-
-  const handleImplantConfirm = useCallback((imp) => {
-    setAnnotations(prev => [...prev, { ...imp, type: "implant", id: Date.now() }]);
-    setImplantReq(null);
-  }, []);
-
-  const handleWindowChange = useCallback((newWc, newWw) => {
-    setWc(Math.round(newWc));
-    setWw(Math.round(newWw));
-  }, []);
-
-  // ── Crosshair sync ────────────────────────────────────────────────────────
-  const handleCrosshair = useCallback((axis, pos) => {
-    setCrosshair(prev => ({ ...prev, [axis]: pos }));
-    if (axis === "axial") {
-      setSlices(prev => ({
-        ...prev,
-        coronal:  Math.round(pos.y * dims.coronal),
-        sagittal: Math.round(pos.x * dims.sagittal),
-      }));
-    }
-    if (axis === "coronal") {
-      setSlices(prev => ({
-        ...prev,
-        axial:    Math.round(pos.y * dims.axial),
-        sagittal: Math.round(pos.x * dims.sagittal),
-      }));
-    }
-    if (axis === "sagittal") {
-      setSlices(prev => ({
-        ...prev,
-        axial:   Math.round(pos.y * dims.axial),
-        coronal: Math.round(pos.x * dims.coronal),
-      }));
-    }
-  }, [dims]);
-
-  // ── Reset ─────────────────────────────────────────────────────────────────
-  const resetView = () => {
-    setWc(DEFAULT_WC); setWw(DEFAULT_WW); setZoom(1);
-    setPans({ axial:{x:0,y:0}, coronal:{x:0,y:0}, sagittal:{x:0,y:0} });
-    setSlices({ axial: 0, coronal: 0, sagittal: 0 });
-    setCrosshair({ axial:{x:0.5,y:0.5}, coronal:{x:0.5,y:0.5}, sagittal:{x:0.5,y:0.5} });
+  // ── Save annotations ────────────────────────────────────────────────────────
+  const saveAnnotations = async () => {
+    try {
+      await fetch(`${apiBase}/cbct/${volumeId}/annotations`, {
+        method:  "POST",
+        headers: authHeaders({ "Content-Type": "application/json" }),
+        body:    JSON.stringify(annotations),
+      });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch {}
   };
 
-  const exportJSON = () => {
-    const blob = new Blob([JSON.stringify(annotations, null, 2)], { type: "application/json" });
-    const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
-    a.download = `cbct_${volumeId}_annotations.json`; a.click();
-  };
-
-  const exportScreenshot = () => {
-    const canvases = document.querySelectorAll(".cbct-canvas");
+  // ── Client-side screenshot ─────────────────────────────────────────────────
+  const takeScreenshot = () => {
+    const canvases = document.querySelectorAll(".cbct-panel-canvas");
     if (!canvases.length) return;
-    const combined = document.createElement("canvas");
-    combined.width = canvases[0].width * canvases.length;
-    combined.height = canvases[0].height;
-    const ctx = combined.getContext("2d");
-    canvases.forEach((c, i) => ctx.drawImage(c, i * c.width, 0));
-    const a = document.createElement("a"); a.href = combined.toDataURL("image/png");
-    a.download = `cbct_${volumeId}_screenshot.png`; a.click();
+    const cols = layout === "quad" ? 2 : 1;
+    const sz   = 512;
+    const out  = document.createElement("canvas");
+    out.width  = sz * Math.min(canvases.length, cols);
+    out.height = sz * Math.ceil(canvases.length / cols);
+    const ctx  = out.getContext("2d");
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, out.width, out.height);
+    canvases.forEach((c, i) => {
+      ctx.drawImage(c, (i % cols) * sz, Math.floor(i / cols) * sz, sz, sz);
+    });
+    const link     = document.createElement("a");
+    link.download  = `cbct_${volumeId}_${Date.now()}.png`;
+    link.href      = out.toDataURL("image/png");
+    link.click();
   };
 
-  const visibleAxes = layout === "3up" ? AXES : [layout];
+  // ── Server-side export PNG ─────────────────────────────────────────────────
+  const serverExport = async () => {
+    try {
+      const params = new URLSearchParams({
+        ax:  slices.axial,
+        cor: slices.coronal,
+        sag: slices.sagittal,
+      });
+      const res  = await fetch(`${apiBase}/cbct/${volumeId}/export/png?${params}`, { headers: authHeaders() });
+      if (!res.ok) throw new Error(`Server ${res.status}`);
+      const blob = await res.blob();
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement("a");
+      a.href     = url;
+      a.download = `cbct_${volumeId}_export.png`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error("Export failed:", e);
+    }
+  };
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // Render
-  // ─────────────────────────────────────────────────────────────────────────
+  // ── Derived ────────────────────────────────────────────────────────────────
+  const totalSlices = {
+    axial:    volumeMeta?.num_slices      || 100,
+    coronal:  volumeMeta?.coronal_slices  || 100,
+    sagittal: volumeMeta?.sagittal_slices || 100,
+  };
 
+  // In focus mode only the active panel is shown; in quad all three + 3D
+  const visibleViews = layout === "focus" ? [activePanel] : VIEWS;
+
+  // ── Loading / error screens ────────────────────────────────────────────────
   if (loading) return (
-    <div style={styles.fullScreen}>
-      <div style={{ color: "#60a5fa", fontFamily: "monospace", fontSize: 18 }}>
-        ⏳ Loading CBCT volume…
+    <div style={styles.loadingScreen}>
+      <div style={styles.loadingInner}>
+        <div style={styles.loadingSpinner} />
+        <div style={styles.loadingMsg}>{loadingMsg}</div>
+        <div style={styles.loadingSub}>Volume #{volumeId}</div>
       </div>
     </div>
   );
 
   if (error) return (
-    <div style={styles.fullScreen}>
-      <div style={{ color: "#f87171", fontFamily: "monospace" }}>❌ {error}</div>
-      <button style={styles.btnSecondary} onClick={onClose}>Close</button>
+    <div style={styles.loadingScreen}>
+      <div style={{ color: "#ef4444", fontSize: 18 }}>⚠️ {error}</div>
     </div>
   );
 
+  const toolBtns = [
+    { key: TOOLS.SCROLL,   icon: "↕", label: "Scroll (S)" },
+    { key: TOOLS.PAN,      icon: "✥", label: "Pan (P)" },
+    { key: TOOLS.ZOOM,     icon: "⊕", label: "Zoom (Z)" },
+    { key: TOOLS.WL,       icon: "◑", label: "W/L (W)" },
+    { key: TOOLS.DISTANCE, icon: "↔", label: "Distance (D)" },
+    { key: TOOLS.ANGLE,    icon: "∠", label: "Angle (A)" },
+    { key: TOOLS.HU,       icon: "⬤", label: "HU Probe (H)" },
+    { key: TOOLS.IMPLANT,  icon: "⊥", label: "Implant (I)" },
+    { key: TOOLS.IAN,      icon: "~", label: "IAN Nerve (N)" },
+    { key: TOOLS.ERASE,    icon: "⌫", label: "Erase (E)" },
+  ];
+
   return (
-    <>
-      <style>{CSS}</style>
-      <div style={styles.root}>
+    <div style={styles.root}>
+      {/* ── Top bar ── */}
+      <div style={styles.topBar}>
+        <div style={styles.topLeft}>
+          <div style={styles.logo}>🦷 CBCT Viewer</div>
+          {volumeMeta && (
+            <div style={styles.metaChip}>
+              <span style={styles.metaField}>{volumeMeta.patient_name || "Anonymous"}</span>
+              <span style={styles.metaDot}>·</span>
+              <span style={styles.metaField}>{volumeMeta.study_date || ""}</span>
+              <span style={styles.metaDot}>·</span>
+              <span style={styles.metaField}>{volumeMeta.num_slices} slices</span>
+              {volumeMeta.voxel_spacing?.x > 0 && (
+                <>
+                  <span style={styles.metaDot}>·</span>
+                  <span style={styles.metaField}>{volumeMeta.voxel_spacing.x.toFixed(2)} mm/vx</span>
+                </>
+              )}
+            </div>
+          )}
+        </div>
 
-        {/* ── Top bar ─────────────────────────────── */}
-        <div style={styles.topBar}>
-          <div style={styles.topLeft}>
-            <span style={styles.logo}>🦷 CBCT Viewer</span>
-            {meta && (
-              <span style={styles.patientChip}>
-                {meta.patient_name}
-                {meta.study_date && ` · ${meta.study_date}`}
-                {` · ${meta.dimensions?.axial || "?"} slices`}
-              </span>
-            )}
-          </div>
-
-          <div style={styles.topCenter}>
-            {["3up", "axial", "coronal", "sagittal"].map(l => (
-              <button key={l}
-                style={{ ...styles.layoutBtn, ...(layout === l ? styles.layoutBtnActive : {}) }}
-                onClick={() => setLayout(l)}
-              >
-                {l === "3up" ? "⊞" : l === "axial" ? "⬛" : l === "coronal" ? "◼" : "▪"}
-                {" " + l.charAt(0).toUpperCase() + l.slice(1, l === "3up" ? 3 : 4)}
-              </button>
-            ))}
-          </div>
-
-          <div style={styles.topRight}>
-            <button style={styles.iconBtn} onClick={resetView}       title="Reset View">↺</button>
-            <button style={styles.iconBtn} onClick={exportScreenshot} title="Screenshot">📷</button>
-            <button style={styles.iconBtn} onClick={exportJSON}       title="Export Annotations">💾</button>
-            <button style={styles.iconBtn} onClick={saveAnnotations}  title="Save to Server">
-              {saved ? "✅" : "🔒"}
+        <div style={styles.topRight}>
+          {/* Panel tabs (always visible for quick switching) */}
+          {VIEWS.map(v => (
+            <button
+              key={v}
+              style={{
+                ...styles.topBtn,
+                ...(activePanel === v && layout === "focus" ? styles.topBtnActive : {}),
+                color: VIEW_COLORS[v],
+                fontSize: 10,
+              }}
+              onClick={() => { setActivePanel(v); setLayout("focus"); }}
+              title={`Focus ${v} panel`}
+            >
+              {VIEW_LABELS[v]}
             </button>
-            <button style={styles.iconBtn} onClick={() => setShowInfo(i => !i)} title="Info">ℹ️</button>
-            <button style={{ ...styles.iconBtn, color: "#f87171" }} onClick={onClose} title="Close">✕</button>
-          </div>
+          ))}
+
+          <div style={styles.topSep} />
+
+          <button
+            style={{ ...styles.topBtn, ...(cineActive ? styles.topBtnActive : {}) }}
+            onClick={() => setCineActive(v => !v)}
+            title="Play/Pause cine (Space)"
+          >{cineActive ? "⏸ Cine" : "▶ Cine"}</button>
+
+          <select
+            value={cineView}
+            onChange={e => setCineView(e.target.value)}
+            style={styles.select}
+          >
+            {VIEWS.map(v => <option key={v} value={v}>{v.toUpperCase()}</option>)}
+          </select>
+
+          <button
+            style={styles.topBtn}
+            onClick={() => setLayout(l => l === "quad" ? "focus" : "quad")}
+            title="Toggle layout (quad / focus)"
+          >{layout === "quad" ? "⊞ Quad" : "⊡ Focus"}</button>
+
+          {/* Client-side screenshot */}
+          <button style={styles.topBtn} onClick={takeScreenshot} title="Canvas screenshot">📷</button>
+          {/* Server-side export */}
+          <button style={styles.topBtn} onClick={serverExport}   title="Export PNG (server)">⬇</button>
+
+          <button
+            style={{ ...styles.topBtn, ...(saved ? styles.topBtnSaved : {}) }}
+            onClick={saveAnnotations}
+            title="Save annotations"
+          >{saved ? "✓ Saved" : "💾 Save"}</button>
+
+          <button
+            style={{ ...styles.topBtn, background: "#1e293b" }}
+            onClick={() => setShowSidebar(v => !v)}
+            title="Toggle sidebar (B)"
+          >☰</button>
+
+          {onClose && (
+            <button
+              style={{ ...styles.topBtn, color: "#ef4444" }}
+              onClick={onClose}
+              title="Close (Esc)"
+            >✕</button>
+          )}
+        </div>
+      </div>
+
+      <div style={styles.body}>
+        {/* ── Toolbar ── */}
+        <div style={styles.toolbar}>
+          {toolBtns.map(({ key, icon, label }) => (
+            <button
+              key={key}
+              title={label}
+              style={{ ...styles.toolBtn, ...(activeTool === key ? styles.toolBtnActive : {}) }}
+              onClick={() => {
+                setActiveTool(key);
+                if (key === TOOLS.IMPLANT) setShowImplants(true);
+              }}
+            >{icon}</button>
+          ))}
+          <div style={styles.toolSep} />
+          <button style={styles.toolBtn} onClick={() => dispatch({ type: "CLEAR" })} title="Clear all annotations">🗑</button>
+          <div style={styles.toolSep} />
+          {/* W/L presets */}
+          {[
+            { label: "Bone",  w: 3500, l: 700 },
+            { label: "Soft",  w: 350,  l: 50  },
+            { label: "Brain", w: 80,   l: 40  },
+          ].map(p => (
+            <button
+              key={p.label}
+              style={styles.presetBtn}
+              title={`${p.label} window`}
+              onClick={() => setWl({ window: p.w, level: p.l })}
+            >{p.label}</button>
+          ))}
         </div>
 
-        {/* ── Main area ────────────────────────────── */}
-        <div style={styles.main}>
-
-          {/* ── Toolbar ── */}
-          <div style={styles.toolbar}>
-            <div style={styles.toolSection}>
-              {TOOLS.map(t => (
-                <button key={t.id}
-                  style={{ ...styles.toolBtn, ...(tool === t.id ? styles.toolBtnActive : {}) }}
-                  onClick={() => setTool(t.id)}
-                  title={t.label}
-                >
-                  <span style={{ fontSize: 18 }}>{t.icon}</span>
-                  <span style={{ fontSize: 9, marginTop: 2, opacity: 0.7 }}>{t.label.split(" ")[0]}</span>
-                </button>
-              ))}
+        {/* ── Implant picker ── */}
+        {showImplants && (
+          <div style={styles.implantPicker}>
+            <div style={styles.implantPickerTitle}>
+              Select Implant
+              <button style={styles.implantClose} onClick={() => setShowImplants(false)}>✕</button>
             </div>
-
-            <div style={styles.toolDivider} />
-
-            <div style={{ padding: "0 4px" }}>
-              <div style={styles.sectionLabel}>PRESETS</div>
-              {WINDOW_PRESETS.map(p => (
-                <button key={p.label} style={styles.presetBtn}
-                  onClick={() => { setWc(p.wc); setWw(p.ww); }}
-                >{p.label}</button>
-              ))}
-            </div>
-
-            <div style={styles.toolDivider} />
-
-            <div style={{ padding: "0 4px" }}>
-              <div style={styles.sectionLabel}>WINDOW</div>
-              <div style={styles.sliderRow}>
-                <span style={styles.sliderLabel}>WC</span>
-                <input type="range" min={-2000} max={4000} value={wc}
-                  onChange={e => setWc(+e.target.value)}
-                  style={{ flex: 1, accentColor: "#22d3ee" }}
-                />
-                <span style={styles.sliderVal}>{wc}</span>
+            {IMPLANTS.map((imp, i) => (
+              <div
+                key={i}
+                style={{
+                  ...styles.implantRow,
+                  background:  activeImplant === imp ? "#1d4ed822"   : "transparent",
+                  borderLeft:  activeImplant === imp ? `3px solid ${imp.color}` : "3px solid transparent",
+                }}
+                onClick={() => { setActiveImplant(imp); setActiveTool(TOOLS.IMPLANT); setShowImplants(false); }}
+              >
+                <span style={{ color: imp.color, fontWeight: 700 }}>⊥</span>
+                <span style={styles.implantName}>{imp.brand}</span>
+                <span style={styles.implantDims}>Ø{imp.diameter} × {imp.length}mm</span>
               </div>
-              <div style={styles.sliderRow}>
-                <span style={styles.sliderLabel}>WW</span>
-                <input type="range" min={1} max={8000} value={ww}
-                  onChange={e => setWw(+e.target.value)}
-                  style={{ flex: 1, accentColor: "#22d3ee" }}
-                />
-                <span style={styles.sliderVal}>{ww}</span>
-              </div>
-              <div style={styles.sliderRow}>
-                <span style={styles.sliderLabel}>Zoom</span>
-                <input type="range" min={30} max={800} value={Math.round(zoom * 100)}
-                  onChange={e => setZoom(+e.target.value / 100)}
-                  style={{ flex: 1, accentColor: "#a78bfa" }}
-                />
-                <span style={styles.sliderVal}>{Math.round(zoom * 100)}%</span>
-              </div>
-            </div>
-
-            <div style={styles.toolDivider} />
-
-            <div style={{ padding: "0 4px" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <div style={styles.sectionLabel}>ANNOTATIONS</div>
-                <button style={styles.tinyBtn} onClick={() => setShowAnnot(p => !p)}>
-                  {showAnnot ? "Hide" : "Show"}
-                </button>
-              </div>
-              {showAnnot && annotations.slice(-8).map((a, i) => (
-                <div key={a.id || i} style={styles.annotRow}>
-                  <span style={{ opacity: 0.6, fontSize: 10 }}>
-                    {a.type === "measure"  ? `📏 ${a.mm?.toFixed(1)} mm (${a.axis})` :
-                     a.type === "angle"    ? `📐 ${a.deg?.toFixed(1)}° (${a.axis})` :
-                     a.type === "implant"  ? `🦷 ${a.brand} Ø${a.diameter}×${a.length}mm` :
-                     a.type === "nerve"    ? `🧠 IAN Trace (${a.axis})` :
-                     a.type === "probe"    ? `🔬 HU: ${a.hu}` :
-                     a.type}
-                  </span>
-                  <button style={styles.tinyBtn} onClick={() =>
-                    setAnnotations(prev => prev.filter((_, j) => j !== annotations.length - 8 + i))
-                  }>✕</button>
-                </div>
-              ))}
-              {annotations.length > 8 && (
-                <div style={{ fontSize: 9, opacity: 0.4, padding: "2px 0" }}>+{annotations.length - 8} more</div>
-              )}
-              {annotations.length === 0 && (
-                <div style={{ fontSize: 9, opacity: 0.3, padding: "4px 0" }}>No annotations yet</div>
-              )}
-            </div>
-
-            <div style={styles.toolDivider} />
-
-            <div style={{ padding: "0 4px" }}>
-              <div style={styles.sectionLabel}>IMPLANTS</div>
-              {annotations.filter(a => a.type === "implant").map((imp, i) => (
-                <div key={i} style={{ fontSize: 9, color: "#93c5fd", margin: "2px 0" }}>
-                  #{i+1} {imp.brand}<br />Ø{imp.diameter} × {imp.length}mm @ {imp.angleDeg}°
-                </div>
-              ))}
-              {!annotations.find(a => a.type === "implant") && (
-                <div style={{ fontSize: 9, opacity: 0.3 }}>Use Implant tool to plan</div>
-              )}
-            </div>
-          </div>
-
-          {/* ── Viewports ── */}
-          <div style={{ ...styles.viewports, flexDirection: layout === "3up" ? "row" : "column" }}>
-            {visibleAxes.map(axis => (
-              <SlicePanel
-                key={axis}
-                axis={axis}
-                volumeId={volumeId}
-                sliceIndex={slices[axis]}
-                totalSlices={dims[axis]}
-                wc={wc} ww={ww}
-                apiBase={apiBase}
-                tool={tool}
-                zoom={zoom}
-                pan={pans[axis]}
-                crosshair={crosshair[axis]}
-                onCrosshairChange={pos => handleCrosshair(axis, pos)}
-                annotations={showAnnot ? annotations : []}
-                onAnnotationAdd={handleAnnotationAdd}
-                onSliceChange={idx => setSlices(prev => ({ ...prev, [axis]: idx }))}
-                onWindowChange={handleWindowChange}
-                onPanChange={newPan => setPans(prev => ({ ...prev, [axis]: newPan }))}
-                onZoomChange={setZoom}
-                active={activeAxis === axis}
-                onActivate={() => setActiveAxis(axis)}
-              />
             ))}
-          </div>
-        </div>
-
-        {/* ── Status bar ─────────────────────────── */}
-        <div style={styles.statusBar}>
-          <span>Tool: <b style={{ color: "#22d3ee" }}>{TOOLS.find(t=>t.id===tool)?.label}</b></span>
-          <span>Slices: Ax {slices.axial+1}/{dims.axial} · Co {slices.coronal+1}/{dims.coronal} · Sa {slices.sagittal+1}/{dims.sagittal}</span>
-          <span>WC:{wc} WW:{ww} · Zoom:{Math.round(zoom*100)}%</span>
-          <span style={{ opacity: 0.4 }}>Scroll=slice · Ctrl+Scroll=zoom · Drag(window tool)=W/L</span>
-        </div>
-
-        {/* ── Info panel overlay ─────────────────── */}
-        {showInfo && meta && (
-          <div style={styles.infoPanel}>
-            <button style={{ ...styles.iconBtn, position: "absolute", top: 8, right: 8 }}
-              onClick={() => setShowInfo(false)}>✕</button>
-            <h3 style={{ color: "#60a5fa", fontFamily: "monospace", margin: "0 0 12px" }}>Volume Info</h3>
-            {[
-              ["Patient",         meta.patient_name],
-              ["Study Date",      meta.study_date],
-              ["Axial Slices",    meta.dimensions?.axial],
-              ["Coronal Slices",  meta.dimensions?.coronal],
-              ["Sagittal Slices", meta.dimensions?.sagittal],
-              ["Rows × Cols",     `${meta.dimensions?.rows} × ${meta.dimensions?.cols}`],
-              ["Voxel X",         `${meta.voxel_spacing?.x?.toFixed(3)} mm`],
-              ["Voxel Y",         `${meta.voxel_spacing?.y?.toFixed(3)} mm`],
-              ["Voxel Z",         `${meta.voxel_spacing?.z?.toFixed(3)} mm`],
-              ["Uploaded",        meta.uploaded_at],
-              ["Notes",           meta.notes],
-            ].map(([k, v]) => v ? (
-              <div key={k} style={{ display: "flex", gap: 12, marginBottom: 6 }}>
-                <span style={{ color: "#64748b", fontSize: 11, width: 110, flexShrink: 0 }}>{k}</span>
-                <span style={{ color: "#e2e8f0", fontSize: 11 }}>{v}</span>
-              </div>
-            ) : null)}
-            <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid #1e293b" }}>
-              <div style={styles.sectionLabel}>NERVE SAFETY REMINDER</div>
-              <p style={{ fontSize: 10, color: "#fbbf24", margin: "4px 0 0" }}>
-                Always verify IAN canal tracing with clinical judgment.
-                Maintain ≥2 mm safety margin from identified nerve canal.
-              </p>
-            </div>
           </div>
         )}
 
-        {/* ── Implant dialog ─────────────────────── */}
-        {implantReq && (
-          <ImplantDialog
-            request={implantReq}
-            onConfirm={handleImplantConfirm}
-            onCancel={() => setImplantReq(null)}
-          />
+        {/* ── Viewer grid ── */}
+        <div style={{
+          ...styles.viewerGrid,
+          gridTemplateColumns: layout === "quad" ? "1fr 1fr" : "1fr",
+          gridTemplateRows:    layout === "quad" ? "1fr 1fr" : "1fr",
+        }}>
+          {visibleViews.map(view => (
+            <MPRPanel
+              key={view}
+              view={view}
+              volumeData={volumeData}
+              sliceIndex={slices[view]}
+              totalSlices={totalSlices[view]}
+              wl={wl}
+              zoom={zooms[view]}
+              pan={pans[view]}
+              crosshair={crosshair}
+              activeTool={activeTool}
+              activeImplant={activeImplant}
+              annotations={annotations}
+              highlighted={activePanel === view}
+              onClick={() => setActivePanel(view)}
+              onSliceChange={v => setSlices(prev => ({ ...prev, [view]: clamp(v, 0, totalSlices[view] - 1) }))}
+              onWLChange={setWl}
+              onZoomChange={v => setZooms(prev => ({ ...prev, [view]: v }))}
+              onPanChange={v  => setPans(prev  => ({ ...prev, [view]: v }))}
+              onCrosshairChange={setCrosshair}
+              onAnnotationAdd={item  => dispatch({ type: "ADD",    item  })}
+              onAnnotationRemove={index => dispatch({ type: "REMOVE", index })}
+            />
+          ))}
+
+          {/* 3D preview placeholder (quad only) */}
+          {layout === "quad" && (
+            <div style={styles.panel3D}>
+              <div style={styles.panel3DLabel}>3D</div>
+              <div style={styles.panel3DContent}>
+                <div style={styles.panel3DGlobe}>
+                  {volumeMeta ? (
+                    <>
+                      <div style={styles.panel3DTitle}>Volume Preview</div>
+                      <div style={styles.panel3DStat}>{volumeMeta.num_slices} axial slices</div>
+                      <div style={styles.panel3DStat}>
+                        {volumeMeta.dimensions?.rows}×{volumeMeta.dimensions?.cols} px
+                      </div>
+                      <div style={styles.panel3DStat}>
+                        {volumeMeta.voxel_spacing?.x?.toFixed(2)} mm/vx
+                      </div>
+                      <div style={styles.panel3DHint}>
+                        3D rendering available in<br />full desktop mode
+                      </div>
+                    </>
+                  ) : (
+                    <div style={styles.panel3DHint}>No volume loaded</div>
+                  )}
+                </div>
+                <div style={styles.crosshairIndicator}>
+                  AX {slices.axial+1} · COR {slices.coronal+1} · SAG {slices.sagittal+1}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* ── Right sidebar ── */}
+        {showSidebar && (
+          <div style={styles.sidebar}>
+            <div style={styles.sidebarSection}>
+              <div style={styles.sidebarTitle}>Window / Level</div>
+              <div style={styles.wlRow}>
+                <label style={styles.wlLabel}>W</label>
+                <input type="range" min={1} max={6000} value={wl.window}
+                  onChange={e => setWl(prev => ({ ...prev, window: Number(e.target.value) }))}
+                  style={styles.wlRange} />
+                <span style={styles.wlVal}>{Math.round(wl.window)}</span>
+              </div>
+              <div style={styles.wlRow}>
+                <label style={styles.wlLabel}>L</label>
+                <input type="range" min={-1000} max={3000} value={wl.level}
+                  onChange={e => setWl(prev => ({ ...prev, level: Number(e.target.value) }))}
+                  style={styles.wlRange} />
+                <span style={styles.wlVal}>{Math.round(wl.level)}</span>
+              </div>
+            </div>
+
+            <div style={styles.sidebarSection}>
+              <div style={styles.sidebarTitle}>Slice Navigator</div>
+              {VIEWS.map(v => (
+                <div key={v} style={styles.sliceRow}>
+                  <span style={{ ...styles.sliceLabel, color: VIEW_COLORS[v] }}>{VIEW_LABELS[v]}</span>
+                  <input
+                    type="range" min={0} max={totalSlices[v] - 1} value={slices[v]}
+                    onChange={e => setSlices(prev => ({ ...prev, [v]: Number(e.target.value) }))}
+                    style={styles.wlRange}
+                  />
+                  <span style={styles.wlVal}>{slices[v]+1}/{totalSlices[v]}</span>
+                </div>
+              ))}
+            </div>
+
+            <div style={styles.sidebarSection}>
+              <div style={styles.sidebarTitle}>
+                Annotations
+                <span style={styles.annoBadge}>{annotations.length}</span>
+              </div>
+              {annotations.length === 0 ? (
+                <div style={styles.annoEmpty}>No annotations yet.</div>
+              ) : (
+                <div style={styles.annoList}>
+                  {annotations.map((a, i) => (
+                    <div key={i} style={styles.annoItem}>
+                      <span style={{ ...styles.annoType, color: a.color || "#facc15" }}>
+                        {a.type === "distance" ? "↔" : a.type === "angle" ? "∠" : a.type === "hu" ? "⬤" : a.type === "implant" ? "⊥" : "~"}
+                      </span>
+                      <span style={styles.annoText}>
+                        {a.type === "distance" ? a.measurement  :
+                         a.type === "angle"    ? `${a.measurement}°` :
+                         a.type === "hu"       ? `${a.hu} HU`   :
+                         a.type === "implant"  ? a.implant?.brand :
+                         "IAN"}
+                        <span style={styles.annoView}> [{VIEW_LABELS[a.view]}]</span>
+                      </span>
+                      <button
+                        style={styles.annoDelBtn}
+                        onClick={() => dispatch({ type: "REMOVE", index: i })}
+                      >✕</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div style={styles.sidebarSection}>
+              <div style={styles.sidebarTitle}>Active Implant</div>
+              <div style={{ color: activeImplant.color, fontSize: 12, fontWeight: 600 }}>
+                {activeImplant.brand}
+              </div>
+              <div style={{ color: "#64748b", fontSize: 11 }}>
+                Ø{activeImplant.diameter} × {activeImplant.length}mm
+              </div>
+              <button style={styles.changeImplantBtn} onClick={() => setShowImplants(true)}>
+                Change implant
+              </button>
+            </div>
+
+            <div style={styles.sidebarSection}>
+              <div style={styles.sidebarTitle}>Keyboard Shortcuts</div>
+              <div style={styles.kbGrid}>
+                {[
+                  ["S", "Scroll"],   ["P", "Pan"],     ["Z", "Zoom"],
+                  ["W", "W/L"],      ["D", "Distance"],["A", "Angle"],
+                  ["H", "HU"],       ["I", "Implant"], ["N", "IAN"],
+                  ["E", "Erase"],    ["Space", "Cine"],["Tab", "Next panel"],
+                  ["↑↓", "Scroll active"],
+                ].map(([k, v]) => (
+                  <React.Fragment key={k}>
+                    <kbd style={styles.kbd}>{k}</kbd>
+                    <span style={styles.kbLabel}>{v}</span>
+                  </React.Fragment>
+                ))}
+              </div>
+            </div>
+          </div>
         )}
       </div>
-    </>
+    </div>
   );
 }
 
-// ─── Styles ───────────────────────────────────────────────────────────────────
-
-const styles = {
-  root:         { position: "fixed", inset: 0, zIndex: 9999, background: "#020617", display: "flex", flexDirection: "column", fontFamily: "'JetBrains Mono', 'Fira Code', monospace", color: "#e2e8f0" },
-  fullScreen:   { position: "fixed", inset: 0, zIndex: 9999, background: "#020617", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 16 },
-  topBar:       { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 16px", background: "#0f172a", borderBottom: "1px solid #1e293b", flexShrink: 0, gap: 12 },
-  topLeft:      { display: "flex", alignItems: "center", gap: 12, minWidth: 0 },
-  logo:         { color: "#60a5fa", fontWeight: 700, fontSize: 14, whiteSpace: "nowrap" },
-  patientChip:  { background: "#1e293b", color: "#94a3b8", fontSize: 11, padding: "3px 10px", borderRadius: 12, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
-  topCenter:    { display: "flex", gap: 4 },
-  topRight:     { display: "flex", gap: 6, alignItems: "center" },
-  layoutBtn:    { background: "#1e293b", color: "#64748b", border: "1px solid #334155", borderRadius: 4, padding: "4px 10px", fontSize: 11, cursor: "pointer", transition: "all 0.15s" },
-  layoutBtnActive: { background: "#1d4ed8", color: "#fff", borderColor: "#3b82f6" },
-  iconBtn:      { background: "transparent", color: "#94a3b8", border: "none", cursor: "pointer", fontSize: 15, padding: "4px 6px", borderRadius: 4, transition: "color 0.15s" },
-  main:         { display: "flex", flex: 1, overflow: "hidden" },
-  toolbar:      { width: 148, flexShrink: 0, background: "#0f172a", borderRight: "1px solid #1e293b", overflowY: "auto", display: "flex", flexDirection: "column", gap: 0, padding: "8px 0" },
-  toolSection:  { display: "flex", flexDirection: "column", gap: 2, padding: "0 4px" },
-  toolBtn:      { display: "flex", flexDirection: "column", alignItems: "center", background: "transparent", border: "1px solid transparent", borderRadius: 6, padding: "6px 4px", cursor: "pointer", color: "#94a3b8", transition: "all 0.15s" },
-  toolBtnActive:{ background: "#1e3a5f", borderColor: "#3b82f6", color: "#60a5fa" },
-  toolDivider:  { height: 1, background: "#1e293b", margin: "8px 8px" },
-  sectionLabel: { fontSize: 9, color: "#475569", letterSpacing: 1, marginBottom: 4, paddingLeft: 2 },
-  presetBtn:    { display: "block", width: "100%", textAlign: "left", background: "transparent", border: "none", color: "#94a3b8", padding: "3px 4px", fontSize: 11, cursor: "pointer", borderRadius: 4, transition: "background 0.1s" },
-  sliderRow:    { display: "flex", alignItems: "center", gap: 4, marginBottom: 4 },
-  sliderLabel:  { fontSize: 9, color: "#64748b", width: 22, flexShrink: 0 },
-  sliderVal:    { fontSize: 9, color: "#94a3b8", width: 34, textAlign: "right", flexShrink: 0 },
-  annotRow:     { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "2px 0", borderBottom: "1px solid #0f172a" },
-  tinyBtn:      { background: "transparent", border: "none", color: "#475569", cursor: "pointer", fontSize: 10, padding: "0 2px" },
-  viewports:    { flex: 1, display: "flex", gap: 4, padding: 4, overflow: "hidden" },
-  statusBar:    { display: "flex", gap: 24, alignItems: "center", padding: "5px 16px", background: "#0f172a", borderTop: "1px solid #1e293b", fontSize: 10, color: "#475569", flexShrink: 0 },
-  modal:        { position: "absolute", inset: 0, background: "#00000099", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 },
-  modalBox:     { background: "#0f172a", border: "1px solid #334155", borderRadius: 10, padding: 24, minWidth: 280, boxShadow: "0 20px 60px #0008" },
-  label:        { display: "block", fontSize: 11, color: "#64748b", marginBottom: 4, marginTop: 12 },
-  select:       { width: "100%", background: "#1e293b", border: "1px solid #334155", color: "#e2e8f0", padding: "6px 8px", borderRadius: 6, fontSize: 12 },
-  btnPrimary:   { flex: 1, background: "#1d4ed8", color: "#fff", border: "none", borderRadius: 6, padding: "8px 16px", cursor: "pointer", fontSize: 13 },
-  btnSecondary: { flex: 1, background: "#1e293b", color: "#94a3b8", border: "1px solid #334155", borderRadius: 6, padding: "8px 16px", cursor: "pointer", fontSize: 13 },
-  infoPanel:    { position: "absolute", top: 56, right: 16, width: 300, background: "#0f172a", border: "1px solid #334155", borderRadius: 10, padding: 20, zIndex: 50, boxShadow: "0 20px 60px #0008" },
+// ─── Styles ──────────────────────────────────────────────────────────────────
+const C = {
+  bg:      "#020617",
+  surface: "#0f172a",
+  border:  "#1e293b",
+  text:    "#e2e8f0",
+  muted:   "#64748b",
+  blue:    "#3b82f6",
+  green:   "#22c55e",
 };
 
-const CSS = `
-  .cbct-canvas { display: block; width: 100%; height: 100%; }
-  input[type=range] { height: 4px; }
-  button:hover { opacity: 0.85; }
-  ::-webkit-scrollbar { width: 4px; background: #0f172a; }
-  ::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 2px; }
-`;
+const styles = {
+  root: {
+    display: "flex", flexDirection: "column",
+    width: "100vw", height: "100vh",
+    background: C.bg, color: C.text,
+    fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+    overflow: "hidden", userSelect: "none",
+  },
+  topBar: {
+    display: "flex", justifyContent: "space-between", alignItems: "center",
+    height: 48, padding: "0 16px",
+    background: C.surface, borderBottom: `1px solid ${C.border}`,
+    flexShrink: 0,
+  },
+  topLeft:  { display: "flex", alignItems: "center", gap: 16 },
+  topRight: { display: "flex", alignItems: "center", gap: 4 },
+  topSep:   { width: 1, height: 20, background: C.border, margin: "0 4px" },
+  logo:     { fontSize: 15, fontWeight: 700, color: C.blue, letterSpacing: "-0.5px" },
+  metaChip: { display: "flex", gap: 6, alignItems: "center" },
+  metaField:{ color: C.muted, fontSize: 11 },
+  metaDot:  { color: C.border, fontSize: 11 },
+  topBtn: {
+    background: C.border, border: "none", color: C.text,
+    padding: "5px 10px", borderRadius: 6, fontSize: 11,
+    cursor: "pointer", fontFamily: "inherit",
+  },
+  topBtnActive: { background: C.blue,    color: "#fff" },
+  topBtnSaved:  { background: "#15803d", color: "#fff" },
+  select: {
+    background: C.border, border: "none", color: C.text,
+    padding: "4px 8px", borderRadius: 6, fontSize: 11,
+    cursor: "pointer", fontFamily: "inherit",
+  },
+  body: {
+    display: "flex", flex: 1, overflow: "hidden", position: "relative",
+  },
+  toolbar: {
+    display: "flex", flexDirection: "column", gap: 4,
+    width: 44, padding: "8px 4px",
+    background: C.surface, borderRight: `1px solid ${C.border}`,
+    flexShrink: 0, overflowY: "auto",
+  },
+  toolBtn: {
+    background: "transparent", border: "none", color: C.muted,
+    width: 36, height: 36, borderRadius: 8, fontSize: 16,
+    cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+    transition: "all 0.15s", fontFamily: "inherit",
+  },
+  toolBtnActive: { background: "#1d4ed8", color: "#93c5fd" },
+  toolSep:       { height: 1, background: C.border, margin: "4px 0" },
+  presetBtn: {
+    background: "transparent", border: "none", color: C.muted,
+    fontSize: 9, cursor: "pointer", fontFamily: "inherit",
+    padding: "2px 0", textAlign: "center",
+  },
+  viewerGrid: {
+    flex: 1, display: "grid", gap: 2, overflow: "hidden", background: "#000",
+  },
+  panelWrap: {
+    position: "relative", background: "#000", overflow: "hidden",
+    transition: "border-color 0.2s",
+  },
+  panelLabel: {
+    position: "absolute", top: 8, left: 10, zIndex: 10,
+    fontSize: 11, fontWeight: 700, letterSpacing: 1,
+    textShadow: "0 1px 4px rgba(0,0,0,0.8)",
+  },
+  panelCanvas: {
+    position: "absolute", top: 0, left: 0,
+    width: "100%", height: "100%", objectFit: "contain",
+  },
+  panelOverlay: { zIndex: 5 },
+  sliceSlider: {
+    position: "absolute", bottom: 4, left: "50%", transform: "translateX(-50%)",
+    width: "80%", zIndex: 10, accentColor: C.blue, cursor: "pointer",
+  },
+  wlOverlay: {
+    position: "absolute", bottom: 24, right: 6, zIndex: 10,
+    color: C.muted, fontSize: 9, fontFamily: "monospace",
+    textShadow: "0 1px 2px #000",
+  },
+  resetPanBtn: {
+    position: "absolute", top: 6, right: 6, zIndex: 10,
+    background: "rgba(0,0,0,0.4)", border: "none", color: C.muted,
+    fontSize: 14, width: 22, height: 22, borderRadius: 4, cursor: "pointer",
+    display: "flex", alignItems: "center", justifyContent: "center",
+  },
+  panel3D: {
+    position: "relative", background: "#020617", overflow: "hidden",
+    border: `2px solid ${C.border}`,
+  },
+  panel3DLabel: {
+    position: "absolute", top: 8, left: 10, zIndex: 10,
+    fontSize: 11, fontWeight: 700, color: "#a78bfa", letterSpacing: 1,
+  },
+  panel3DContent: {
+    width: "100%", height: "100%",
+    display: "flex", alignItems: "center", justifyContent: "center",
+    flexDirection: "column", gap: 8,
+  },
+  panel3DGlobe: {
+    border: "1px solid #1e3a5f", borderRadius: "50%", width: 180, height: 180,
+    display: "flex", flexDirection: "column",
+    alignItems: "center", justifyContent: "center", gap: 4,
+    background: "radial-gradient(circle at 40% 40%, #0c1a2e 0%, #020617 70%)",
+    boxShadow: "0 0 60px #1d4ed822",
+  },
+  panel3DTitle: { color: "#a78bfa", fontSize: 12, fontWeight: 700, marginBottom: 4 },
+  panel3DStat:  { color: "#475569", fontSize: 10 },
+  panel3DHint:  { color: "#334155", fontSize: 10, marginTop: 8, textAlign: "center", lineHeight: 1.5 },
+  crosshairIndicator: {
+    position: "absolute", bottom: 10, left: "50%", transform: "translateX(-50%)",
+    color: "#334155", fontSize: 10, fontFamily: "monospace",
+  },
+  implantPicker: {
+    position: "absolute", top: 52, left: 48, zIndex: 100,
+    background: C.surface, border: `1px solid ${C.border}`,
+    borderRadius: 10, padding: 12, width: 240,
+    boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
+  },
+  implantPickerTitle: {
+    fontSize: 12, fontWeight: 700, color: C.text, marginBottom: 8,
+    display: "flex", justifyContent: "space-between",
+  },
+  implantClose: {
+    background: "none", border: "none", color: C.muted, cursor: "pointer", fontSize: 14, padding: 0,
+  },
+  implantRow: {
+    display: "flex", alignItems: "center", gap: 8,
+    padding: "6px 8px", borderRadius: 6, cursor: "pointer",
+    marginBottom: 2, transition: "background 0.1s",
+  },
+  implantName: { color: C.text, fontSize: 11, flex: 1 },
+  implantDims: { color: C.muted, fontSize: 10 },
+  sidebar: {
+    width: 220, background: C.surface, borderLeft: `1px solid ${C.border}`,
+    overflowY: "auto", flexShrink: 0,
+    display: "flex", flexDirection: "column", gap: 0,
+  },
+  sidebarSection: { padding: "12px 14px", borderBottom: `1px solid ${C.border}` },
+  sidebarTitle: {
+    fontSize: 10, fontWeight: 700, color: C.muted,
+    letterSpacing: 1, textTransform: "uppercase", marginBottom: 8,
+    display: "flex", alignItems: "center", gap: 6,
+  },
+  wlRow:    { display: "flex", alignItems: "center", gap: 6, marginBottom: 6 },
+  wlLabel:  { color: C.muted, fontSize: 10, width: 10 },
+  wlRange:  { flex: 1, accentColor: C.blue, cursor: "pointer" },
+  wlVal:    { color: C.muted, fontSize: 10, width: 36, textAlign: "right" },
+  sliceRow: { display: "flex", alignItems: "center", gap: 6, marginBottom: 5 },
+  sliceLabel: { fontSize: 10, fontWeight: 700, width: 28 },
+  annoBadge: {
+    background: "#1d4ed8", color: "#93c5fd",
+    fontSize: 9, padding: "1px 6px", borderRadius: 8, marginLeft: 4,
+  },
+  annoEmpty: { color: "#334155", fontSize: 11 },
+  annoList:  { display: "flex", flexDirection: "column", gap: 4 },
+  annoItem: {
+    display: "flex", alignItems: "center", gap: 6,
+    background: "#0f172a", borderRadius: 6, padding: "4px 6px",
+  },
+  annoType:   { fontSize: 12, width: 14 },
+  annoText:   { flex: 1, color: C.text, fontSize: 10 },
+  annoView:   { color: C.muted },
+  annoDelBtn: {
+    background: "none", border: "none", color: "#475569",
+    cursor: "pointer", fontSize: 11, padding: 0,
+  },
+  changeImplantBtn: {
+    marginTop: 6, background: C.border, border: "none",
+    color: C.muted, fontSize: 10, padding: "4px 8px",
+    borderRadius: 5, cursor: "pointer", fontFamily: "inherit",
+  },
+  kbGrid: {
+    display: "grid", gridTemplateColumns: "auto 1fr",
+    gap: "4px 8px", alignItems: "center",
+  },
+  kbd:     { background: C.border, color: C.text, padding: "1px 5px", borderRadius: 3, fontSize: 9, fontFamily: "monospace" },
+  kbLabel: { color: C.muted, fontSize: 10 },
+  loadingScreen: {
+    display: "flex", alignItems: "center", justifyContent: "center",
+    width: "100vw", height: "100vh", background: C.bg,
+    flexDirection: "column", gap: 16,
+  },
+  loadingInner:  { display: "flex", flexDirection: "column", alignItems: "center", gap: 12 },
+  loadingSpinner: {
+    width: 40, height: 40, borderRadius: "50%",
+    border: `3px solid ${C.border}`, borderTop: `3px solid ${C.blue}`,
+    animation: "spin 0.8s linear infinite",
+  },
+  loadingMsg: { color: C.blue,  fontSize: 14 },
+  loadingSub: { color: C.muted, fontSize: 11 },
+};
