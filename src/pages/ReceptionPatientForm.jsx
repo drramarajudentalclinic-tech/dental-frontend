@@ -584,8 +584,12 @@ export default function ReceptionPatientForm() {
      doctor view.
   ══════════════════════════════════════════ */
   const savePatient = async () => {
-    if (!personal.mobile) { alert("Mobile number is required."); return; }
-    if (!consent.agreed)  { alert("Patient consent must be acknowledged before saving."); return; }
+    if (!personal.name)        { alert("Full name is required.");     return; }
+    if (!personal.case_number) { alert("Case number is required.");   return; }
+    if (!personal.age)         { alert("Age is required.");           return; }
+    if (!personal.gender)      { alert("Gender is required.");        return; }
+    if (!personal.mobile)      { alert("Mobile number is required."); return; }
+    if (!consent.agreed)       { alert("Patient consent must be acknowledged before saving."); return; }
     setSaving(true);
     try {
       let patientId = id;
@@ -682,13 +686,13 @@ export default function ReceptionPatientForm() {
               <Field label="Full Name" required>
                 <input className="rpf-input" placeholder="e.g. Arjun Mehta" value={personal.name} onChange={p("name")} />
               </Field>
-              <Field label="Case Number">
+              <Field label="Case Number" required>
                 <input className="rpf-input" placeholder="Auto / Manual" value={personal.case_number} onChange={p("case_number")} />
               </Field>
               <Field label="Registration Date">
                 <input type="date" className="rpf-input" value={personal.date} onChange={p("date")} />
               </Field>
-              <Field label="Gender">
+              <Field label="Gender" required>
                 <select className="rpf-select rpf-input" value={personal.gender} onChange={p("gender")}>
                   <option value="">Select gender</option>
                   <option>Male</option>
@@ -699,7 +703,7 @@ export default function ReceptionPatientForm() {
               <Field label="Date of Birth">
                 <input type="date" className="rpf-input" value={personal.dob} onChange={handleDobChange} max={todayDate} />
               </Field>
-              <Field label="Age (Years)">
+              <Field label="Age (Years)" required>
                 <div style={{ position: "relative" }}>
                   <input
                     className="rpf-input"
@@ -818,8 +822,8 @@ export default function ReceptionPatientForm() {
             <button
               className="rpf-save-btn"
               onClick={savePatient}
-              disabled={saving || !consent.agreed}
-              style={!consent.agreed ? { opacity: 0.55, cursor: "not-allowed" } : {}}
+              disabled={saving || !consent.agreed || !personal.name || !personal.case_number || !personal.age || !personal.gender || !personal.mobile}
+              style={(!consent.agreed || !personal.name || !personal.case_number || !personal.age || !personal.gender || !personal.mobile) ? { opacity: 0.55, cursor: "not-allowed" } : {}}
             >
               {saving ? (
                 <span style={{ display: "flex", alignItems: "center", gap: 9 }}>
