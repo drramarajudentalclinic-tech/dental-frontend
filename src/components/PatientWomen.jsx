@@ -73,6 +73,11 @@ export default function PatientWomen({ data = {}, setData }) {
         </YesNoField>
 
         <YesNoField field="nursing_child" label="Are you nursing a child?" />
+          <YesNoField
+    field="no_known_women_conditions"
+    label="No Known Women Conditions"
+  />
+</div>
       </div>
     </div>
   );
