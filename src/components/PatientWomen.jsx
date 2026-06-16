@@ -53,34 +53,34 @@ export default function PatientWomen({ data = {}, setData }) {
     );
   };
 
-  return (
-    <div style={styles.section}>
-      <div style={styles.subHeading}>
-        <span style={styles.subHeadingBar} />
-        Women's Health History
-      </div>
-      <div style={styles.grid}>
-        <YesNoField field="pregnant" label="Are you pregnant?">
-          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            <label style={styles.detailLabel}>Expected Due Date</label>
-            <input
-              type="date"
-              style={styles.detailInput}
-              value={data.due_date || ""}
-              onChange={(e) => setData({ ...data, due_date: e.target.value })}
-            />
-          </div>
-        </YesNoField>
-
-        <YesNoField field="nursing_child" label="Are you nursing a child?" />
-          <YesNoField
-    field="no_known_women_conditions"
-    label="No Known Women Conditions"
-  />
-</div>
-      </div>
+ return (
+  <div style={styles.section}>
+    <div style={styles.subHeading}>
+      <span style={styles.subHeadingBar} />
+      Women's Health History
     </div>
-  );
+    <div style={styles.grid}>
+      <YesNoField field="pregnant" label="Are you pregnant?">
+        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          <label style={styles.detailLabel}>Expected Due Date</label>
+          <input
+            type="date"
+            style={styles.detailInput}
+            value={data.due_date || ""}
+            onChange={(e) => setData({ ...data, due_date: e.target.value })}
+          />
+        </div>
+      </YesNoField>
+
+      <YesNoField field="nursing_child" label="Are you nursing a child?" />
+
+      <YesNoField
+        field="no_known_women_conditions"
+        label="No Known Women Conditions"
+      />
+    </div>
+  </div>
+);
 }
 
 const styles = {
