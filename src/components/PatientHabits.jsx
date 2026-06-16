@@ -80,6 +80,10 @@ export default function PatientHabits({ data = {}, setData }) {
           label="Tobacco"
           detailPlaceholder="e.g. Chewing / Smoking"
         />
+        <YesNoField
+  field="no_known_habits"
+  label="No Known Habits"
+/>
       </div>
     </div>
   );

@@ -518,9 +518,28 @@ export default function ReceptionPatientForm() {
   const [chiefComplaint, setChiefComplaint] = useState("");
   const [familyDoctor, setFamilyDoctor]     = useState({ doctor_name: "", doctor_address: "", doctor_phone: "" });
   const [medical, setMedical]               = useState({});
-  const [allergy, setAllergy]               = useState({ rows: [] });
-  const [habits, setHabits]                 = useState({});
-  const [women, setWomen]                   = useState({ pregnant: false, due_date: "", nursing_child: false });
+const [allergy, setAllergy] = useState({
+  drug_allergy: null,
+  food_allergy: null,
+  latex_allergy: null,
+  iodine_allergy: null,
+  anesthesia_allergy: null,
+  other_allergy: null,
+  other_allergy_detail: "",
+  no_known_allergies: null,
+});
+  const [habits, setHabits] = useState({
+  smoking: "",
+  alcohol: "",
+  tobacco: "",
+  no_known_habits: "",
+});
+  const [women, setWomen] = useState({
+  pregnant: null,
+  due_date: "",
+  nursing_child: null,
+  no_known_women_conditions: null,
+});
   const [consent, setConsent]               = useState({
     agreed: false,
     signature: "",

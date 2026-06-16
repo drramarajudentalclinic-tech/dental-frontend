@@ -56,13 +56,14 @@ export default function PatientAllergy({ patientId, readOnly = false }) {
   };
 
   const FIELDS = [
-    { key: "drug_allergy",       label: "Drug Allergy" },
-    { key: "food_allergy",       label: "Food Allergy" },
-    { key: "latex_allergy",      label: "Latex Allergy" },
-    { key: "iodine_allergy",     label: "Iodine Allergy" },
-    { key: "anesthesia_allergy", label: "Anesthesia Allergy" },
-    { key: "other_allergy",      label: "Other Allergy" },
-  ];
+  { key: "drug_allergy", label: "Drug Allergy" },
+  { key: "food_allergy", label: "Food Allergy" },
+  { key: "latex_allergy", label: "Latex Allergy" },
+  { key: "iodine_allergy", label: "Iodine Allergy" },
+  { key: "anesthesia_allergy", label: "Anesthesia Allergy" },
+  { key: "other_allergy", label: "Other Allergy" },
+  { key: "no_known_allergies", label: "No Known Allergies" },
+];
 
   const YesNoField = ({ fieldKey, label }) => {
     const val = allergy[fieldKey]; // null | true | false
