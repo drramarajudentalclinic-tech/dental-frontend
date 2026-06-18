@@ -310,81 +310,125 @@ const severityColor = { Mild: "#16a34a", Moderate: "#d97706", Severe: "#dc2626",
 const emptyAllergyRow = () => ({ id: Date.now() + Math.random(), type: "", allergen: "", reaction: "", severity: "", notes: "" });
 
 const PatientAllergyTable = ({ data, setData }) => {
-  const rows = data.rows || [];
-  const setRows = (r) => setData({ ...data, rows: r });
+  const noKnown   = data.no_known_allergies || false;
+  // Always start with one blank row so the table is visible on load
+  const rows      = (data.rows && data.rows.length > 0) ? data.rows : [emptyAllergyRow()];
+  const setRows   = (r) => setData({ ...data, rows: r, no_known_allergies: false });
   const addRow    = () => setRows([...rows, emptyAllergyRow()]);
-  const deleteRow = (id) => setRows(rows.filter((r) => r.id !== id));
+  const deleteRow = (id) => {
+    const next = rows.filter((r) => r.id !== id);
+    setData({ ...data, rows: next.length > 0 ? next : [emptyAllergyRow()], no_known_allergies: false });
+  };
   const updateRow = (id, field, value) =>
-    setRows(rows.map((r) => (r.id === id ? { ...r, [field]: value } : r)));
+    setData({ ...data, rows: rows.map((r) => (r.id === id ? { ...r, [field]: value } : r)), no_known_allergies: false });
+
+  const toggleNoKnown = () => {
+    setData({ ...data, rows: [], no_known_allergies: !noKnown });
+  };
 
   return (
     <div>
-      <div className="rpf-sub-heading">Allergy Records</div>
-      {rows.length === 0 ? (
-        <div style={{
-          textAlign: "center", padding: "30px 0",
-          color: "#94a3b8", fontSize: 13.5,
-          background: "#f8faff", borderRadius: 10,
-          border: "1.5px dashed #d0ddf8",
+      {/* Header row with title + No Known Allergies checkbox */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+        <div className="rpf-sub-heading" style={{ marginBottom: 0 }}>Allergy Records</div>
+        <label style={{
+          display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none",
+          background: noKnown ? "#ecfdf5" : "#f8faff",
+          border: `1.5px solid ${noKnown ? "#10b981" : "#d0ddf8"}`,
+          borderRadius: 20, padding: "5px 14px", transition: "all 0.2s",
         }}>
-          No allergies recorded. Click <strong style={{ color: "#2563eb" }}>+ Add Allergy</strong> to begin.
+          <div
+            onClick={toggleNoKnown}
+            style={{
+              width: 16, height: 16, borderRadius: 4, flexShrink: 0,
+              border: `2px solid ${noKnown ? "#10b981" : "#c5d5ef"}`,
+              background: noKnown ? "#10b981" : "#fff",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              transition: "all 0.2s",
+            }}
+          >
+            {noKnown && (
+              <svg width="9" height="7" viewBox="0 0 9 7" fill="none">
+                <path d="M1 3.5L3.5 6L8 1" stroke="#fff" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+            )}
+          </div>
+          <span onClick={toggleNoKnown} style={{
+            fontSize: 12, fontWeight: 700, letterSpacing: "0.3px",
+            color: noKnown ? "#065f46" : "#6b7a99",
+          }}>
+            No Known Allergies
+          </span>
+        </label>
+      </div>
+
+      {noKnown ? (
+        <div style={{
+          textAlign: "center", padding: "24px 0",
+          color: "#065f46", fontSize: 13.5, fontWeight: 600,
+          background: "#ecfdf5", borderRadius: 10,
+          border: "1.5px solid #6ee7b7",
+        }}>
+          ✓ No known allergies recorded for this patient.
         </div>
       ) : (
-        <div className="rpf-table-wrapper">
-          <table className="rpf-table">
-            <thead>
-              <tr>
-                <th style={{ width: 130 }}>Type</th>
-                <th>Allergen / Substance</th>
-                <th style={{ width: 180 }}>Reaction</th>
-                <th style={{ width: 160 }}>Severity</th>
-                <th>Notes</th>
-                <th style={{ width: 54 }}></th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => (
-                <tr key={row.id}>
-                  <td>
-                    <select className="tbl-select" value={row.type} onChange={(e) => updateRow(row.id, "type", e.target.value)}>
-                      <option value="">Select</option>
-                      {ALLERGY_TYPES.map((t) => <option key={t}>{t}</option>)}
-                    </select>
-                  </td>
-                  <td>
-                    <input className="tbl-input" placeholder="e.g. Penicillin" value={row.allergen}
-                      onChange={(e) => updateRow(row.id, "allergen", e.target.value)} />
-                  </td>
-                  <td>
-                    <select className="tbl-select" value={row.reaction} onChange={(e) => updateRow(row.id, "reaction", e.target.value)}>
-                      <option value="">Select</option>
-                      {REACTION_OPTS.map((r) => <option key={r}>{r}</option>)}
-                    </select>
-                  </td>
-                  <td>
-                    <select className="tbl-select" value={row.severity}
-                      onChange={(e) => updateRow(row.id, "severity", e.target.value)}
-                      style={row.severity ? { color: severityColor[row.severity], fontWeight: 600, borderColor: severityColor[row.severity] } : {}}>
-                      <option value="">Select</option>
-                      {SEVERITY_OPTS.map((s) => <option key={s}>{s}</option>)}
-                    </select>
-                  </td>
-                  <td>
-                    <input className="tbl-input" placeholder="Additional notes…" value={row.notes}
-                      onChange={(e) => updateRow(row.id, "notes", e.target.value)} />
-                  </td>
-                  <td>
-                    <button className="tbl-del-btn" onClick={() => deleteRow(row.id)} title="Remove">✕</button>
-                  </td>
+        <>
+          <div className="rpf-table-wrapper">
+            <table className="rpf-table">
+              <thead>
+                <tr>
+                  <th style={{ width: 130 }}>Type</th>
+                  <th>Allergen / Substance</th>
+                  <th style={{ width: 180 }}>Reaction</th>
+                  <th style={{ width: 160 }}>Severity</th>
+                  <th>Notes</th>
+                  <th style={{ width: 54 }}></th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {rows.map((row) => (
+                  <tr key={row.id}>
+                    <td>
+                      <select className="tbl-select" value={row.type} onChange={(e) => updateRow(row.id, "type", e.target.value)}>
+                        <option value="">Select</option>
+                        {ALLERGY_TYPES.map((t) => <option key={t}>{t}</option>)}
+                      </select>
+                    </td>
+                    <td>
+                      <input className="tbl-input" placeholder="e.g. Penicillin" value={row.allergen}
+                        onChange={(e) => updateRow(row.id, "allergen", e.target.value)} />
+                    </td>
+                    <td>
+                      <select className="tbl-select" value={row.reaction} onChange={(e) => updateRow(row.id, "reaction", e.target.value)}>
+                        <option value="">Select</option>
+                        {REACTION_OPTS.map((r) => <option key={r}>{r}</option>)}
+                      </select>
+                    </td>
+                    <td>
+                      <select className="tbl-select" value={row.severity}
+                        onChange={(e) => updateRow(row.id, "severity", e.target.value)}
+                        style={row.severity ? { color: severityColor[row.severity], fontWeight: 600, borderColor: severityColor[row.severity] } : {}}>
+                        <option value="">Select</option>
+                        {SEVERITY_OPTS.map((s) => <option key={s}>{s}</option>)}
+                      </select>
+                    </td>
+                    <td>
+                      <input className="tbl-input" placeholder="Additional notes…" value={row.notes}
+                        onChange={(e) => updateRow(row.id, "notes", e.target.value)} />
+                    </td>
+                    <td>
+                      <button className="tbl-del-btn" onClick={() => deleteRow(row.id)} title="Remove">✕</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <button className="tbl-add-btn" onClick={addRow}>
+            <span style={{ fontSize: 17, lineHeight: 1 }}>+</span> Add Allergy
+          </button>
+        </>
       )}
-      <button className="tbl-add-btn" onClick={addRow}>
-        <span style={{ fontSize: 17, lineHeight: 1 }}>+</span> Add Allergy
-      </button>
     </div>
   );
 };

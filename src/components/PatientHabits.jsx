@@ -1,62 +1,39 @@
 export default function PatientHabits({ data = {}, setData }) {
-  const toggle = (field, val) => {
+  const noKnown = !!data.no_known_habits;
+
+  const toggleHabit = (field) => {
+    if (noKnown) return; // disabled when No Known Habits is checked
+    const isChecked = !!data[field];
     setData({
       ...data,
-      [field]: val,
-      // clear detail text when switching to No
-      ...(val === "No" ? { [`${field}_detail`]: "" } : {}),
+      [field]: !isChecked,
+      ...(!isChecked ? {} : { [`${field}_detail`]: "" }),
     });
   };
 
-  const YesNoField = ({ field, label, detailPlaceholder }) => {
-    const val = data[field];
-    const hasDetail = val === "Yes";
-    const isAnswered = val === "Yes" || val === "No";
-
-    return (
-      <div style={styles.fieldRow}>
-        <div style={styles.labelRow}>
-          <span style={styles.label}>
-            {label}
-            <span style={styles.required}>*</span>
-          </span>
-          <div style={styles.toggleGroup}>
-            <button
-              type="button"
-              onClick={() => toggle(field, "Yes")}
-              style={{
-                ...styles.toggleBtn,
-                ...(val === "Yes" ? styles.toggleBtnYes : {}),
-              }}
-            >
-              Yes
-            </button>
-            <button
-              type="button"
-              onClick={() => toggle(field, "No")}
-              style={{
-                ...styles.toggleBtn,
-                ...(val === "No" ? styles.toggleBtnNo : {}),
-              }}
-            >
-              No
-            </button>
-          </div>
-          {!isAnswered && <span style={styles.errorMsg}>⚠ Required</span>}
-        </div>
-        {hasDetail && (
-          <input
-            style={styles.detailInput}
-            placeholder={detailPlaceholder}
-            value={data[`${field}_detail`] || ""}
-            onChange={(e) =>
-              setData({ ...data, [`${field}_detail`]: e.target.value })
-            }
-          />
-        )}
-      </div>
-    );
+  const toggleNoKnown = () => {
+    if (noKnown) {
+      // uncheck No Known Habits
+      setData({ ...data, no_known_habits: false });
+    } else {
+      // check No Known Habits → clear all habits
+      setData({
+        ...data,
+        no_known_habits: true,
+        smoking: false, smoking_detail: "",
+        alcohol: false, alcohol_detail: "",
+        tobacco: false, tobacco_detail: "",
+      });
+    }
   };
+
+  const anyHabitChecked = !!data.smoking || !!data.alcohol || !!data.tobacco;
+
+  const HABITS = [
+    { field: "smoking", label: "Smoking",  placeholder: "e.g. 5 years, 10 cigarettes/day" },
+    { field: "alcohol", label: "Alcohol",  placeholder: "e.g. Occasional, 2–3 drinks/week" },
+    { field: "tobacco", label: "Tobacco",  placeholder: "e.g. Chewing / Smoking" },
+  ];
 
   return (
     <div style={styles.section}>
@@ -64,26 +41,101 @@ export default function PatientHabits({ data = {}, setData }) {
         <span style={styles.subHeadingBar} />
         Habits
       </div>
+
       <div style={styles.grid}>
-        <YesNoField
-          field="smoking"
-          label="Smoking"
-          detailPlaceholder="e.g. 5 years, 10 cigarettes/day"
-        />
-        <YesNoField
-          field="alcohol"
-          label="Alcohol"
-          detailPlaceholder="e.g. Occasional, 2–3 drinks/week"
-        />
-        <YesNoField
-          field="tobacco"
-          label="Tobacco"
-          detailPlaceholder="e.g. Chewing / Smoking"
-        />
-        <YesNoField
-  field="no_known_habits"
-  label="No Known Habits"
-/>
+        {HABITS.map(({ field, label, placeholder }) => {
+          const checked = !!data[field];
+          const disabled = noKnown;
+          return (
+            <div
+              key={field}
+              style={{
+                ...styles.fieldRow,
+                opacity: disabled ? 0.45 : 1,
+                cursor: disabled ? "not-allowed" : "pointer",
+                borderColor: checked ? "#10b981" : styles.fieldRow.borderColor,
+                background: checked ? "#f0fdf4" : styles.fieldRow.background,
+              }}
+            >
+              <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: disabled ? "not-allowed" : "pointer" }}>
+                {/* Custom checkbox */}
+                <div
+                  onClick={() => toggleHabit(field)}
+                  style={{
+                    width: 18, height: 18, borderRadius: 5, flexShrink: 0,
+                    border: `2px solid ${checked ? "#10b981" : "#c5d5ef"}`,
+                    background: checked ? "#10b981" : "#fff",
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    transition: "all 0.18s",
+                    cursor: disabled ? "not-allowed" : "pointer",
+                  }}
+                >
+                  {checked && (
+                    <svg width="10" height="8" viewBox="0 0 10 8" fill="none">
+                      <path d="M1 4L3.8 7L9 1" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                    </svg>
+                  )}
+                </div>
+                <span style={{
+                  ...styles.label,
+                  color: checked ? "#065f46" : styles.label.color,
+                }}>
+                  {label}
+                </span>
+              </label>
+
+              {checked && (
+                <textarea
+                  rows={2}
+                  style={styles.detailInput}
+                  placeholder={placeholder}
+                  value={data[`${field}_detail`] || ""}
+                  onChange={(e) => setData({ ...data, [`${field}_detail`]: e.target.value })}
+                />
+              )}
+            </div>
+          );
+        })}
+
+        {/* No Known Habits */}
+        <div
+          style={{
+            ...styles.fieldRow,
+            opacity: anyHabitChecked ? 0.45 : 1,
+            cursor: anyHabitChecked ? "not-allowed" : "pointer",
+            borderColor: noKnown ? "#f59e0b" : styles.fieldRow.borderColor,
+            background: noKnown ? "#fffbeb" : styles.fieldRow.background,
+          }}
+        >
+          <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: anyHabitChecked ? "not-allowed" : "pointer" }}>
+            <div
+              onClick={anyHabitChecked ? undefined : toggleNoKnown}
+              style={{
+                width: 18, height: 18, borderRadius: 5, flexShrink: 0,
+                border: `2px solid ${noKnown ? "#f59e0b" : "#c5d5ef"}`,
+                background: noKnown ? "#f59e0b" : "#fff",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                transition: "all 0.18s",
+                cursor: anyHabitChecked ? "not-allowed" : "pointer",
+              }}
+            >
+              {noKnown && (
+                <svg width="10" height="8" viewBox="0 0 10 8" fill="none">
+                  <path d="M1 4L3.8 7L9 1" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              )}
+            </div>
+            <span style={{
+              ...styles.label,
+              color: noKnown ? "#92400e" : styles.label.color,
+            }}>
+              No Known Habits
+            </span>
+          </label>
+          {anyHabitChecked && !noKnown && (
+            <span style={styles.mutualNote}>Uncheck habits above to enable</span>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -103,8 +155,8 @@ const styles = {
   },
   grid: {
     display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
-    gap: 14,
+    gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+    gap: 12,
   },
   fieldRow: {
     background: "#f8faff",
@@ -112,45 +164,23 @@ const styles = {
     borderRadius: 10,
     padding: "12px 14px",
     display: "flex", flexDirection: "column", gap: 8,
-  },
-  labelRow: {
-    display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
+    transition: "all 0.18s",
   },
   label: {
     fontSize: 12, fontWeight: 700, color: "#475569",
     letterSpacing: "0.4px", textTransform: "uppercase",
-    flex: 1,
-  },
-  required: { color: "#e03e3e", marginLeft: 2 },
-  toggleGroup: { display: "flex", gap: 5 },
-  toggleBtn: {
-    padding: "4px 14px",
-    borderRadius: 20,
-    border: "1.5px solid #d1d9ef",
-    background: "#fff",
-    color: "#6b7a99",
-    fontSize: 12, fontWeight: 600,
-    cursor: "pointer",
-    transition: "all 0.15s",
-    fontFamily: "inherit",
-  },
-  toggleBtnYes: {
-    background: "#ecfdf5", borderColor: "#10b981",
-    color: "#065f46",
-  },
-  toggleBtnNo: {
-    background: "#fff0f0", borderColor: "#f87171",
-    color: "#991b1b",
-  },
-  errorMsg: {
-    fontSize: 11, color: "#e03e3e", fontWeight: 600,
+    userSelect: "none",
   },
   detailInput: {
     width: "100%", padding: "8px 11px",
-    border: "1.5px solid #dde8fb", borderRadius: 8,
+    border: "1.5px solid #6ee7b7", borderRadius: 8,
     fontFamily: "inherit", fontSize: 13, color: "#1a1f36",
-    background: "#fff", outline: "none",
+    background: "#fff", outline: "none", resize: "vertical",
     transition: "border-color 0.18s",
     boxSizing: "border-box",
+    lineHeight: 1.5,
+  },
+  mutualNote: {
+    fontSize: 11, color: "#d97706", fontWeight: 600,
   },
 };

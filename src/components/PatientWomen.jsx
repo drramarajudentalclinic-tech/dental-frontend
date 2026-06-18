@@ -53,34 +53,29 @@ export default function PatientWomen({ data = {}, setData }) {
     );
   };
 
- return (
-  <div style={styles.section}>
-    <div style={styles.subHeading}>
-      <span style={styles.subHeadingBar} />
-      Women's Health History
-    </div>
-    <div style={styles.grid}>
-      <YesNoField field="pregnant" label="Are you pregnant?">
-        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-          <label style={styles.detailLabel}>Expected Due Date</label>
-          <input
-            type="date"
-            style={styles.detailInput}
-            value={data.due_date || ""}
-            onChange={(e) => setData({ ...data, due_date: e.target.value })}
-          />
-        </div>
-      </YesNoField>
+  return (
+    <div style={styles.section}>
+      <div style={styles.subHeading}>
+        <span style={styles.subHeadingBar} />
+        Women's Health History
+      </div>
+      <div style={styles.grid}>
+        <YesNoField field="pregnant" label="Are you pregnant?">
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <label style={styles.detailLabel}>Expected Due Date</label>
+            <input
+              type="date"
+              style={styles.detailInput}
+              value={data.due_date || ""}
+              onChange={(e) => setData({ ...data, due_date: e.target.value })}
+            />
+          </div>
+        </YesNoField>
 
-      <YesNoField field="nursing_child" label="Are you nursing a child?" />
-
-      <YesNoField
-        field="no_known_women_conditions"
-        label="No Known Women Conditions"
-      />
+        <YesNoField field="nursing_child" label="Are you nursing a child?" />
+      </div>
     </div>
-  </div>
-);
+  );
 }
 
 const styles = {
@@ -129,12 +124,10 @@ const styles = {
     fontFamily: "inherit",
   },
   toggleBtnYes: {
-    background: "#ecfdf5", borderColor: "#10b981",
-    color: "#065f46",
+    background: "#ecfdf5", borderColor: "#10b981", color: "#065f46",
   },
   toggleBtnNo: {
-    background: "#fff0f0", borderColor: "#f87171",
-    color: "#991b1b",
+    background: "#fff0f0", borderColor: "#f87171", color: "#991b1b",
   },
   errorMsg: {
     fontSize: 11, color: "#e03e3e", fontWeight: 600,
