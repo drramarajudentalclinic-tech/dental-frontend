@@ -37,7 +37,7 @@ const MEDICINES = [
 ];
 
 /* ─── Updated clinic timings ────────────────────────────────── */
-const CLINIC_TIMINGS = "Timings : Mon to sat 10.30am to 2.00 pm & 5.30pm to 8.00pm";
+const CLINIC_TIMINGS = "Timings : Mon to sat 11.00am to 2.00 pm & 6.00pm to 8.00pm";
 
 /* ─── CSS injection ─────────────────────────────────────────── */
 const injectStyles = () => {
@@ -116,7 +116,7 @@ function LetterheadHeader() {
 
       {/* Ph : top right */}
       <div style={{ textAlign:"right", padding:"7px 16px 2px", fontSize:12, color:"#111", fontFamily:F }}>
-        Ph : 040-66718100
+        Ph : 9908894449
       </div>
 
       {/* ── MAIN HEADER ROW: Logo LEFT | Clinic block CENTER-RIGHT ── */}
@@ -366,7 +366,7 @@ function printPrescription(data) {
     <div class="hdr">
 
       <!-- Ph number top right -->
-      <div class="ph">Ph : 040-66718100</div>
+      <div class="ph">Ph : 9908894449</div>
 
       <!-- ROW 1: Logo (left) | Clinic name + badge + address (right, centered) -->
       <div class="toprow">

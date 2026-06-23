@@ -851,6 +851,8 @@ const PatientLookupDrawer = ({ onClose, onOpenVisit }) => {
     setTimeout(onClose, 220);
   };
 
+const [selectedPatient, setSelectedPatient] = useState(null);
+
   const handleSearch = useCallback(async () => {
     if (!query.trim()) return;
     setLoading(true);
@@ -869,6 +871,21 @@ const PatientLookupDrawer = ({ onClose, onOpenVisit }) => {
       setLoading(false);
     }
   }, [query]);
+  const openPatient = async (patientId) => {
+  try {
+    const res = await api.get(
+      `/patients/${patientId}/history`
+    );
+
+    console.log("FULL HISTORY", res.data);
+
+    setSelectedPatient(res.data);
+
+  } catch (err) {
+    console.error(err);
+    alert("Failed to load patient history");
+  }
+};
 
   const handleKeyDown = (e) => { if (e.key === "Enter") handleSearch(); };
   const toggleExpand = (id) => setExpanded(prev => ({ ...prev, [id]: !prev[id] }));
@@ -971,9 +988,43 @@ const PatientLookupDrawer = ({ onClose, onOpenVisit }) => {
                     <span className={`pld-expand-icon${expanded[p.patient_id] ? " open" : ""}`}>›</span>
                   </div>
 
-                  {expanded[p.patient_id] && (
-                    <div className="pld-history">
-                      <div className="pld-history-title">📋 &nbsp;Visit History</div>
+                 {expanded[p.patient_id] && (
+  <div className="pld-history">
+
+    <button
+      className="pld-search-go"
+      style={{ marginBottom: 12 }}
+      onClick={() => openPatient(p.patient_id)}
+    >
+      View Complete History
+    </button>
+
+    <div className="pld-history-title">
+      📋 &nbsp;Visit History
+    </div>
+                      <button
+  className="dd-open-btn"
+  style={{ marginBottom: 12 }}
+  onClick={async () => {
+    try {
+      const res = await api.get(
+        `/patients/${p.patient_id}/history`
+      );
+
+      console.log("FULL PATIENT HISTORY", res.data);
+
+      // later we'll show this in a modal/drawer
+      alert(
+        `${res.data.patient.name}\nVisits: ${res.data.history.length}`
+      );
+
+    } catch (err) {
+      console.error(err);
+    }
+  }}
+>
+  View Complete Patient History
+</button>
                       {(!p.visits || p.visits.length === 0) ? (
                         <div className="pld-no-history">
                           <div className="pld-no-history-icon">📂</div>
