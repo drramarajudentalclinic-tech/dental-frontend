@@ -2,12 +2,16 @@ import { useState } from "react";
 import api from "../api/api";
 
 export default function PatientSearch() {
-  const [q, setQ] = useState([]);
+  const [q, setQ] = useState("");
   const [results, setResults] = useState([]);
 
   const search = async () => {
-    const res = await api.get(`/api/patients/search?q=${q}`);
-    setResults(res.data);
+    // NOTE: the axios client's baseURL already includes /api, and the
+    // real backend route is GET /api/patients/search?q=... — the
+    // previous "/api/patients/search" path doubled up to
+    // "<baseURL>/api/api/patients/search", which 404s.
+    const res = await api.get("/patients/search", { params: { q } });
+    setResults(res.data || []);
   };
 
   return (
@@ -17,7 +21,8 @@ export default function PatientSearch() {
 
       <ul>
         {results.map(p => (
-          <li key={p.id}>{p.name} ({p.case_number})</li>
+          // search_patients() returns patient_id, not id
+          <li key={p.patient_id}>{p.name} ({p.case_number})</li>
         ))}
       </ul>
     </>

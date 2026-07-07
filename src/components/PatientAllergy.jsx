@@ -11,7 +11,11 @@ import api from "../api/api";
 export default function PatientAllergy({ patientId, readOnly = false }) {
   const [loading, setLoading] = useState(false);
 
-  // null = unanswered, true = Yes, false = No
+  // null = unanswered, true = Yes, false = No.
+  // NOTE: other_allergy is a UI-only boolean toggle (drives whether the
+  // detail textbox shows). The backend's AllergyRecord.other_allergy
+  // column is a free-text field, not a boolean — see saveAllergy() below,
+  // which converts other_allergy -> the detail string before sending.
   const [allergy, setAllergy] = useState({
     drug_allergy:       null,
     food_allergy:       null,
@@ -20,36 +24,79 @@ export default function PatientAllergy({ patientId, readOnly = false }) {
     anesthesia_allergy: null,
     other_allergy:      null,
     other_allergy_detail: "",
+    no_known_allergies: null,
   });
 
   useEffect(() => {
     if (!patientId) return;
     api
-      .get(`/allergies/${patientId}`)
+      .get(`/patients/${patientId}/allergy`)
       .then((res) => {
-        if (res.data) setAllergy({ ...allergy, ...res.data });
+        const d = res.data || {};
+        setAllergy((prev) => ({
+          ...prev,
+          drug_allergy:        d.drug_allergy || false,
+          food_allergy:        d.food_allergy || false,
+          latex_allergy:       d.latex_allergy || false,
+          iodine_allergy:      d.iodine_allergy || false,
+          anesthesia_allergy:  d.anesthesia_allergy || false,
+          // Backend stores other_allergy as free text — split it back into
+          // a Yes/No toggle + detail string for this component's UI.
+          other_allergy:       !!(d.other_allergy && d.other_allergy.trim()),
+          other_allergy_detail: d.other_allergy || "",
+          no_known_allergies:  d.no_known_allergies || false,
+        }));
       })
       .catch(() => {});
   }, [patientId]);
 
   const toggle = (field, val) => {
     if (readOnly) return;
-    setAllergy((prev) => ({
-      ...prev,
-      [field]: val,
-      ...(field === "other_allergy" && !val ? { other_allergy_detail: "" } : {}),
-    }));
+    setAllergy((prev) => {
+      // Confirming "No Known Allergies" clears every other flag —
+      // mirrors PatientMedical.jsx / PatientHabits.jsx's mutual-exclusion
+      // pattern so the record can't say both "no allergies" and "yes,
+      // drug allergy" at once.
+      if (field === "no_known_allergies" && val === true) {
+        return {
+          ...prev,
+          drug_allergy: false, food_allergy: false, latex_allergy: false,
+          iodine_allergy: false, anesthesia_allergy: false,
+          other_allergy: false, other_allergy_detail: "",
+          no_known_allergies: true,
+        };
+      }
+      return {
+        ...prev,
+        [field]: val,
+        // Answering any specific allergy question un-confirms "No Known
+        // Allergies" if it was set.
+        ...(field !== "no_known_allergies" && val === true ? { no_known_allergies: false } : {}),
+        ...(field === "other_allergy" && !val ? { other_allergy_detail: "" } : {}),
+      };
+    });
   };
 
   const saveAllergy = async () => {
     if (!patientId) return;
     setLoading(true);
     try {
-      await api.put(`/allergies/${patientId}`, allergy);
+      // Convert the UI's boolean other_allergy toggle back into the
+      // free-text value the backend column actually stores.
+      const payload = {
+        drug_allergy:       !!allergy.drug_allergy,
+        food_allergy:       !!allergy.food_allergy,
+        latex_allergy:      !!allergy.latex_allergy,
+        iodine_allergy:     !!allergy.iodine_allergy,
+        anesthesia_allergy: !!allergy.anesthesia_allergy,
+        other_allergy:      allergy.other_allergy ? (allergy.other_allergy_detail || "").trim() : "",
+        no_known_allergies: !!allergy.no_known_allergies,
+      };
+      await api.put(`/patients/${patientId}/allergy`, payload);
       alert("Allergy details saved");
     } catch (err) {
       console.error("Allergy save failed", err);
-      alert("Failed to save allergy details");
+      alert(err?.response?.data?.error || "Failed to save allergy details");
     } finally {
       setLoading(false);
     }
@@ -138,7 +185,15 @@ export default function PatientAllergy({ patientId, readOnly = false }) {
       </div>
       <div style={styles.grid}>
         {FIELDS.map(({ key, label }) => (
-          <YesNoField key={key} fieldKey={key} label={label} />
+          <div
+            key={key}
+            style={{
+              opacity: allergy.no_known_allergies && key !== "no_known_allergies" ? 0.45 : 1,
+              transition: "opacity 0.15s",
+            }}
+          >
+            <YesNoField fieldKey={key} label={label} />
+          </div>
         ))}
       </div>
 

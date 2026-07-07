@@ -3,7 +3,6 @@ import { useParams, useNavigate } from "react-router-dom";
 import api from "../api/api";
 
 import DoctorMedicalSummary from "../components/doctor/DoctorMedicalSummary";
-import DoctorAllergySummary from "../components/doctor/DoctorAllergySummary";
 import DoctorHabitsSummary from "../components/doctor/DoctorHabitsSummary";
 import DoctorWomenSummary from "../components/doctor/DoctorWomenSummary";
 
@@ -66,6 +65,7 @@ const injectStyles = () => {
       font-size: 12.5px; font-weight: 700;
     }
     .dpv-table { width: 100%; border-collapse: collapse; }
+    .dpv-allergy-chip { font-size: 12.5px; font-weight: 700; color: #991b1b; background: #fee2e2; border: 1px solid #fca5a5; padding: 6px 14px; border-radius: 20px; }
     .dpv-table thead tr { background: linear-gradient(90deg, #1e3a6e 0%, #2563eb 100%); }
     .dpv-table thead th {
       padding: 10px 14px; text-align: left;
@@ -424,7 +424,11 @@ export default function DoctorPatientView() {
   const [patient,          setPatient]          = useState(null);
   const [visit,            setVisit]            = useState(null);
   const [medical,          setMedical]          = useState({});
-  const [allergy,          setAllergy]          = useState({ rows: [] });
+  const [allergy,          setAllergy]          = useState({
+    drug_allergy: false, food_allergy: false, latex_allergy: false,
+    iodine_allergy: false, anesthesia_allergy: false,
+    other_allergy: "", no_known_allergies: false,
+  });
   const [habits,           setHabits]           = useState([]);
   const [women,            setWomen]            = useState({});
   const [familyDoc,        setFamilyDoc]        = useState({});
@@ -447,7 +451,11 @@ export default function DoctorPatientView() {
       setPatient(res.data.patient || null);
       setMedical(res.data.medical || {});
       const raw = res.data.allergy;
-      setAllergy(raw && Array.isArray(raw.rows) ? raw : { rows: [] });
+      setAllergy(raw || {
+        drug_allergy: false, food_allergy: false, latex_allergy: false,
+        iodine_allergy: false, anesthesia_allergy: false,
+        other_allergy: "", no_known_allergies: false,
+      });
       setHabits(Array.isArray(res.data.habits) ? res.data.habits : []);
       setWomen(res.data.women         || {});
       setFamilyDoc(res.data.family_doctor || {});
@@ -497,7 +505,8 @@ export default function DoctorPatientView() {
   );
 
   const isClosed    = (visit?.status || "").toLowerCase() === "closed";
-  const allergyRows = allergy?.rows || [];
+  const hasAnyAllergy = !!(allergy?.drug_allergy || allergy?.food_allergy || allergy?.latex_allergy ||
+    allergy?.iodine_allergy || allergy?.anesthesia_allergy || allergy?.other_allergy);
 
   const chiefComplaint = (
     visit?.chief_complaint?.trim()    ||
@@ -525,7 +534,8 @@ export default function DoctorPatientView() {
   if (medFlag(medical, "diabetes",       "Diabetes"))             alerts.push({ icon: "🔴", text: "Known Diabetes",                    color: "#991b1b", bg: "#fee2e2" });
   if (medFlag(medical, "heart_problems", "Heart_Problems"))       alerts.push({ icon: "🔴", text: "Cardiac Risk",                      color: "#991b1b", bg: "#fee2e2" });
   if (women?.pregnant)                                             alerts.push({ icon: "🔴", text: "Pregnant Patient",                  color: "#86198f", bg: "#fdf4ff" });
-  if (allergyRows.some(r => r.severity === "Life-threatening"))   alerts.push({ icon: "🟣", text: "Life-threatening Allergy on Record", color: "#5b21b6", bg: "#ede9fe" });
+  if (allergy?.anesthesia_allergy)                                 alerts.push({ icon: "🟣", text: "Anesthesia Allergy on Record",      color: "#5b21b6", bg: "#ede9fe" });
+  else if (hasAnyAllergy)                                          alerts.push({ icon: "🟠", text: "Known Allergies on Record",          color: "#92400e", bg: "#fff7ed" });
 
   return (
     <div style={{
@@ -754,36 +764,20 @@ export default function DoctorPatientView() {
           <DoctorMedicalSummary data={medical} />
         </Section>
 
-        {/* ══════════ ALLERGY RECORDS TABLE ══════════ */}
+        {/* ══════════ ALLERGY RECORDS ══════════ */}
         <Section badge="Allergy Records" badgeColor="#d97706" badgeBg="#fffbeb" icon="⚠️" delay="dpv-d3">
-          {allergyRows.length === 0 ? (
+          {!hasAnyAllergy ? (
             <div style={{ textAlign: "center", padding: "24px 0", background: "#fafbff", borderRadius: 10, border: "1.5px dashed #dde8f8", color: "#94a3b8", fontSize: 13.5 }}>
-              No known allergies recorded.
+              {allergy?.no_known_allergies ? "Confirmed: No known allergies." : "No known allergies recorded."}
             </div>
           ) : (
-            <div className="dpv-table-wrap">
-              <table className="dpv-table">
-                <thead>
-                  <tr>
-                    <th>Type</th>
-                    <th>Allergen / Substance</th>
-                    <th>Reaction</th>
-                    <th>Severity</th>
-                    <th>Notes</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {allergyRows.map((row, i) => (
-                    <tr key={row.id || i}>
-                      <td style={{ fontWeight: 600, color: "#0b2d4e" }}>{row.type || "—"}</td>
-                      <td style={{ fontWeight: 600 }}>{row.allergen || "—"}</td>
-                      <td>{row.reaction || "—"}</td>
-                      <td><SevPill s={row.severity} /></td>
-                      <td style={{ color: "#64748b", fontSize: 12.5 }}>{row.notes || "—"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+              {allergy.drug_allergy && <span className="dpv-allergy-chip">💊 Drug Allergy</span>}
+              {allergy.food_allergy && <span className="dpv-allergy-chip">🍽️ Food Allergy</span>}
+              {allergy.latex_allergy && <span className="dpv-allergy-chip">🧤 Latex Allergy</span>}
+              {allergy.iodine_allergy && <span className="dpv-allergy-chip">🧪 Iodine Allergy</span>}
+              {allergy.anesthesia_allergy && <span className="dpv-allergy-chip">💉 Anesthesia Allergy</span>}
+              {allergy.other_allergy && <span className="dpv-allergy-chip">❗ {allergy.other_allergy}</span>}
             </div>
           )}
         </Section>

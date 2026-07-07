@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import api from "../api/api";
+import PatientCompleteHistory from "./PatientCompleteHistory";
 
 /* ─── inject styles once ─── */
 const injectStyles = () => {
@@ -851,7 +852,7 @@ const PatientLookupDrawer = ({ onClose, onOpenVisit }) => {
     setTimeout(onClose, 220);
   };
 
-const [selectedPatient, setSelectedPatient] = useState(null);
+const [historyPatientId, setHistoryPatientId] = useState(null);
 
   const handleSearch = useCallback(async () => {
     if (!query.trim()) return;
@@ -871,21 +872,24 @@ const [selectedPatient, setSelectedPatient] = useState(null);
       setLoading(false);
     }
   }, [query]);
-  const openPatient = async (patientId) => {
-  try {
-    const res = await api.get(
-      `/patients/${patientId}/history`
-    );
 
-    console.log("FULL HISTORY", res.data);
+  const openPatient = (patientId) => setHistoryPatientId(patientId);
 
-    setSelectedPatient(res.data);
-
-  } catch (err) {
-    console.error(err);
-    alert("Failed to load patient history");
-  }
-};
+  // Called from PatientCompleteHistory's "Create Visit" button — creates a
+  // new visit for a patient with no active visit, then jumps straight into it.
+  const handleCreateVisitFromHistory = async (patientId) => {
+    try {
+      const res = await api.post(`/patients/${patientId}/create-visit`, {
+        created_by: "Doctor",
+      });
+      const visitId = res.data?.visit_id;
+      setHistoryPatientId(null);
+      if (visitId) onOpenVisit(visitId);
+    } catch (err) {
+      console.error(err);
+      alert("Failed to create visit. Please try again.");
+    }
+  };
 
   const handleKeyDown = (e) => { if (e.key === "Enter") handleSearch(); };
   const toggleExpand = (id) => setExpanded(prev => ({ ...prev, [id]: !prev[id] }));
@@ -996,35 +1000,12 @@ const [selectedPatient, setSelectedPatient] = useState(null);
       style={{ marginBottom: 12 }}
       onClick={() => openPatient(p.patient_id)}
     >
-      View Complete History
+      View Complete Patient History
     </button>
 
     <div className="pld-history-title">
       📋 &nbsp;Visit History
     </div>
-                      <button
-  className="dd-open-btn"
-  style={{ marginBottom: 12 }}
-  onClick={async () => {
-    try {
-      const res = await api.get(
-        `/patients/${p.patient_id}/history`
-      );
-
-      console.log("FULL PATIENT HISTORY", res.data);
-
-      // later we'll show this in a modal/drawer
-      alert(
-        `${res.data.patient.name}\nVisits: ${res.data.history.length}`
-      );
-
-    } catch (err) {
-      console.error(err);
-    }
-  }}
->
-  View Complete Patient History
-</button>
                       {(!p.visits || p.visits.length === 0) ? (
                         <div className="pld-no-history">
                           <div className="pld-no-history-icon">📂</div>
@@ -1049,6 +1030,17 @@ const [selectedPatient, setSelectedPatient] = useState(null);
           )}
         </div>
       </div>
+
+      {/* ── complete patient history (read-only) ── */}
+      {historyPatientId && (
+        <PatientCompleteHistory
+          patientId={historyPatientId}
+          readOnlyLabel="Doctor — Read Only"
+          onBack={() => setHistoryPatientId(null)}
+          onCreateVisit={handleCreateVisitFromHistory}
+          onOpenVisit={(visitId) => { setHistoryPatientId(null); onOpenVisit(visitId); }}
+        />
+      )}
     </>
   );
 };
@@ -1067,6 +1059,17 @@ const ConfirmModal = ({ visit, onConfirm, onCancel, closing }) => (
         {visit.case_number ? ` (Case: ${visit.case_number})` : ""}.
         <br />This will mark the visit as <strong>CLOSED</strong> and it will no longer appear in the active list.
       </div>
+      {!visit.has_clinical_notes && (
+        <div style={{
+          display: "flex", alignItems: "flex-start", gap: 8,
+          background: "#fffbeb", border: "1px solid #fcd34d", borderRadius: 8,
+          padding: "10px 12px", margin: "0 0 14px", fontSize: 12.5,
+          color: "#92400e", fontWeight: 600, textAlign: "left",
+        }}>
+          ⚠️ No diagnosis or treatment has been recorded for this visit yet.
+          Consider opening the visit to document it before completing.
+        </div>
+      )}
       <div className="dd-confirm-btns">
         <button className="dd-confirm-no" onClick={onCancel}>Cancel</button>
         <button className="dd-confirm-yes" onClick={onConfirm} disabled={closing}>
@@ -1368,7 +1371,10 @@ export default function DoctorDashboard() {
     try {
       setLoading(true);
       const res = await api.get("/doctor/visits");
-      const data = res.data || [];
+      // Backend returns patient_name — normalize to `name` since the rest
+      // of this component (avatar initials, search filter, confirm
+      // dialog) reads v.name.
+      const data = (res.data || []).map(v => ({ ...v, name: v.patient_name || v.name }));
       setVisits(data);
 
       /* ── FIX: Log first visit raw object to console so you can see
@@ -1407,8 +1413,18 @@ export default function DoctorDashboard() {
     }
   };
 
-  const handleOpenVisitFromLookup = (visitId) => {
+  // Workflow step 7: opening a visit must flip CREATED → IN_PROGRESS and
+  // write an audit entry. start_visit() is idempotent (safe to call even
+  // if the visit is already IN_PROGRESS or was just created), so we
+  // always call it before navigating in.
+  const handleOpenVisit = async (visitId) => {
     setLookupOpen(false);
+    try {
+      await api.post(`/doctor/visit/${visitId}/start`, { doctor_name: "Doctor" });
+    } catch (err) {
+      console.error("Failed to start visit:", err);
+      // Non-fatal — still let the doctor into the visit view.
+    }
     navigate(`/doctor/visit/${visitId}`);
   };
 
@@ -1453,7 +1469,7 @@ export default function DoctorDashboard() {
       {lookupOpen && (
         <PatientLookupDrawer
           onClose={() => setLookupOpen(false)}
-          onOpenVisit={handleOpenVisitFromLookup}
+          onOpenVisit={handleOpenVisit}
         />
       )}
 
@@ -1651,7 +1667,7 @@ export default function DoctorDashboard() {
                       </td>
                       <td>
                         <div className="dd-action-cell" style={{ justifyContent:"center" }}>
-                          <button className="dd-open-btn" onClick={() => navigate(`/doctor/visit/${v.visit_id}`)}>
+                          <button className="dd-open-btn" onClick={() => handleOpenVisit(v.visit_id)}>
                             Open →
                           </button>
                           <button className="dd-complete-btn" onClick={() => setConfirm(v)}>

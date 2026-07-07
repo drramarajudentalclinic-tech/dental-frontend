@@ -475,6 +475,9 @@ function BillingModal({ visit, editPayment, onClose, onSaved }) {
   const [mobile,     setMobile]     = useState(visit.mobile || "");
   const [advice,     setAdvice]     = useState(isEdit ? (editPayment.advice || "") : (visit.advice || ""));
   const [tplan,      setTplan]      = useState(isEdit ? (editPayment.treatment_plan || "") : (visit.treatment_plan || ""));
+  const [nextAppt,   setNextAppt]   = useState(visit.next_appointment || "");
+  const [savingAppt, setSavingAppt] = useState(false);
+  const [apptSaved,  setApptSaved]  = useState(false);
   const [history,    setHistory]    = useState([]);
   const [loadingH,   setLoadingH]   = useState(true);
   const [saving,     setSaving]     = useState(false);
@@ -500,6 +503,22 @@ function BillingModal({ visit, editPayment, onClose, onSaved }) {
   const addRow    = () => setTreatments(prev => [...prev, { description: "", notes: "", amount: "" }]);
   const removeRow = (i) => setTreatments(prev => prev.filter((_, j) => j !== i));
   const updateRow = (i, key, val) => setTreatments(prev => prev.map((t, j) => j === i ? { ...t, [key]: val } : t));
+
+  const handleSaveNextAppt = async () => {
+    if (!visit?.visit_id) return;
+    setSavingAppt(true);
+    setApptSaved(false);
+    try {
+      await api.put(`/visits/${visit.visit_id}/next-appointment`, {
+        next_appointment: nextAppt || null,
+      });
+      setApptSaved(true);
+    } catch (e) {
+      setErr(e?.response?.data?.error || "Failed to save next appointment.");
+    } finally {
+      setSavingAppt(false);
+    }
+  };
 
   const handleSave = async () => {
     if (!treatments.some(t => t.description && parseFloat(t.amount) > 0)) {
@@ -541,17 +560,9 @@ function BillingModal({ visit, editPayment, onClose, onSaved }) {
         const r = await api.post("/payments", payload);
         savedPayment = r.data;
       }
-      // Show receipt preview before closing
+      // The backend already generates the receipt (PDF + receipt_number)
+      // inside create_payment()/edit_payment() — no separate call needed.
       if (savedPayment) {
-        // Generate the receipt record + PDF on the backend
-        try {
-          const rr = await api.post(`/receipts/${savedPayment.id}`);
-          if (rr.data?.receipt_number) {
-            savedPayment = { ...savedPayment, receipt_number: rr.data.receipt_number };
-          }
-        } catch (_) {
-          // Receipt generation failed — preview will fall back to re-rendered HTML
-        }
         setPreview(savedPayment);
       } else {
         onSaved();
@@ -639,6 +650,24 @@ function BillingModal({ visit, editPayment, onClose, onSaved }) {
               <label className="bs-label">Receipt No.</label>
               <input className="bs-input" value={isEdit ? `#${editPayment.receipt_number}` : "Auto-assigned"} disabled />
             </div>
+          </div>
+
+          {/* Next Appointment — saved independently of the payment record */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 12, alignItems: "end", marginBottom: 18 }}>
+            <div>
+              <label className="bs-label">📅 Next Appointment</label>
+              <input className="bs-input" type="date" value={nextAppt}
+                onChange={e => { setNextAppt(e.target.value); setApptSaved(false); }} />
+            </div>
+            <button
+              className="bs-btn bs-btn-primary"
+              type="button"
+              disabled={savingAppt}
+              onClick={handleSaveNextAppt}
+              style={{ height: 38 }}
+            >
+              {savingAppt ? "Saving…" : apptSaved ? "✓ Saved" : "Save Date"}
+            </button>
           </div>
 
           {/* Advice + Treatment Plan (editable, goes on receipt) */}
@@ -1093,6 +1122,11 @@ export default function BillingSection({ initialVisitId = null }) {
                     {v.treatment_done && (
                       <div style={{ fontSize: 10.5, color: "#475569", marginTop: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                         🦷 {v.treatment_done}
+                      </div>
+                    )}
+                    {v.next_appointment && (
+                      <div style={{ fontSize: 10.5, color: "#0e7490", marginTop: 3 }}>
+                        📅 Next: {v.next_appointment}
                       </div>
                     )}
                     <div style={{ fontSize: 10, color: "#94a3b8", marginTop: 3 }}>Closed: {v.closed_at}</div>

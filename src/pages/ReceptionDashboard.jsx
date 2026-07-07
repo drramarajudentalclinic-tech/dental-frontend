@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import BillingSection from "./Billingsection.jsx";
 import { useNavigate, useLocation } from "react-router-dom";
 import api from "../api/api";
+import PatientCompleteHistory from "./PatientCompleteHistory";
 
 /* ═══════════════════════════════════════════
    GLOBAL STYLES
@@ -2706,6 +2707,9 @@ export default function ReceptionDashboard() {
   const [creatingVisit,  setCreatingVisit]  = useState(false);
   const [visitCreatedFor, setVisitCreatedFor] = useState(null);
 
+  // Complete patient history (read-only) modal
+  const [historyPatientId, setHistoryPatientId] = useState(null);
+
   // Prescriptions — only loaded when section is opened
   const [prescriptions,     setPrescriptions]     = useState([]);
   const [loadingPrescs,     setLoadingPrescs]     = useState(false);
@@ -2786,6 +2790,15 @@ export default function ReceptionDashboard() {
   const handleKeyDown = (e) => { if (e.key === "Enter") searchPatient(); };
   const clearSearch = () => { setSearch(""); setResults([]); setSearched(false); };
 
+  // Called from PatientCompleteHistory's "Create Visit" button — closes the
+  // read-only history panel and opens Reception's existing create-visit
+  // modal (chief complaint entry) for the same patient.
+  const handleCreateVisitFromHistory = (patientId) => {
+    const pt = results.find(r => r.id === patientId) || { id: patientId };
+    setHistoryPatientId(null);
+    setVisitPatient(pt);
+  };
+
   const handleCreateVisit = async ({ chief_complaint, followup_treatment }) => {
     if (!visitPatient) return;
     setCreatingVisit(true);
@@ -2861,6 +2874,16 @@ export default function ReceptionDashboard() {
           onConfirm={handleCreateVisit}
           onCancel={() => setVisitPatient(null)}
           loading={creatingVisit}
+        />
+      )}
+
+      {/* Complete patient history — read-only, with Create Visit + Back */}
+      {historyPatientId && (
+        <PatientCompleteHistory
+          patientId={historyPatientId}
+          readOnlyLabel="Reception — Read Only"
+          onBack={() => setHistoryPatientId(null)}
+          onCreateVisit={handleCreateVisitFromHistory}
         />
       )}
 
@@ -3188,6 +3211,11 @@ export default function ReceptionDashboard() {
                         <button className="rdb-action-btn rdb-btn-view"
                           onClick={() => navigate(`/reception/patient/${pt.id}`)}>
                           👁 View
+                        </button>
+                        <button className="rdb-action-btn rdb-btn-view"
+                          onClick={() => setHistoryPatientId(pt.id)}
+                          title="View complete demographic, medical, and treatment history (read-only)">
+                          📋 Complete History
                         </button>
                         {/* ── Create Visit button ── */}
                         <button className="rdb-action-btn rdb-btn-visit"
