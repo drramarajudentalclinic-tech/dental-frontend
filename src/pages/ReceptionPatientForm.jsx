@@ -3,6 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import api from "../api/api";
 
 import PatientMedical from "../components/PatientMedical";
+import PatientAllergy from "../components/PatientAllergy";
 import PatientHabits from "../components/PatientHabits";
 import PatientWomen from "../components/PatientWomen";
 
@@ -434,6 +435,115 @@ const PatientAllergyTable = ({ data, setData }) => {
 };
 
 /* ═══════════════════════════════════════════
+   CURRENT MEDICATIONS
+   Mirrors the real backend contract in patients.py: Medication is a
+   patient_id-indexed multi-row model with medicine_name (required),
+   dosage (free text, optional), frequency/duration/purpose (required,
+   fixed dropdowns — must match VALID_FREQUENCIES/DURATIONS/VALID_PURPOSES
+   in patients.py exactly, since the backend rejects anything else),
+   prescribed_by and notes (free text, optional).
+   There is no bulk save endpoint — each row is its own
+   POST/PUT/DELETE /patients/<patient_id>/medications[/<id>] call, wired
+   up in savePatient() below via a diff against what was loaded.
+═══════════════════════════════════════════ */
+const MED_FREQUENCIES = ["OD", "BD", "TDS", "QID", "HS", "SOS", "STAT", "Weekly", "Monthly", "Custom"];
+const MED_DURATIONS = ["3 Days", "5 Days", "7 Days", "10 Days", "14 Days", "21 Days", "1 Month", "2 Months", "3 Months", "6 Months", "Ongoing", "Custom"];
+const MED_PURPOSES = ["Diabetes", "Hypertension", "Cardiac", "Thyroid", "Asthma", "Pain Relief", "Antibiotic", "Vitamin Supplement", "Gastric Protection", "Blood Thinner", "Other"];
+
+const emptyMedicationRow = () => ({
+  key: Date.now() + Math.random(), // local list key only, not sent to backend
+  id: null,                        // set once the row exists on the backend
+  medicine_name: "", dosage: "", frequency: "", duration: "", purpose: "",
+  prescribed_by: "", notes: "", active: true,
+});
+
+const PatientMedicationsTable = ({ data, setData }) => {
+  const rows = (data.rows && data.rows.length > 0) ? data.rows : [emptyMedicationRow()];
+
+  const addRow = () => setData({ ...data, rows: [...rows, emptyMedicationRow()] });
+
+  const deleteRow = (key) => {
+    const row = rows.find((r) => r.key === key);
+    const next = rows.filter((r) => r.key !== key);
+    setData({
+      ...data,
+      rows: next.length > 0 ? next : [emptyMedicationRow()],
+      // Track backend ids that need a DELETE call on save
+      deletedIds: row?.id ? [...(data.deletedIds || []), row.id] : (data.deletedIds || []),
+    });
+  };
+
+  const updateRow = (key, field, value) =>
+    setData({ ...data, rows: rows.map((r) => (r.key === key ? { ...r, [field]: value } : r)) });
+
+  return (
+    <div>
+      <div className="rpf-sub-heading">Current Medications</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        {rows.map((row, idx) => (
+          <div key={row.key} style={{
+            background: "#f8faff", border: "1.5px solid #e8edf8",
+            borderRadius: 10, padding: "12px 14px",
+            display: "flex", flexDirection: "column", gap: 10,
+          }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10 }}>
+              <Field label="Medicine Name" required>
+                <input className="rpf-input" placeholder="e.g. Metformin" value={row.medicine_name}
+                  onChange={(e) => updateRow(row.key, "medicine_name", e.target.value)} />
+              </Field>
+              <Field label="Dosage">
+                <input className="rpf-input" placeholder="e.g. 500mg" value={row.dosage}
+                  onChange={(e) => updateRow(row.key, "dosage", e.target.value)} />
+              </Field>
+              <Field label="Frequency" required>
+                <select className="rpf-input" value={row.frequency}
+                  onChange={(e) => updateRow(row.key, "frequency", e.target.value)}>
+                  <option value="">Select</option>
+                  {MED_FREQUENCIES.map((f) => <option key={f}>{f}</option>)}
+                </select>
+              </Field>
+              <Field label="Duration" required>
+                <select className="rpf-input" value={row.duration}
+                  onChange={(e) => updateRow(row.key, "duration", e.target.value)}>
+                  <option value="">Select</option>
+                  {MED_DURATIONS.map((d) => <option key={d}>{d}</option>)}
+                </select>
+              </Field>
+              <Field label="Purpose" required>
+                <select className="rpf-input" value={row.purpose}
+                  onChange={(e) => updateRow(row.key, "purpose", e.target.value)}>
+                  <option value="">Select</option>
+                  {MED_PURPOSES.map((p) => <option key={p}>{p}</option>)}
+                </select>
+              </Field>
+              <Field label="Prescribed By">
+                <input className="rpf-input" placeholder="Doctor name" value={row.prescribed_by}
+                  onChange={(e) => updateRow(row.key, "prescribed_by", e.target.value)} />
+              </Field>
+            </div>
+            <Field label="Notes">
+              <input className="rpf-input" placeholder="Additional notes…" value={row.notes}
+                onChange={(e) => updateRow(row.key, "notes", e.target.value)} />
+            </Field>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 600, color: "#6b7a99", cursor: "pointer" }}>
+                <input type="checkbox" checked={row.active !== false}
+                  onChange={(e) => updateRow(row.key, "active", e.target.checked)} />
+                Active
+              </label>
+              <button className="tbl-del-btn" onClick={() => deleteRow(row.key)} title="Remove">✕ Remove</button>
+            </div>
+          </div>
+        ))}
+      </div>
+      <button className="tbl-add-btn" onClick={addRow} style={{ marginTop: 12 }}>
+        <span style={{ fontSize: 17, lineHeight: 1 }}>+</span> Add Medicine
+      </button>
+    </div>
+  );
+};
+
+/* ═══════════════════════════════════════════
    CONSENT SECTION
 ═══════════════════════════════════════════ */
 const ConsentSection = ({ patientName, patientAge, consent, setConsent }) => {
@@ -563,14 +673,12 @@ export default function ReceptionPatientForm() {
   const [familyDoctor, setFamilyDoctor]     = useState({ doctor_name: "", doctor_address: "", doctor_phone: "" });
   const [medical, setMedical]               = useState({});
 const [allergy, setAllergy] = useState({
-  drug_allergy: null,
-  food_allergy: null,
-  latex_allergy: null,
-  iodine_allergy: null,
-  anesthesia_allergy: null,
-  other_allergy: null,
-  other_allergy_detail: "",
-  no_known_allergies: null,
+  rows: [emptyAllergyRow()],
+  no_known_allergies: false,
+});
+const [medications, setMedications] = useState({
+  rows: [emptyMedicationRow()],
+  deletedIds: [],
 });
   const [habits, setHabits] = useState({
   smoking: "",
@@ -629,6 +737,27 @@ const [allergy, setAllergy] = useState({
       setMedical(res.data.medical || {});
       const rawAllergy = res.data.allergy;
       setAllergy(rawAllergy && Array.isArray(rawAllergy.rows) ? rawAllergy : { rows: [] });
+      // GET /patients/<id> returns medications as a flat array of
+      // Medication.to_dict() objects (see patients.py get_patient()) —
+      // not wrapped in {rows: [...]} like allergies.
+      const rawMedications = res.data.medications;
+      setMedications({
+        rows: Array.isArray(rawMedications) && rawMedications.length > 0
+          ? rawMedications.map((m) => ({
+              key: m.id ?? (Date.now() + Math.random()),
+              id: m.id,
+              medicine_name: m.medicine_name || "",
+              dosage: m.dosage || "",
+              frequency: m.frequency || "",
+              duration: m.duration || "",
+              purpose: m.purpose || "",
+              prescribed_by: m.prescribed_by || "",
+              notes: m.notes || "",
+              active: m.active !== false,
+            }))
+          : [emptyMedicationRow()],
+        deletedIds: [],
+      });
       setHabits(res.data.habits || {});
       setWomen(res.data.women || {});
       setFamilyDoctor(res.data.family_doctor || {});
@@ -640,49 +769,222 @@ const [allergy, setAllergy] = useState({
   };
 
   /* ══════════════════════════════════════════
-     SAVE PATIENT
-     FIXED: chief_complaint is now included in
-     the POST and PUT payloads so it actually
-     saves to the database and shows in the
-     doctor view.
-  ══════════════════════════════════════════ */
-  const savePatient = async () => {
-    if (!personal.name)        { alert("Full name is required.");     return; }
-    if (!personal.case_number) { alert("Case number is required.");   return; }
-    if (!personal.age)         { alert("Age is required.");           return; }
-    if (!personal.gender)      { alert("Gender is required.");        return; }
-    if (!personal.mobile)      { alert("Mobile number is required."); return; }
-    if (!consent.agreed)       { alert("Patient consent must be acknowledged before saving."); return; }
-    setSaving(true);
-    try {
-      let patientId = id;
+   SAVE PATIENT
+   Includes:
+   ✓ Patient
+   ✓ Medical History
+   ✓ Allergy History
+   ✓ Habits
+   ✓ Family Doctor
+   ✓ Consent
+   ✓ Women's History
+   ══════════════════════════════════════════ */
+const savePatient = async () => {
+  // ==========================
+  // Required Validation
+  // ==========================
+  if (!personal.name) {
+    alert("Full name is required.");
+    return;
+  }
 
-      // Build payload that includes chief_complaint
-      const patientPayload = { ...personal, chief_complaint: chiefComplaint };
+  if (!personal.case_number) {
+    alert("Case number is required.");
+    return;
+  }
 
-      if (isEdit) {
-        await api.put(`/patients/${id}`, patientPayload);
-      } else {
-        const res = await api.post("/patients", patientPayload);
-        patientId  = res.data.patient_id;
-      }
-      await api.put(`/medical/${patientId}`, medical);
-      await api.put(`/allergies/${patientId}`, allergy);
-      await api.put(`/habits/${patientId}`, habits);
-      await api.put(`/family-doctor/${patientId}`, familyDoctor);
-      await api.put(`/consent/${patientId}`, consent);
-      if (personal.gender === "Female") await api.put(`/women/${patientId}`, women);
-      alert("Patient record saved successfully.");
-      navigate("/reception");
-    } catch (err) {
-      console.error(err);
-      alert("Failed to save patient record.");
-    } finally {
-      setSaving(false);
+  if (!personal.age) {
+    alert("Age is required.");
+    return;
+  }
+
+  if (!personal.gender) {
+    alert("Gender is required.");
+    return;
+  }
+
+  if (!personal.mobile) {
+    alert("Mobile number is required.");
+    return;
+  }
+
+  if (!consent.agreed) {
+    alert("Patient consent must be acknowledged before saving.");
+    return;
+  }
+
+  // Any row with a medicine name must also have frequency/duration/purpose —
+  // the backend requires all three (see add_medication in patients.py).
+  const incompleteMed = (medications.rows || []).find((r) => {
+    const name = (r.medicine_name || "").trim();
+    return name !== "" && (!r.frequency || !r.duration || !r.purpose);
+  });
+  if (incompleteMed) {
+    alert(`Please complete Frequency, Duration and Purpose for "${incompleteMed.medicine_name}".`);
+    return;
+  }
+
+  setSaving(true);
+
+  try {
+    let patientId = id;
+
+    // ==========================
+    // Patient Payload
+    // ==========================
+    const patientPayload = {
+      ...personal,
+      chief_complaint: chiefComplaint,
+    };
+
+    if (isEdit) {
+      await api.put(`/patients/${id}`, patientPayload);
+    } else {
+      const res = await api.post("/patients", patientPayload);
+      patientId = res.data.patient_id;
     }
+
+    // ==========================
+    // Medical History
+    // ==========================
+    console.log("Medical Payload:", medical);
+
+    await api.put(`/medical/${patientId}`, medical);
+
+    // ==========================
+    // ==========================
+// ==========================
+// ==========================
+// Allergy Payload
+// ==========================
+// The backend (AllergyRecord model + /allergies/<patient_id> route) stores
+// allergies as a list of rows: { type, allergen, reaction, severity, notes }.
+// There are no drug_allergy/food_allergy/... boolean columns, so we send the
+// rows array as-is rather than deriving flags the backend doesn't use.
+
+const rows = (allergy.rows || []).filter((r) => (r.allergen || "").trim() !== "");
+
+console.log("Allergy Rows to save:", rows);
+
+if (rows.length === 0 && !allergy.no_known_allergies) {
+  alert("Please add at least one allergy or check 'No Known Allergies'.");
+  return;
+}
+
+const allergyPayload = {
+  rows: rows.map((r) => ({
+    type: r.type || "",
+    allergen: r.allergen,
+    reaction: r.reaction || "",
+    severity: r.severity || "",
+    notes: r.notes || "",
+  })),
+};
+
+console.log("Allergy Payload:", allergyPayload);
+
+await api.put(`/allergies/${patientId}`, allergyPayload);
+
+// ==========================
+// Current Medications Sync
+// ==========================
+// Medication (patients.py) has no bulk endpoint like allergies — it's
+// individual POST/PUT/DELETE /patients/<patient_id>/medications[/<id>]
+// routes. Diff the local rows against what was loaded/removed to decide
+// what to create, update, or delete.
+
+const medRows = medications.rows || [];
+const medDeletedIds = medications.deletedIds || [];
+
+for (const delId of medDeletedIds) {
+  try {
+    await api.delete(`/patients/${patientId}/medications/${delId}`);
+  } catch (medErr) {
+    console.error("Failed to delete medication", delId, medErr);
+  }
+}
+
+for (const row of medRows) {
+  const medicineName = (row.medicine_name || "").trim();
+  if (!medicineName) continue; // blank row — nothing to save
+
+  const medPayload = {
+    medicine_name: medicineName,
+    dosage: row.dosage || "",
+    frequency: row.frequency,
+    duration: row.duration,
+    purpose: row.purpose,
+    prescribed_by: row.prescribed_by || "",
+    notes: row.notes || "",
+    active: row.active !== false,
   };
 
-  const grid = { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 18 };
+  console.log("Medication Payload:", medPayload);
+
+  try {
+    if (row.id) {
+      await api.put(`/patients/${patientId}/medications/${row.id}`, medPayload);
+    } else {
+      await api.post(`/patients/${patientId}/medications`, medPayload);
+    }
+  } catch (medErr) {
+    console.error("Medication save failed for", medicineName, medErr);
+    alert(medErr?.response?.data?.error || `Failed to save medication "${medicineName}".`);
+  }
+}
+
+// ==========================
+// Habits
+// ==========================
+console.log("Habits Payload:", habits);
+
+await api.put(`/habits/${patientId}`, habits);
+    // ==========================
+    // Family Doctor
+    // ==========================
+    console.log("Family Doctor:", familyDoctor);
+
+    await api.put(`/family-doctor/${patientId}`, familyDoctor);
+
+    // ==========================
+    // Consent
+    // ==========================
+    console.log("Consent:", consent);
+
+    await api.put(`/consent/${patientId}`, consent);
+
+    // ==========================
+    // Women's History
+    // ==========================
+    if (personal.gender === "Female") {
+      console.log("Women Payload:", women);
+
+      await api.put(`/women/${patientId}`, women);
+    }
+
+    alert("Patient record saved successfully.");
+
+    navigate("/reception");
+  } catch (err) {
+    console.error("Save Patient Error:", err);
+
+    if (err.response) {
+      console.error("Status:", err.response.status);
+      console.error("Response:", err.response.data);
+
+      alert(err.response.data.error || "Failed to save patient.");
+    } else {
+      alert("Failed to save patient.");
+    }
+  } finally {
+    setSaving(false);
+  }
+};
+const grid = {
+  display: "grid",
+  gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+  gap: 18,
+};
 
   return (
     <>
@@ -858,6 +1160,7 @@ const [allergy, setAllergy] = useState({
             <div style={{ display: "flex", flexDirection: "column", gap: 28 }}>
               <PatientMedical data={medical} setData={setMedical} />
               <PatientAllergyTable data={allergy} setData={setAllergy} />
+              <PatientMedicationsTable data={medications} setData={setMedications} />
               <PatientHabits data={habits} setData={setHabits} />
               {personal.gender === "Female" && <PatientWomen data={women} setData={setWomen} />}
             </div>

@@ -1,12 +1,40 @@
 import { useEffect, useState } from "react";
 import api from "../api/api";
 
+// Matches the backend origin used elsewhere (Billingsection.jsx,
+// BillingPage.jsx). Needed here because <img src> is a plain browser
+// request, not an axios call — it won't pick up axios's configured
+// baseURL, so a relative "/api/..." path would resolve against this
+// page's own origin instead of the API server if they're on different
+// domains.
+// Reads the backend URL from Vite's env (VITE_API_URL in .env / .env.production).
+// If that's not set for some reason, auto-detect: use localhost when running
+// the dev server locally, otherwise fall back to the deployed Render backend.
+// This way the same build works correctly on both localhost and Render.
+function resolveApiBase() {
+  const fromEnv = import.meta.env.VITE_API_URL;
+  // .env / .env.production define VITE_API_URL as the API root (with a
+  // trailing "/api"), e.g. "https://dental-backend-xojn.onrender.com/api".
+  // This file needs the *server* root (no "/api") since it appends "/api/..."
+  // itself for endpoints and uses the bare root for static file/image URLs.
+  const raw = fromEnv
+    ? fromEnv
+    : (typeof window !== "undefined" &&
+       (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"))
+      ? "http://localhost:5000/api"
+      : "https://dental-backend-xojn.onrender.com/api";
+
+  return raw.replace(/\/$/, "").replace(/\/api$/, "");
+}
+
+const API_BASE = resolveApiBase();
+
 /*
   <PatientCompleteHistory />
   ────────────────────────────────────────────────────────────────
   Read-only "View Complete Patient History" screen.
   Used by BOTH:
-    • Doctor Dashboard   → Search Existing Patient → View Complete History
+    • Doctor Dashboard    → Search Existing Patient → View Complete History
     • Reception Dashboard → Search Patient → View Complete Patient History
 
   Data source: GET /api/patients/<patient_id>/complete-history
@@ -14,6 +42,12 @@ import api from "../api/api";
   allergies, habits, women's history, medications, family doctor, consent,
   and every visit with dental chart, findings, consultations,
   prescriptions, images, and payments.)
+
+  Layout: every multi-field block renders as a proper two-column
+  "Field / Detail" record table (like a real chart), and every list of
+  records (medicines, dental chart rows, findings, payments…) renders as
+  a standard multi-column data table. No card grids — nothing reflows
+  into ragged, uneven rows regardless of which fields are present.
 
   Props:
     patientId     (number, required)  — patient to load
@@ -105,6 +139,10 @@ export default function PatientCompleteHistory({
     ? Object.entries(medical_history).filter(([k, v]) => v === true && k !== "no_known_conditions")
     : [];
 
+  const HABIT_FIELDS = ["smoking", "alcohol", "tobacco", "pan_chewing", "spicy_foods"];
+  const habitRows = habits
+    .flatMap(h => HABIT_FIELDS.filter(f => h[f]).map(f => [formatLabel(f), formatHabitValue(h[f])]));
+
   return (
     <div style={s.overlay}>
       <div style={s.panel}>
@@ -144,14 +182,16 @@ export default function PatientCompleteHistory({
 
           {/* Demographics */}
           <Section title="Demographics">
-            <Grid>
-              <Cell label="Address" value={patient.address} />
-              <Cell label="Profession" value={patient.profession} />
-              <Cell label="Marital Status" value={patient.marital_status} />
-              <Cell label="Email" value={patient.email} />
-              <Cell label="Referred By" value={patient.referred_by} />
-              <Cell label="Chief Complaint" value={patient.chief_complaint} />
-            </Grid>
+            <RecordTable
+              rows={[
+                ["Address", patient.address],
+                ["Profession", patient.profession],
+                ["Marital Status", patient.marital_status],
+                ["Email", patient.email],
+                ["Referred By", patient.referred_by],
+                ["Chief Complaint", patient.chief_complaint],
+              ]}
+            />
           </Section>
 
           {/* Medical History */}
@@ -191,31 +231,23 @@ export default function PatientCompleteHistory({
 
           {/* Habits */}
           <Section title="Habits">
-            {habits.length === 0 || habits.every(h => h.no_habits) ? (
+            {habitRows.length === 0 ? (
               <EmptyPill text="No habits recorded" />
             ) : (
-              <Grid>
-                {habits.map((h, i) => (
-                  <div key={i} style={{ gridColumn: "1 / -1" }}>
-                    {["smoking", "alcohol", "tobacco", "pan_chewing", "spicy_foods"]
-                      .filter(f => h[f])
-                      .map(f => (
-                        <Cell key={f} label={formatLabel(f)} value={h[f]} />
-                      ))}
-                  </div>
-                ))}
-              </Grid>
+              <RecordTable rows={habitRows} />
             )}
           </Section>
 
           {/* Women's History */}
           {woman_history && (
             <Section title="Women's History">
-              <Grid>
-                <Cell label="Pregnant" value={woman_history.pregnant ? "Yes" : "No"} />
-                <Cell label="Due Date" value={woman_history.due_date} />
-                <Cell label="Nursing Child" value={woman_history.nursing_child ? "Yes" : "No"} />
-              </Grid>
+              <RecordTable
+                rows={[
+                  ["Pregnant", woman_history.pregnant ? "Yes" : "No"],
+                  ["Due Date", woman_history.due_date],
+                  ["Nursing Child", woman_history.nursing_child ? "Yes" : "No"],
+                ]}
+              />
             </Section>
           )}
 
@@ -233,12 +265,14 @@ export default function PatientCompleteHistory({
 
           {/* Family Doctor + Consent */}
           <Section title="Family Doctor & Consent">
-            <Grid>
-              <Cell label="Family Doctor" value={family_doctor?.doctor_name} />
-              <Cell label="Doctor Phone" value={family_doctor?.doctor_phone} />
-              <Cell label="Consent Signed" value={consent?.agreed ? "Yes" : "No"} />
-              <Cell label="Consent Date" value={consent?.consent_date} />
-            </Grid>
+            <RecordTable
+              rows={[
+                ["Family Doctor", family_doctor?.doctor_name],
+                ["Doctor Phone", family_doctor?.doctor_phone],
+                ["Consent Signed", consent ? (consent?.agreed ? "Yes" : "No") : null],
+                ["Consent Date", consent?.consent_date],
+              ]}
+            />
           </Section>
 
           {/* Visit History */}
@@ -293,16 +327,21 @@ function VisitBlock({ visit, expanded, onToggle }) {
       </div>
       {expanded && (
         <div style={s.visitBody}>
-          <Grid>
-            <Cell label="Chief Complaint" value={visit.chief_complaint} />
-            <Cell label="Diagnosis" value={visit.diagnosis} />
-            <Cell label="Treatment Plan" value={visit.treatment_plan} />
-            <Cell label="Treatment Done" value={visit.treatment_done} />
-            <Cell label="Advice" value={visit.advice} />
-            <Cell label="Doctor" value={visit.assigned_doctor} />
-            <Cell label="Next Appointment" value={visit.next_appointment} />
-            <Cell label="Billing Note" value={visit.billing_note} />
-          </Grid>
+
+          <SubSection title="Visit Summary" first>
+            <RecordTable
+              rows={[
+                ["Chief Complaint", visit.chief_complaint],
+                ["Diagnosis", visit.diagnosis],
+                ["Treatment Plan", visit.treatment_plan],
+                ["Treatment Done", visit.treatment_done],
+                ["Advice", visit.advice],
+                ["Doctor", visit.assigned_doctor],
+                ["Next Appointment", visit.next_appointment],
+                ["Billing Note", visit.billing_note],
+              ]}
+            />
+          </SubSection>
 
           {visit.dental_chart?.length > 0 && (
             <SubSection title="Dental Chart">
@@ -316,8 +355,8 @@ function VisitBlock({ visit, expanded, onToggle }) {
           {visit.other_findings?.length > 0 && (
             <SubSection title="Other Findings">
               <Table
-                headers={["Type", "Value", "Notes"]}
-                rows={visit.other_findings.map(f => [f.finding_type, f.value, f.notes])}
+                headers={["Type", "Value", "Doctor", "Notes"]}
+                rows={visit.other_findings.map(f => [f.finding_type, f.value, f.doctor, f.notes])}
               />
             </SubSection>
           )}
@@ -325,25 +364,58 @@ function VisitBlock({ visit, expanded, onToggle }) {
           {visit.consultations?.length > 0 && (
             <SubSection title="Consultation">
               {visit.consultations.map(c => (
-                <div key={c.id} style={s.note}>
-                  <Grid>
-                    <Cell label="Diagnosis" value={c.diagnosis} />
-                    <Cell label="Treatment Today" value={c.treatment_done_today} />
-                    <Cell label="Treatment Plan" value={c.treatment_plan} />
-                    <Cell label="Advice" value={c.advice} />
-                  </Grid>
-                </div>
+                <RecordTable
+                  key={c.id}
+                  style={{ marginBottom: 10 }}
+                  rows={[
+                    ["Diagnosis", c.diagnosis],
+                    ["Treatment Today", c.treatment_done_today],
+                    ["Treatment Plan", c.treatment_plan],
+                    ["Advice", c.advice],
+                    ["Follow-up Date", c.follow_up_date],
+                    ["Follow-up Time", c.follow_up_time],
+                    ["Doctor", c.doctor],
+                  ]}
+                />
               ))}
             </SubSection>
           )}
 
           {visit.prescriptions?.length > 0 && (
             <SubSection title="Prescriptions">
-              {visit.prescriptions.map(p => (
-                <div key={p.id} style={s.note}>
-                  Diagnosis: {p.diagnosis || "—"} | Advice: {p.advice || "—"}
-                </div>
-              ))}
+              {visit.prescriptions.map(p => {
+                let meds = [];
+                try { meds = JSON.parse(p.medicines || "[]"); } catch { meds = []; }
+                return (
+                  <div key={p.id} style={s.prescBlock}>
+                    <div style={s.prescBlockHeader}>
+                      <span>
+                        <strong>{p.date || "—"}</strong>
+                        {p.doctor ? ` · Dr. ${p.doctor}` : ""}
+                      </span>
+                      {p.status && <span style={s.statusPill}>{p.status}</span>}
+                    </div>
+
+                    <RecordTable
+                      style={{ marginBottom: meds.length ? 10 : 0 }}
+                      rows={[
+                        ["Diagnosis", p.diagnosis],
+                        ["Advice", p.advice],
+                        ["Follow-up", (p.follow_up_date || p.follow_up_time)
+                          ? `${p.follow_up_date || "—"}${p.follow_up_time ? ` at ${p.follow_up_time}` : ""}`
+                          : null],
+                      ]}
+                    />
+
+                    {meds.length > 0 && (
+                      <Table
+                        headers={["Medicine", "Frequency", "Duration"]}
+                        rows={meds.map(m => [m.name, m.times, m.days ? `${m.days} day${m.days != 1 ? "s" : ""}` : null])}
+                      />
+                    )}
+                  </div>
+                );
+              })}
             </SubSection>
           )}
 
@@ -351,11 +423,25 @@ function VisitBlock({ visit, expanded, onToggle }) {
             <SubSection title="X-Ray / Intra-Oral Images">
               <div style={s.imgGrid}>
                 {visit.images.map(img => (
-                  <a key={img.id} href={img.image_path} target="_blank" rel="noreferrer" style={s.imgThumbLink}>
-                    <img src={img.image_path} alt={img.image_type} style={s.imgThumb} />
+                  <a key={img.id} href={`${API_BASE}${img.url}`} target="_blank" rel="noreferrer" style={s.imgThumbLink}>
+                    <img src={`${API_BASE}${img.url}`} alt={img.image_type} style={s.imgThumb} />
                     <span>{img.image_type}</span>
                   </a>
                 ))}
+              </div>
+            </SubSection>
+          )}
+
+          {visit.cbct_scans?.length > 0 && (
+            <SubSection title="CBCT Scans">
+              <Table
+                headers={["Study Date", "Modality", "Institution", "Slices", "Uploaded", "Notes"]}
+                rows={visit.cbct_scans.map(v => [
+                  v.study_date, v.modality, v.institution, v.num_slices, v.uploaded_at, v.notes,
+                ])}
+              />
+              <div style={{ fontSize: 11.5, color: "#94a3b8", marginTop: 6 }}>
+                Open the CBCT viewer from the visit workspace to view slices and annotations.
               </div>
             </SubSection>
           )}
@@ -381,39 +467,62 @@ const Section = ({ title, children }) => (
     {children}
   </div>
 );
-const SubSection = ({ title, children }) => (
-  <div style={{ marginTop: 14 }}>
+const SubSection = ({ title, children, first }) => (
+  <div style={{ marginTop: first ? 0 : 14 }}>
     <div style={s.subTitle}>{title}</div>
     {children}
   </div>
 );
-const Grid = ({ children }) => <div style={s.grid}>{children}</div>;
-const Cell = ({ label, value }) => (
-  !value ? null : (
-    <div style={s.cell}>
-      <div style={s.cellLabel}>{label}</div>
-      <div style={s.cellValue}>{String(value)}</div>
-    </div>
-  )
-);
 const EmptyPill = ({ text }) => <div style={s.emptyPill}>✓ {text}</div>;
-const Table = ({ headers, rows }) => (
-  <div style={s.tableWrap}>
-    <table style={s.table}>
-      <thead>
-        <tr>{headers.map(h => <th key={h} style={s.th}>{h}</th>)}</tr>
-      </thead>
-      <tbody>
-        {rows.map((r, i) => (
-          <tr key={i}>
-            {r.map((c, j) => <td key={j} style={s.td}>{c || "—"}</td>)}
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  </div>
-);
+
+// Standard multi-column data table — used for lists of records
+// (medicines, dental chart rows, findings, payments…).
+const Table = ({ headers, rows }) => {
+  const cleanRows = rows.filter(r => r.some(c => c !== null && c !== undefined && c !== ""));
+  if (cleanRows.length === 0) return null;
+  return (
+    <div style={s.tableWrap}>
+      <table style={s.table}>
+        <thead>
+          <tr>{headers.map(h => <th key={h} style={s.th}>{h}</th>)}</tr>
+        </thead>
+        <tbody>
+          {cleanRows.map((r, i) => (
+            <tr key={i} style={i % 2 === 1 ? s.trAlt : undefined}>
+              {r.map((c, j) => <td key={j} style={s.td}>{c || "—"}</td>)}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+};
+
+// Two-column "Field / Detail" record table — the replacement for the old
+// ragged auto-fit card grid. Every row is full-width and left-aligned,
+// so the block never reflows unevenly regardless of which fields have
+// values. Rows with no value are simply omitted.
+const RecordTable = ({ rows, style }) => {
+  const filled = rows.filter(([, v]) => v !== null && v !== undefined && v !== "");
+  if (filled.length === 0) return <EmptyPill text="Nothing recorded" />;
+  return (
+    <div style={{ ...s.tableWrap, ...style }}>
+      <table style={s.table}>
+        <tbody>
+          {filled.map(([label, value], i) => (
+            <tr key={label} style={i % 2 === 1 ? s.trAlt : undefined}>
+              <td style={s.recordLabelCell}>{label}</td>
+              <td style={s.recordValueCell}>{String(value)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+};
+
 const formatLabel = (k) => k.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+const formatHabitValue = (v) => (v === true ? "Yes" : String(v));
 
 /* ── styles ── */
 const s = {
@@ -430,23 +539,30 @@ const s = {
   loadingBox: { padding: 60, textAlign: "center", color: "#64748b" },
   section: { background: "#fff", borderRadius: 14, border: "1px solid #e6ecf7", padding: "18px 20px", marginBottom: 16 },
   sectionTitle: { fontSize: 13, fontWeight: 800, color: "#0b2d4e", marginBottom: 12, textTransform: "uppercase", letterSpacing: 0.5 },
-  subTitle: { fontSize: 12, fontWeight: 700, color: "#334155", marginBottom: 8 },
-  grid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12 },
-  cell: { background: "#f7f9fe", border: "1px solid #edf1fa", borderRadius: 10, padding: "10px 12px" },
-  cellLabel: { fontSize: 10, fontWeight: 700, color: "#8899bb", textTransform: "uppercase", marginBottom: 3 },
-  cellValue: { fontSize: 13, fontWeight: 600, color: "#1a2540" },
+  subTitle: { fontSize: 12, fontWeight: 700, color: "#334155", marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.4 },
   emptyPill: { display: "inline-block", fontSize: 12, fontWeight: 600, color: "#166534", background: "#dcfce7", padding: "6px 12px", borderRadius: 20 },
   chipRow: { display: "flex", flexWrap: "wrap", gap: 8 },
   chipWarn: { fontSize: 12, fontWeight: 700, color: "#991b1b", background: "#fee2e2", padding: "5px 12px", borderRadius: 20 },
   note: { fontSize: 12.5, color: "#475569", marginTop: 8, background: "#f7f9fe", padding: 10, borderRadius: 8 },
+
   tableWrap: { borderRadius: 10, overflow: "hidden", border: "1px solid #e4ecfb" },
   table: { width: "100%", borderCollapse: "collapse" },
-  th: { padding: "8px 12px", textAlign: "left", fontSize: 10.5, fontWeight: 700, background: "#1e3a6e", color: "#fff", textTransform: "uppercase" },
-  td: { padding: "8px 12px", fontSize: 12.5, color: "#2d3a55", borderBottom: "1px solid #f0f3fb" },
+  th: { padding: "9px 14px", textAlign: "left", fontSize: 10.5, fontWeight: 700, background: "#1e3a6e", color: "#fff", textTransform: "uppercase", letterSpacing: 0.4 },
+  td: { padding: "9px 14px", fontSize: 12.5, color: "#2d3a55", borderBottom: "1px solid #f0f3fb" },
+  trAlt: { background: "#f8fafd" },
+
+  // Field / Detail record table (two-column, one field per row)
+  recordLabelCell: { width: "34%", padding: "9px 14px", fontSize: 11, fontWeight: 700, color: "#5b6b8c", textTransform: "uppercase", letterSpacing: 0.3, borderBottom: "1px solid #f0f3fb", background: "#f4f7fc", verticalAlign: "top" },
+  recordValueCell: { padding: "9px 14px", fontSize: 13, fontWeight: 600, color: "#1a2540", borderBottom: "1px solid #f0f3fb", verticalAlign: "top" },
+
   visitCard: { border: "1px solid #e4ecfb", borderRadius: 12, marginBottom: 10, overflow: "hidden" },
   visitHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", background: "#f0f4fc", cursor: "pointer", fontSize: 13 },
   statusPill: { marginLeft: 10, fontSize: 10.5, fontWeight: 700, padding: "2px 10px", borderRadius: 20, background: "#dbeafe", color: "#1e40af" },
   visitBody: { padding: "16px" },
+
+  prescBlock: { border: "1px solid #e4ecfb", borderRadius: 10, padding: 12, marginBottom: 10, background: "#fbfcfe" },
+  prescBlockHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, fontSize: 12.5, color: "#1a2540" },
+
   imgGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(110px, 1fr))", gap: 10 },
   imgThumbLink: { display: "flex", flexDirection: "column", alignItems: "center", gap: 4, fontSize: 10, color: "#475569", textDecoration: "none" },
   imgThumb: { width: "100%", height: 90, objectFit: "cover", borderRadius: 8, border: "1px solid #e4ecfb" },

@@ -7,174 +7,118 @@ import api from "../api/api";
  * Props:
  *  - patientId (number)  ✅ REQUIRED
  *  - readOnly (boolean)  optional (doctor view)
+ *
+ * NOTE: This component was rewritten to match the actual backend shape.
+ * AllergyRecord is a per-row model (patient_id, type, allergen, reaction,
+ * severity, notes) — a patient can have MANY allergy rows, not a fixed
+ * set of Yes/No flags. GET /allergies/<patient_id> returns
+ * { rows: [...] } and PUT /allergies/<patient_id> replaces the full set
+ * of rows (see save_allergies() in allergies.py, which deletes existing
+ * rows and re-inserts). Because of that, this component now manages its
+ * own local `rows` state instead of relying on a parent-owned
+ * allergy/setAllergy object shaped around boolean flags.
  */
-export default function PatientAllergy({ patientId, readOnly = false }) {
-  const [loading, setLoading] = useState(false);
 
-  // null = unanswered, true = Yes, false = No.
-  // NOTE: other_allergy is a UI-only boolean toggle (drives whether the
-  // detail textbox shows). The backend's AllergyRecord.other_allergy
-  // column is a free-text field, not a boolean — see saveAllergy() below,
-  // which converts other_allergy -> the detail string before sending.
-  const [allergy, setAllergy] = useState({
-    drug_allergy:       null,
-    food_allergy:       null,
-    latex_allergy:      null,
-    iodine_allergy:     null,
-    anesthesia_allergy: null,
-    other_allergy:      null,
-    other_allergy_detail: "",
-    no_known_allergies: null,
-  });
+const ALLERGY_TYPES = ["Food", "Drug", "Latex", "Iodine", "Anesthesia", "Other"];
+const SEVERITY_OPTIONS = ["Mild", "Moderate", "Severe"];
+
+const emptyRow = () => ({
+  id: null, // null = not yet saved to backend
+  type: "",
+  allergen: "",
+  reaction: "",
+  severity: "",
+  notes: "",
+});
+
+export default function PatientAllergy({
+  patientId,
+  allergy,
+  setAllergy,
+  readOnly = false,
+}) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (!patientId) return;
+    setLoading(true);
     api
-      .get(`/patients/${patientId}/allergy`)
+      .get(`/allergies/${patientId}`)
       .then((res) => {
-        const d = res.data || {};
-        setAllergy((prev) => ({
-          ...prev,
-          drug_allergy:        d.drug_allergy || false,
-          food_allergy:        d.food_allergy || false,
-          latex_allergy:       d.latex_allergy || false,
-          iodine_allergy:      d.iodine_allergy || false,
-          anesthesia_allergy:  d.anesthesia_allergy || false,
-          // Backend stores other_allergy as free text — split it back into
-          // a Yes/No toggle + detail string for this component's UI.
-          other_allergy:       !!(d.other_allergy && d.other_allergy.trim()),
-          other_allergy_detail: d.other_allergy || "",
-          no_known_allergies:  d.no_known_allergies || false,
-        }));
+        const data = res.data || {};
+        const fetched = (data.rows || []).map((r) => ({
+  id: r.id,
+  type: r.type || "",
+  allergen: r.allergen || "",
+  reaction: r.reaction || "",
+  severity: r.severity || "",
+  notes: r.notes || "",
+}));
+
+setRows(fetched);
+
+if (setAllergy) {
+  setAllergy({ rows: fetched });
+}
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setLoading(false));
   }, [patientId]);
 
-  const toggle = (field, val) => {
+  const updateRow = (index, field, value) => {
     if (readOnly) return;
-    setAllergy((prev) => {
-      // Confirming "No Known Allergies" clears every other flag —
-      // mirrors PatientMedical.jsx / PatientHabits.jsx's mutual-exclusion
-      // pattern so the record can't say both "no allergies" and "yes,
-      // drug allergy" at once.
-      if (field === "no_known_allergies" && val === true) {
-        return {
-          ...prev,
-          drug_allergy: false, food_allergy: false, latex_allergy: false,
-          iodine_allergy: false, anesthesia_allergy: false,
-          other_allergy: false, other_allergy_detail: "",
-          no_known_allergies: true,
-        };
-      }
-      return {
-        ...prev,
-        [field]: val,
-        // Answering any specific allergy question un-confirms "No Known
-        // Allergies" if it was set.
-        ...(field !== "no_known_allergies" && val === true ? { no_known_allergies: false } : {}),
-        ...(field === "other_allergy" && !val ? { other_allergy_detail: "" } : {}),
-      };
-    });
+    setRows((prev) =>
+      prev.map((row, i) => (i === index ? { ...row, [field]: value } : row))
+    );
   };
 
-  const saveAllergy = async () => {
+  const addRow = () => {
+    if (readOnly) return;
+    setRows((prev) => [...prev, emptyRow()]);
+  };
+
+  const removeRow = (index) => {
+    if (readOnly) return;
+    setRows((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const saveAllergies = async () => {
     if (!patientId) return;
-    setLoading(true);
+    setSaving(true);
     try {
-      // Convert the UI's boolean other_allergy toggle back into the
-      // free-text value the backend column actually stores.
+      // Mirrors backend: rows with an empty allergen are dropped
+      // (save_allergies() skips them too, but filtering client-side
+      // avoids a confusing "vanishing row" after save).
       const payload = {
-        drug_allergy:       !!allergy.drug_allergy,
-        food_allergy:       !!allergy.food_allergy,
-        latex_allergy:      !!allergy.latex_allergy,
-        iodine_allergy:     !!allergy.iodine_allergy,
-        anesthesia_allergy: !!allergy.anesthesia_allergy,
-        other_allergy:      allergy.other_allergy ? (allergy.other_allergy_detail || "").trim() : "",
-        no_known_allergies: !!allergy.no_known_allergies,
+        rows: rows
+          .map((r) => ({
+            type: r.type,
+            allergen: (r.allergen || "").trim(),
+            reaction: r.reaction,
+            severity: r.severity,
+            notes: r.notes,
+          }))
+          .filter((r) => r.allergen !== ""),
       };
-      await api.put(`/patients/${patientId}/allergy`, payload);
+      const res = await api.put(`/allergies/${patientId}`, payload);
+      const saved = (res.data?.rows || []).map((r) => ({
+        id: r.id,
+        type: r.type || "",
+        allergen: r.allergen || "",
+        reaction: r.reaction || "",
+        severity: r.severity || "",
+        notes: r.notes || "",
+      }));
+      setRows(saved);
       alert("Allergy details saved");
     } catch (err) {
       console.error("Allergy save failed", err);
       alert(err?.response?.data?.error || "Failed to save allergy details");
     } finally {
-      setLoading(false);
+      setSaving(false);
     }
-  };
-
-  const FIELDS = [
-  { key: "drug_allergy", label: "Drug Allergy" },
-  { key: "food_allergy", label: "Food Allergy" },
-  { key: "latex_allergy", label: "Latex Allergy" },
-  { key: "iodine_allergy", label: "Iodine Allergy" },
-  { key: "anesthesia_allergy", label: "Anesthesia Allergy" },
-  { key: "other_allergy", label: "Other Allergy" },
-  { key: "no_known_allergies", label: "No Known Allergies" },
-];
-
-  const YesNoField = ({ fieldKey, label }) => {
-    const val = allergy[fieldKey]; // null | true | false
-    const isAnswered = val !== null && val !== undefined;
-    const isYes = val === true;
-
-    return (
-      <div style={styles.fieldRow}>
-        <div style={styles.labelRow}>
-          <span style={styles.label}>
-            {label}
-            <span style={styles.required}>*</span>
-          </span>
-          {!readOnly && (
-            <div style={styles.toggleGroup}>
-              <button
-                type="button"
-                onClick={() => toggle(fieldKey, true)}
-                style={{
-                  ...styles.toggleBtn,
-                  ...(isYes ? styles.toggleBtnYes : {}),
-                }}
-              >
-                Yes
-              </button>
-              <button
-                type="button"
-                onClick={() => toggle(fieldKey, false)}
-                style={{
-                  ...styles.toggleBtn,
-                  ...(!isYes && isAnswered ? styles.toggleBtnNo : {}),
-                }}
-              >
-                No
-              </button>
-            </div>
-          )}
-          {readOnly && (
-            <span style={{
-              ...styles.readOnlyBadge,
-              ...(isYes ? styles.badgeYes : styles.badgeNo),
-            }}>
-              {isYes ? "Yes" : isAnswered ? "No" : "—"}
-            </span>
-          )}
-          {!readOnly && !isAnswered && (
-            <span style={styles.errorMsg}>⚠ Required</span>
-          )}
-        </div>
-        {isYes && fieldKey === "other_allergy" && !readOnly && (
-          <input
-            style={styles.detailInput}
-            placeholder="Please specify allergy…"
-            value={allergy.other_allergy_detail || ""}
-            onChange={(e) =>
-              setAllergy((prev) => ({ ...prev, other_allergy_detail: e.target.value }))
-            }
-          />
-        )}
-        {isYes && fieldKey === "other_allergy" && readOnly && allergy.other_allergy_detail && (
-          <span style={styles.detailText}>{allergy.other_allergy_detail}</span>
-        )}
-      </div>
-    );
   };
 
   return (
@@ -183,28 +127,129 @@ export default function PatientAllergy({ patientId, readOnly = false }) {
         <span style={styles.subHeadingBar} />
         Allergy Information
       </div>
-      <div style={styles.grid}>
-        {FIELDS.map(({ key, label }) => (
-          <div
-            key={key}
-            style={{
-              opacity: allergy.no_known_allergies && key !== "no_known_allergies" ? 0.45 : 1,
-              transition: "opacity 0.15s",
-            }}
-          >
-            <YesNoField fieldKey={key} label={label} />
-          </div>
-        ))}
-      </div>
+
+      {loading && <div style={styles.emptyState}>Loading…</div>}
+
+      {!loading && rows.length === 0 && (
+        <div style={styles.emptyState}>
+          No known allergies recorded.
+        </div>
+      )}
+
+      {!loading && rows.length > 0 && (
+        <div style={styles.rowsWrap}>
+          {rows.map((row, i) => (
+            <div key={row.id ?? `new-${i}`} style={styles.rowCard}>
+              <div style={styles.rowGrid}>
+                <div style={styles.fieldCol}>
+                  <label style={styles.label}>Type</label>
+                  {readOnly ? (
+                    <span style={styles.readOnlyText}>{row.type || "—"}</span>
+                  ) : (
+                    <select
+                      style={styles.input}
+                      value={row.type}
+                      onChange={(e) => updateRow(i, "type", e.target.value)}
+                    >
+                      <option value="">Select…</option>
+                      {ALLERGY_TYPES.map((t) => (
+                        <option key={t} value={t}>{t}</option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+
+                <div style={styles.fieldCol}>
+                  <label style={styles.label}>
+                    Allergen<span style={styles.required}>*</span>
+                  </label>
+                  {readOnly ? (
+                    <span style={styles.readOnlyText}>{row.allergen || "—"}</span>
+                  ) : (
+                    <input
+                      style={styles.input}
+                      placeholder="e.g. Penicillin"
+                      value={row.allergen}
+                      onChange={(e) => updateRow(i, "allergen", e.target.value)}
+                    />
+                  )}
+                </div>
+
+                <div style={styles.fieldCol}>
+                  <label style={styles.label}>Reaction</label>
+                  {readOnly ? (
+                    <span style={styles.readOnlyText}>{row.reaction || "—"}</span>
+                  ) : (
+                    <input
+                      style={styles.input}
+                      placeholder="e.g. Rash, swelling"
+                      value={row.reaction}
+                      onChange={(e) => updateRow(i, "reaction", e.target.value)}
+                    />
+                  )}
+                </div>
+
+                <div style={styles.fieldCol}>
+                  <label style={styles.label}>Severity</label>
+                  {readOnly ? (
+                    <span style={styles.readOnlyText}>{row.severity || "—"}</span>
+                  ) : (
+                    <select
+                      style={styles.input}
+                      value={row.severity}
+                      onChange={(e) => updateRow(i, "severity", e.target.value)}
+                    >
+                      <option value="">Select…</option>
+                      {SEVERITY_OPTIONS.map((s) => (
+                        <option key={s} value={s}>{s}</option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+              </div>
+
+              <div style={styles.fieldCol}>
+                <label style={styles.label}>Notes</label>
+                {readOnly ? (
+                  <span style={styles.readOnlyText}>{row.notes || "—"}</span>
+                ) : (
+                  <textarea
+                    style={{ ...styles.input, ...styles.textarea }}
+                    placeholder="Additional notes…"
+                    value={row.notes}
+                    onChange={(e) => updateRow(i, "notes", e.target.value)}
+                  />
+                )}
+              </div>
+
+              {!readOnly && (
+                <button
+                  type="button"
+                  onClick={() => removeRow(i)}
+                  style={styles.removeBtn}
+                >
+                  Remove
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
 
       {!readOnly && (
-        <button
-          onClick={saveAllergy}
-          disabled={loading}
-          style={styles.saveBtn}
-        >
-          {loading ? "Saving…" : "Save Allergy"}
-        </button>
+        <div style={styles.actionsRow}>
+          <button type="button" onClick={addRow} style={styles.addBtn}>
+            + Add Allergy
+          </button>
+          <button
+            type="button"
+            onClick={saveAllergies}
+            disabled={saving}
+            style={styles.saveBtn}
+          >
+            {saving ? "Saving…" : "Save Allergy"}
+          </button>
+        </div>
       )}
     </div>
   );
@@ -222,59 +267,32 @@ const styles = {
     background: "linear-gradient(180deg, #2563eb, #60a5fa)",
     borderRadius: 2, flexShrink: 0,
   },
-  grid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
-    gap: 12,
+  emptyState: {
+    fontSize: 13, color: "#64748b", fontStyle: "italic",
+    padding: "10px 2px",
   },
-  fieldRow: {
+  rowsWrap: {
+    display: "flex", flexDirection: "column", gap: 12,
+  },
+  rowCard: {
     background: "#f8faff",
     border: "1.5px solid #e8edf8",
     borderRadius: 10,
-    padding: "11px 14px",
-    display: "flex", flexDirection: "column", gap: 8,
+    padding: "12px 14px",
+    display: "flex", flexDirection: "column", gap: 10,
   },
-  labelRow: {
-    display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
+  rowGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+    gap: 10,
   },
+  fieldCol: { display: "flex", flexDirection: "column", gap: 5 },
   label: {
-    fontSize: 12, fontWeight: 700, color: "#475569",
+    fontSize: 11, fontWeight: 700, color: "#475569",
     letterSpacing: "0.4px", textTransform: "uppercase",
-    flex: 1,
   },
   required: { color: "#e03e3e", marginLeft: 2 },
-  toggleGroup: { display: "flex", gap: 5 },
-  toggleBtn: {
-    padding: "4px 14px",
-    borderRadius: 20,
-    border: "1.5px solid #d1d9ef",
-    background: "#fff",
-    color: "#6b7a99",
-    fontSize: 12, fontWeight: 600,
-    cursor: "pointer",
-    transition: "all 0.15s",
-    fontFamily: "inherit",
-  },
-  toggleBtnYes: {
-    background: "#ecfdf5", borderColor: "#10b981", color: "#065f46",
-  },
-  toggleBtnNo: {
-    background: "#fff0f0", borderColor: "#f87171", color: "#991b1b",
-  },
-  errorMsg: {
-    fontSize: 11, color: "#e03e3e", fontWeight: 600,
-  },
-  readOnlyBadge: {
-    fontSize: 11.5, fontWeight: 700, padding: "3px 10px",
-    borderRadius: 20, border: "1.5px solid transparent",
-  },
-  badgeYes: {
-    background: "#ecfdf5", borderColor: "#10b981", color: "#065f46",
-  },
-  badgeNo: {
-    background: "#f1f5f9", borderColor: "#cbd5e1", color: "#64748b",
-  },
-  detailInput: {
+  input: {
     width: "100%", padding: "8px 11px",
     border: "1.5px solid #dde8fb", borderRadius: 8,
     fontFamily: "inherit", fontSize: 13, color: "#1a1f36",
@@ -282,11 +300,35 @@ const styles = {
     transition: "border-color 0.18s",
     boxSizing: "border-box",
   },
-  detailText: {
-    fontSize: 13, color: "#334155", fontStyle: "italic",
+  textarea: {
+    minHeight: 54, resize: "vertical",
+  },
+  readOnlyText: {
+    fontSize: 13, color: "#334155",
+  },
+  removeBtn: {
+    alignSelf: "flex-start",
+    padding: "5px 12px",
+    background: "#fff0f0",
+    border: "1.5px solid #f87171",
+    color: "#991b1b",
+    borderRadius: 8,
+    fontFamily: "inherit", fontSize: 12, fontWeight: 600,
+    cursor: "pointer",
+  },
+  actionsRow: {
+    marginTop: 14, display: "flex", gap: 10,
+  },
+  addBtn: {
+    padding: "10px 20px",
+    background: "#fff",
+    color: "#2563eb",
+    border: "1.5px solid #2563eb",
+    borderRadius: 10,
+    fontFamily: "inherit", fontSize: 13.5, fontWeight: 700,
+    cursor: "pointer",
   },
   saveBtn: {
-    marginTop: 14,
     padding: "10px 28px",
     background: "linear-gradient(135deg, #1d4ed8, #2563eb)",
     color: "#fff",
@@ -295,6 +337,5 @@ const styles = {
     cursor: "pointer",
     boxShadow: "0 4px 14px rgba(37,99,235,0.32)",
     transition: "opacity 0.15s",
-    alignSelf: "flex-start",
   },
 };

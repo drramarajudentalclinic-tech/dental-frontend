@@ -26,10 +26,12 @@ export default function LoginPage() {
         return;
       }
 
-      // Save to localStorage
-      localStorage.setItem("token", access_token);
-      localStorage.setItem("role", role);
-      localStorage.setItem("username", username);
+      // Save to sessionStorage (per-tab, so multiple roles can be
+      // logged in simultaneously across different tabs without one
+      // login overwriting another tab's token)
+      sessionStorage.setItem("token", access_token);
+      sessionStorage.setItem("role", role);
+      sessionStorage.setItem("username", username);
 
       // Redirect based on role
       if (role === "doctor") {

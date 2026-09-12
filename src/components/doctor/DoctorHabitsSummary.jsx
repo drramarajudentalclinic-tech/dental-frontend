@@ -1,55 +1,104 @@
 const HABIT_LABELS = {
   smoking: "Smoking",
-  alcohol: "Alcohol Consumption",
-  tobacco: "Tobacco Chewing",
-  pan:     "Pan / Betel Nut",
+  alcohol: "Alcohol",
+  tobacco: "Tobacco",
+  pan_chewing: "Pan Chewing",
+  spicy_foods: "Spicy Foods",
 };
 
 export default function DoctorHabitsSummary({ data }) {
   if (!data) return null;
 
-  let habits = [];
-
-  // ── Format 1: array of habit objects (DB format) ──────────────────
-  // [ { habit_type: "smoking", frequency: "DAILY", duration_years: 10 }, ... ]
-  if (Array.isArray(data)) {
-    habits = data.filter(h => h.habit_type);
+  // No habits selected
+  if (data.no_habits) {
+    return (
+      <div
+        style={{
+          padding: 18,
+          textAlign: "center",
+          background: "#f8fafc",
+          border: "1px dashed #cbd5e1",
+          borderRadius: 10,
+          color: "#64748b",
+          fontWeight: 600,
+        }}
+      >
+        ✅ No Habits
+      </div>
+    );
   }
 
-  // ── Format 2: flat dict (reception form format) ───────────────────
-  // { smoking: "yes/10/15", alcohol: "occasionally", tobacco: "chewing" }
-  else if (typeof data === "object") {
-    habits = Object.entries(data)
-      .filter(([, val]) => val && val !== "no" && val !== false)
-      .map(([key, val]) => {
-        // Parse "yes/10/15" style values
-        const parts = String(val).split("/");
-        return {
-          habit_type:     key,
-          frequency:      parts[0] || val,
-          duration_years: parts[1] || null,
-          remarks:        parts[2] || null,
-        };
-      });
-  }
+  const habits = [];
 
-  if (habits.length === 0) return null;
+  if (data.smoking)
+    habits.push({
+      label: HABIT_LABELS.smoking,
+      detail: data.smoking_detail,
+    });
+
+  if (data.alcohol)
+    habits.push({
+      label: HABIT_LABELS.alcohol,
+      detail: data.alcohol_detail,
+    });
+
+  if (data.tobacco)
+    habits.push({
+      label: HABIT_LABELS.tobacco,
+      detail: data.tobacco_detail,
+    });
+
+  if (data.pan_chewing)
+    habits.push({
+      label: HABIT_LABELS.pan_chewing,
+      detail: data.pan_chewing_detail,
+    });
+
+  if (data.spicy_foods)
+    habits.push({
+      label: HABIT_LABELS.spicy_foods,
+      detail: data.spicy_foods_detail,
+    });
+
+  if (habits.length === 0) {
+    return (
+      <div
+        style={{
+          padding: 18,
+          textAlign: "center",
+          background: "#f8fafc",
+          border: "1px dashed #cbd5e1",
+          borderRadius: 10,
+          color: "#94a3b8",
+        }}
+      >
+        No habit information available.
+      </div>
+    );
+  }
 
   return (
-    <section className="doctor-section" style={{ marginTop: 16 }}>
-      <h3>Habits</h3>
-      <ul style={{ listStyle: "none", paddingLeft: 0, margin: 0 }}>
-        {habits.map((habit, index) => (
-          <li key={index} style={{ marginBottom: 6, fontSize: 14, color: "#222" }}>
-            <strong>
-              {HABIT_LABELS[habit.habit_type] || habit.habit_type}
-            </strong>
-            {habit.frequency && <> — {habit.frequency}</>}
-            {habit.duration_years && <> ({habit.duration_years} yrs)</>}
-            {habit.remarks && <> · {habit.remarks}</>}
-          </li>
-        ))}
-      </ul>
-    </section>
+    <div className="dpv-info-grid">
+      {habits.map((habit, index) => (
+        <div key={index} className="dpv-info-cell">
+          <div className="dpv-info-label">{habit.label}</div>
+          <div className="dpv-info-value">
+            Yes
+            {habit.detail && (
+              <div
+                style={{
+                  marginTop: 4,
+                  fontSize: 13,
+                  color: "#64748b",
+                  fontWeight: 500,
+                }}
+              >
+                {habit.detail}
+              </div>
+            )}
+          </div>
+        </div>
+      ))}
+    </div>
   );
 }

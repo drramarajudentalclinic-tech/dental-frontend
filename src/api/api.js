@@ -1,83 +1,92 @@
 import axios from "axios";
 
-// -----------------------
-// BASE URL (AUTO SWITCH / ENV SUPPORT)
-// -----------------------
-const BASE_URL =
-  process.env.REACT_APP_API_URL ||
-  (window.location.hostname === "localhost"
-    ? "http://localhost:5000/api"   // Local
-    : "https://dental-backend-xojn.onrender.com/api"); // Live
+// ======================================================
+// API BASE URL
+// ======================================================
+export const API_BASE =
+  import.meta.env.VITE_API_URL ||
+  (
+    window.location.hostname === "localhost" ||
+    window.location.hostname === "127.0.0.1"
+      ? "http://localhost:5000/api"
+      : "https://dental-backend-xojn.onrender.com/api"
+  );
 
-// -----------------------
-// CREATE AXIOS INSTANCE
-// -----------------------
+console.log("API Base URL:", API_BASE);
+
+// ======================================================
+// AXIOS INSTANCE
+// ======================================================
 const api = axios.create({
-  baseURL: BASE_URL,
+  baseURL: API_BASE,
   headers: {
     "Content-Type": "application/json",
   },
-  timeout: 300000, // 5 minutes for demo
+  timeout: 300000, // 5 minutes
 });
 
-// -----------------------
+// ======================================================
 // REQUEST INTERCEPTOR
-// -----------------------
+// ======================================================
 api.interceptors.request.use(
   (config) => {
-    const token = localStorage.getItem("token");
+    const token = sessionStorage.getItem("token");
 
-    // ✅ Attach JWT token automatically
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
     }
 
     console.log(
-      `API REQUEST: [${config.method?.toUpperCase()}] ${config.baseURL}${config.url}`,
-      config.data || config.params
+      `➡️ ${config.method?.toUpperCase()} ${config.baseURL}${config.url}`,
+      config.data || config.params || ""
     );
 
     return config;
   },
-  (error) => Promise.reject(error)
+  (error) => {
+    console.error("Request Error:", error);
+    return Promise.reject(error);
+  }
 );
 
-// -----------------------
+// ======================================================
 // RESPONSE INTERCEPTOR
-// -----------------------
+// ======================================================
 api.interceptors.response.use(
   (response) => {
-    console.log("API RESPONSE:", response.data);
+    console.log(
+      `✅ ${response.config.method?.toUpperCase()} ${response.config.url}`,
+      response.data
+    );
+
     return response;
   },
   (error) => {
-    // 🔴 Server responded with error
     if (error.response) {
-      console.error("API ERROR:", error.response.data);
+      console.error(
+        "Server Error:",
+        error.response.status,
+        error.response.data
+      );
 
-      // 🔐 Handle Unauthorized (JWT expired / invalid)
-      // ✅ Only redirect if NOT already on login page
       if (error.response.status === 401) {
+        sessionStorage.removeItem("token");
+        sessionStorage.removeItem("role");
+        sessionStorage.removeItem("username");
+
         if (window.location.pathname !== "/login") {
           alert("Session expired. Please login again.");
-          localStorage.removeItem("token");
-          localStorage.removeItem("role");
-          localStorage.removeItem("username");
           window.location.href = "/login";
         }
       }
-    }
-    // 🔴 No response (server down / network issue)
-    else if (error.request) {
-      console.error("API ERROR: No response from server");
+    } else if (error.request) {
+      console.error("No response from backend.");
 
-      alert(
-        "Server is starting (Render free tier). Please wait 10–20 seconds and try again."
-      );
-    }
-    // 🔴 Other error
-    else {
-      console.error("API ERROR:", error.message);
+      if (!API_BASE.includes("localhost")) {
+        alert("Backend is starting. Please wait 15–30 seconds and try again.");
+      }
+    } else {
+      console.error("Axios Error:", error.message);
     }
 
     return Promise.reject(error);

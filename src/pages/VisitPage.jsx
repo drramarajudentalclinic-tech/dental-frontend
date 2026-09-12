@@ -6,7 +6,7 @@ import DoctorMedicalSummary from "../components/doctor/DoctorMedicalSummary";
 import DoctorHabitsSummary from "../components/doctor/DoctorHabitsSummary";
 import DoctorWomenSummary from "../components/doctor/DoctorWomenSummary";
 
-import DentalChart from "../components/DentalChart";
+import DentalChart, { resolveDiagnosisCondition } from "../components/DentalChart";
 import Findings from "../components/Findings";
 import Consultation from "../components/Consultation";
 import Prescription from "../components/Prescription";
@@ -365,8 +365,9 @@ export default function VisitPage() {
   const [visit,      setVisit]      = useState(null);
   const [patient,    setPatient]    = useState(null);
   const [medical,    setMedical]    = useState({});
-  const [allergy,    setAllergy]    = useState({ rows: [] });
-  const [habits,     setHabits]     = useState([]);
+  const [allergy, setAllergy] = useState({});
+  const [medications, setMedications] = useState([]);
+  const [habits, setHabits] = useState({});
   const [women,      setWomen]      = useState({});
   const [familyDoc,  setFamilyDoc]  = useState({});
   const [consent,    setConsent]    = useState({});
@@ -376,10 +377,10 @@ export default function VisitPage() {
   const [findings,           setFindings]           = useState([]);
   const [latestConsultation, setLatestConsultation] = useState(null);
 
-  useEffect(() => {
-    injectStyles();
-    if (visitId) loadAll();
-  }, [visitId]);
+    useEffect(() => {
+      injectStyles();
+      if (visitId) loadAll();
+    }, [visitId]);
 
   const loadAll = async () => {
     try {
@@ -390,8 +391,9 @@ export default function VisitPage() {
       setVisit(d.visit     || null);
       setPatient(d.patient || null);
       setMedical(d.medical || {});
-      setAllergy(d.allergy && Array.isArray(d.allergy.rows) ? d.allergy : { rows: [] });
-      setHabits(Array.isArray(d.habits) ? d.habits : []);
+      setAllergy(d.allergy || {});
+      setMedications(Array.isArray(d.medications) ? d.medications : []);
+   setHabits(d.habits || {});
       setWomen(d.women     || {});
       setFamilyDoc(d.family_doctor || {});
       setConsent(d.consent || {});
@@ -418,6 +420,54 @@ export default function VisitPage() {
     loadLatestConsultation();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visitId]);
+
+  // ── Diagnosis panel "+ Add" writes straight into the real Dental Chart / ──
+  // ── Findings tables, so all three views (Diagnosis, Dental Chart, Findings) ──
+  // ── stay in sync — no more entries that only exist inside the Diagnosis card. ──
+  const handleAddDentalRecord = async ({ teeth, label, date, color, notes = "" }) => {
+    const { condition, otherText } = resolveDiagnosisCondition(label);
+    const fd = {
+      condition,
+      severity:     "",
+      surface:      "",
+      notes,
+      other_text:   otherText,
+      custom_color: otherText ? (color || "") : "",
+    };
+    const saved = [];
+    for (const toothNum of teeth) {
+      const res = await api.post(`/visits/${visitId}/dental-chart`, { tooth_number: toothNum, ...fd });
+      saved.push(res.data);
+    }
+    setChartRecords(prev => [...prev, ...saved]);
+  };
+
+  const handleEditDentalRecord = async (id, fd) => {
+    await api.put(`/visits/${visitId}/dental-chart/${id}`, fd);
+    setChartRecords(prev => prev.map(r => (r.id === id ? { ...r, ...fd } : r)));
+  };
+
+  const handleDeleteDentalRecord = async (id) => {
+    await api.delete(`/visits/${visitId}/dental-chart/${id}`);
+    setChartRecords(prev => prev.filter(r => r.id !== id));
+  };
+
+  const handleAddFindingRecord = async ({ note, date }) => {
+    const payload = [{ finding_type: note, value: date, notes: null }];
+    const res = await api.post(`/visits/${visitId}/findings`, payload);
+    const saved = Array.isArray(res.data) ? res.data : [res.data];
+    setFindings(prev => [...prev, ...saved]);
+  };
+
+  const handleEditFindingRecord = async (id, finding_type) => {
+    await api.put(`/findings/${id}`, { finding_type });
+    setFindings(prev => prev.map(f => (f.id === id ? { ...f, finding_type } : f)));
+  };
+
+  const handleDeleteFindingRecord = async (id) => {
+    await api.delete(`/findings/${id}`);
+    setFindings(prev => prev.filter(f => f.id !== id));
+  };
 
   const handleCloseVisit = async (billingNote) => {
     setClosing(true);
@@ -455,9 +505,13 @@ export default function VisitPage() {
     </div>
   );
 
-  const isClosed    = (visit.status || "").toUpperCase() === "CLOSED";
-  const allergyRows = allergy?.rows || [];
+  const isClosed = (visit.status || "").toUpperCase() === "CLOSED";
 
+  // AllergyRecord has no drug_allergy/food_allergy/... boolean columns —
+  // each allergy is its own row with a `type` field ("Food", "Drug", etc.).
+  // GET /visits/<id> returns allergy as { rows: [...] }, same shape as
+  // GET /allergies/<patient_id>.
+  const allergyRows = Array.isArray(allergy?.rows) ? allergy.rows : [];
   const chiefComplaint =
     (visit.chief_complaint && visit.chief_complaint.trim())
       ? visit.chief_complaint
@@ -673,6 +727,52 @@ export default function VisitPage() {
           )}
         </Card>
 
+        {/* ══════════ CURRENT MEDICATIONS ══════════ */}
+        <Card badge="Current Medications" badgeColor="#2563eb" badgeBg="#eff6ff" icon="💊" delay="vp-d3">
+          {medications.length === 0 ? (
+            <div style={{ textAlign:"center", padding:"22px 0", background:"#fafbff",
+              borderRadius:10, border:"1.5px dashed #dde8f8", color:"#94a3b8", fontSize:13.5 }}>
+              No current medications recorded.
+            </div>
+          ) : (
+            <div className="vp-table-wrap">
+              <table className="vp-table">
+                <thead>
+                  <tr>
+                    <th>Medicine</th>
+                    <th>Dosage</th>
+                    <th>Frequency</th>
+                    <th>Duration</th>
+                    <th>Purpose</th>
+                    <th>Prescribed By</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {medications.map((row, i) => (
+                    <tr key={row.id || i} style={{ opacity: row.active === false ? 0.55 : 1 }}>
+                      <td style={{ fontWeight:600, color:"#0b2d4e" }}>
+                        {row.medicine_name || "—"}
+                        {row.active === false && (
+                          <span style={{
+                            marginLeft:8, fontSize:10, fontWeight:700, letterSpacing:"0.3px",
+                            color:"#64748b", background:"#e2e8f0", borderRadius:12,
+                            padding:"1px 7px", textTransform:"uppercase",
+                          }}>Inactive</span>
+                        )}
+                      </td>
+                      <td>{row.dosage || "—"}</td>
+                      <td>{row.frequency || "—"}</td>
+                      <td>{row.duration || "—"}</td>
+                      <td>{row.purpose || "—"}</td>
+                      <td style={{ color:"#64748b", fontSize:12.5 }}>{row.prescribed_by || "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Card>
+
         {/* ══════════ HABITS ══════════ */}
         <Card badge="Personal Habits" badgeColor="#0d6e4a" badgeBg="#f0fdf4" icon="🧬" delay="vp-d4" extra="vp-card-green">
           <DoctorHabitsSummary data={habits} />
@@ -740,6 +840,7 @@ export default function VisitPage() {
             visitId={visitId}
             disabled={isClosed}
             onRecordsChange={setChartRecords}
+            externalRecords={chartRecords}
           />
         </Module>
 
@@ -749,6 +850,7 @@ export default function VisitPage() {
             visitId={visitId}
             disabled={isClosed}
             onFindingsChange={setFindings}
+            externalFindings={findings}
           />
         </Module>
 
@@ -760,6 +862,12 @@ export default function VisitPage() {
             disabled={isClosed}
             dentalChartLog={chartRecords}
             otherFindings={findings}
+            onAddDentalRecord={handleAddDentalRecord}
+            onEditDentalRecord={handleEditDentalRecord}
+            onDeleteDentalRecord={handleDeleteDentalRecord}
+            onAddFindingRecord={handleAddFindingRecord}
+            onEditFindingRecord={handleEditFindingRecord}
+            onDeleteFindingRecord={handleDeleteFindingRecord}
             onSaved={loadLatestConsultation}
           />
         </Module>

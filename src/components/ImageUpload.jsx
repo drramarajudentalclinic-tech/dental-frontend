@@ -9,12 +9,97 @@ const IMAGE_TYPES = [
   { value: "INTRAORAL", label: "Intra Oral Image",  icon: "📸", desc: "Intraoral Photo" },
 ];
 
-const API_BASE = "https://dental-backend-xojn.onrender.com";
+// Reads the backend URL from Vite's env (VITE_API_URL in .env / .env.production).
+// If that's not set for some reason, auto-detect: use localhost when running
+// the dev server locally, otherwise fall back to the deployed Render backend.
+// This way the same build works correctly on both localhost and Render.
+function resolveApiBase() {
+  const fromEnv = import.meta.env.VITE_API_URL;
+  // .env / .env.production define VITE_API_URL as the API root (with a
+  // trailing "/api"), e.g. "https://dental-backend-xojn.onrender.com/api".
+  // This file needs the *server* root (no "/api") since it appends "/api/..."
+  // itself for endpoints and uses the bare root for static file/image URLs.
+  const raw = fromEnv
+    ? fromEnv
+    : (typeof window !== "undefined" &&
+       (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"))
+      ? "http://localhost:5000/api"
+      : "https://dental-backend-xojn.onrender.com/api";
+
+  return raw.replace(/\/$/, "").replace(/\/api$/, "");
+}
+
+const API_BASE = resolveApiBase();
 
 function imgSrc(url) {
   if (!url) return "";
   if (url.startsWith("http")) return url;
   return `${API_BASE}${url}`;
+}
+
+/**
+ * <img src="..."> requests are made directly by the browser and can never
+ * carry an Authorization header, so a JWT-protected image endpoint always
+ * 401s a plain <img> tag — regardless of whether the backend also accepts
+ * a "token" query param (that depends on backend config we don't control
+ * here, and isn't reliable). Instead, fetch the bytes through the same
+ * `api` client already used (successfully) for every other authenticated
+ * request in this app, then hand the browser a local blob: URL to render.
+ */
+function AuthImage({ src, alt, style, className, draggable, onMouseOver, onMouseOut }) {
+  const [blobUrl, setBlobUrl] = useState(null);
+  const [failed,  setFailed]  = useState(false);
+
+  useEffect(() => {
+    let objectUrl = null;
+    let cancelled  = false;
+    setFailed(false);
+    setBlobUrl(null);
+
+    if (!src) return;
+
+    // Backend returns urls like "/api/images/123/data". The `api` client's
+    // baseURL already includes "/api", so strip the duplicate prefix to
+    // avoid requesting "/api/api/images/123/data".
+    const path = src.startsWith("http") ? src : src.replace(/^\/api(?=\/)/, "");
+
+    api.get(path, { responseType: "blob" })
+      .then((res) => {
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(res.data);
+        setBlobUrl(objectUrl);
+      })
+      .catch((err) => {
+        console.error("Failed to load image:", src, err);
+        if (!cancelled) setFailed(true);
+      });
+
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [src]);
+
+  if (failed) {
+    return (
+      <div className={className} style={{ ...style, display:"flex", alignItems:"center",
+        justifyContent:"center", background:"#1e293b", color:"#94a3b8", fontSize:12, gap:6 }}>
+        ⚠️ Failed to load
+      </div>
+    );
+  }
+  if (!blobUrl) {
+    return (
+      <div className={className} style={{ ...style, display:"flex", alignItems:"center",
+        justifyContent:"center", background:"#0b1120" }}>
+        <span className="imgup-spinner" />
+      </div>
+    );
+  }
+  return (
+    <img src={blobUrl} alt={alt} className={className} style={style} draggable={draggable}
+      onMouseOver={onMouseOver} onMouseOut={onMouseOut} />
+  );
 }
 function todayStr() { return new Date().toISOString().split("T")[0]; }
 function fmtDate(d) {
@@ -305,7 +390,7 @@ function Lightbox({ img, onClose }) {
         onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp}
         style={{ flex:1,overflow:"hidden",display:"flex",alignItems:"center",justifyContent:"center",
           cursor:zoom>1?(dragging?"grabbing":"grab"):"default",userSelect:"none" }}>
-        <img src={imgSrc(img.url)} alt={img.description||img.type} draggable={false}
+        <AuthImage src={img.url} alt={img.description||img.type} draggable={false}
           style={{ maxWidth:"100%",maxHeight:"100%",objectFit:"contain",
             borderRadius:zoom===1?10:0,
             transform:`scale(${zoom}) translate(${pan.x/zoom}px,${pan.y/zoom}px)`,
@@ -541,7 +626,7 @@ function ImageCard({ img, disabled, onEdit, onDelete, onView }) {
     <div className="imgup-img-card">
       <div style={{ position:"relative",cursor:"zoom-in",background:"#0b1120",overflow:"hidden" }}
         onClick={()=>onView(img)}>
-        <img src={imgSrc(img.url)} alt={img.description||img.type}
+        <AuthImage src={img.url} alt={img.description||img.type}
           style={{ width:"100%",height:160,objectFit:"cover",display:"block",
             transition:"transform 0.22s",filter:"brightness(0.92)" }}
           onMouseOver={e=>e.currentTarget.style.transform="scale(1.04)"}

@@ -267,7 +267,7 @@ function fmtDisplay(dateStr) {
   return `${d}/${m}/${y}`;
 }
 
-export default function OtherFindings({ visitId, onFindingsChange }) {
+export default function OtherFindings({ visitId, onFindingsChange, externalFindings }) {
   const [findings, setFindings] = useState([]);
   const [showAdd, setShowAdd] = useState(false);
   const [text, setText] = useState("");
@@ -289,6 +289,20 @@ export default function OtherFindings({ visitId, onFindingsChange }) {
     }).catch(() => {});
   }, [visitId]);
 
+  // Keep this list in sync with findings added/edited/deleted from outside —
+  // most importantly, the Diagnosis panel's "+ Add" flow. Content-compared so
+  // this component's own writes (which already update both local and lifted
+  // state to the same value) don't cause a redundant re-render loop.
+  useEffect(() => {
+    if (externalFindings === undefined) return;
+    setFindings(prev => {
+      const prevJSON = JSON.stringify(prev);
+      const extJSON  = JSON.stringify(externalFindings);
+      return prevJSON === extJSON ? prev : externalFindings;
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [JSON.stringify(externalFindings)]);
+
   const handleAdd = async () => {
     if (!text.trim()) return;
     try {
@@ -296,15 +310,10 @@ export default function OtherFindings({ visitId, onFindingsChange }) {
       const res = await api.post(`/visits/${visitId}/findings`, payload);
       const saved = Array.isArray(res.data) ? res.data : [res.data];
       setFindings(prev => [...prev, ...saved.map(s => ({ ...s, _date: date }))]);
-    } catch {
-      // fallback: add locally
-      setFindings(prev => [...prev, {
-        id: Date.now(),
-        finding_type: text.trim(),
-        value: date,
-        notes: null,
-        _local: true,
-      }]);
+    } catch (err) {
+      console.error("Failed to save finding:", err);
+      alert("Couldn't save this finding — please check your connection and try again.");
+      return; // don't clear the form or claim success on a failed save
     }
     setText("");
     setDate(todayStr());

@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from "react";
-import api from "../api/api";
+import { useState, useEffect, useCallback, useMemo } from "react";
+import api, { API_BASE } from "../api/api";
 
 
 const fmt  = (n) => `₹${Number(n || 0).toLocaleString("en-IN", { minimumFractionDigits: 0 })}`;
@@ -220,19 +220,39 @@ function ReceiptPreviewModal({ payment, visit, onClose }) {
     const r = iw(Math.floor(n)).trim(); return r ? "Rupees " + r + " Only" : "Rupees Zero Only";
   };
 
-  const printReceipt = () => {
-    // Open the original stored receipt from backend in new tab
-    const receiptNo = payment?.receipt_number;
-    if (receiptNo) {
-  const a = document.createElement("a");
-  a.href = `${API_BASE}/api/receipts/${receiptNo}/preview`;
-  a.target = "_blank";
-  a.rel = "noopener noreferrer";
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  return;
-}
+  const [printing, setPrinting] = useState(false);
+
+  // Open the original stored receipt PDF — this is the same PDF that was
+  // generated and saved when the receipt was created via payments.py.
+  // (The old /receipts/<no>/preview route belongs to a separate, disused
+  // Receipt table that real payments never populate, so it always 404'd.)
+  // A plain window.open/<a href> can't carry the Authorization header
+  // your backend requires either, so fetch it through the authenticated
+  // `api` client and hand the browser a local blob: URL instead.
+  const printReceipt = async () => {
+    if (payment?.id) {
+      const w = window.open("", "_blank", "width=800,height=1000");
+      if (w) w.document.write("<body style='font-family:Arial,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;color:#1d4d7a;font-size:18px;'>⏳ Loading receipt…</body>");
+      setPrinting(true);
+      try {
+        const res = await api.get(`/payments/${payment.id}/receipt`, { responseType: "blob" });
+        const blobUrl = URL.createObjectURL(res.data);
+        if (w && !w.closed) w.location.href = blobUrl;
+        else window.open(blobUrl, "_blank");
+      } catch (e) {
+        console.error("Failed to load receipt", e);
+        if (w && !w.closed) {
+          w.document.open();
+          w.document.write("<body style='font-family:Arial,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;color:#dc2626;font-size:16px;'>⚠️ Could not load the receipt. Please try again.</body>");
+          w.document.close();
+        } else {
+          alert("Could not load the receipt. Please try again.");
+        }
+      } finally {
+        setPrinting(false);
+      }
+      return;
+    }
     // Fallback: re-render from current data if no receipt number
     const w = window.open("", "_blank", "width=800,height=1000");
     const paid = Number(payment?.paid_amount || 0);
@@ -278,7 +298,7 @@ function ReceiptPreviewModal({ payment, visit, onClose }) {
 
     const html =
       "<!DOCTYPE html><html><head><meta charset='utf-8'/><title>Receipt #" + (payment?.receipt_number||"") + "</title><style>" + css + "</style></head><body>" +
-      "<div class='hw'><div class='logo'>" + logoSvg + "</div><div class='ci'><div class='cn'>Sri Satya Sai Oral Health Center &amp; Dental Clinic</div><div class='ca'><strong>Address:</strong> G-15, Rajnigandha Apartments, Chaitanyapuri, Hyderabad - 500060<br/><strong>Ph:</strong> 040-66718100 | 9949094449</div></div></div>" +
+      "<div class='hw'><div class='logo'>" + logoSvg + "</div><div class='ci'><div class='cn'>Sri Satya Sai Oral Health Center &amp; Dental Clinic</div><div class='ca'><strong>Address:</strong> G-15, Rajnigandha Apartments, Chaitanyapuri, Hyderabad - 500060<br/><strong>Ph:</strong> 9908894449 | 9949094449</div></div></div>" +
       "<div class='rt'>RECEIPT</div>" +
       "<div class='mr'><div>Date: <strong>" + fmtD(payment?.payment_date || payment?.created_at) + "</strong></div><div>Receipt No: <strong>" + (payment?.receipt_number||"—") + "</strong></div></div>" +
       "<table class='pt'><tr><td>Name</td><td>" + (payment?.patient_name || visit?.name || "—") + "</td></tr><tr><td>Case Id</td><td>" + (payment?.case_number || visit?.case_number || "—") + "</td></tr><tr><td>Mobile</td><td>" + (payment?.mobile || visit?.mobile || "—") + "</td></tr></table>" +
@@ -308,7 +328,9 @@ function ReceiptPreviewModal({ payment, visit, onClose }) {
             </div>
           </div>
           <div style={{ display: "flex", gap: 8 }}>
-            <button className="bs-btn bs-btn-primary bs-btn-sm" onClick={printReceipt}>🖨️ Print</button>
+            <button className="bs-btn bs-btn-primary bs-btn-sm" onClick={printReceipt} disabled={printing}>
+              {printing ? "⏳ Loading…" : "🖨️ Print"}
+            </button>
             <button onClick={onClose} style={{ width: 32, height: 32, borderRadius: 8, border: "1.5px solid rgba(255,255,255,0.25)", background: "rgba(255,255,255,0.12)", color: "#fff", fontSize: 15, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>✕</button>
           </div>
         </div>
@@ -323,7 +345,7 @@ function ReceiptPreviewModal({ payment, visit, onClose }) {
               <div style={{ fontSize: 17, fontWeight: 800, color: "#c0392b" }}>Sri Satya Sai Oral Health Center &amp; Dental Clinic</div>
               <div style={{ fontSize: 11, color: "#555", marginTop: 3, lineHeight: 1.6 }}>
                 <strong>Address:</strong> G-15, Rajnigandha Apartments, Chaitanyapuri, Hyderabad - 500060<br />
-                <strong>Ph:</strong> 040-66718100 | 9949094449
+                <strong>Ph:</strong> 9908894449 | 9949094449
               </div>
             </div>
           </div>
@@ -444,7 +466,7 @@ function ReceiptPreviewModal({ payment, visit, onClose }) {
 }
 
 /* ═══════════ BILLING MODAL ════════════════════════════════════ */
-function BillingModal({ visit, editPayment, onClose, onSaved }) {
+function LegacyBillingModal({ visit, editPayment, onClose, onSaved }) {
   const isEdit = !!editPayment;
 
   const defaultTreatments = () => {
@@ -813,6 +835,24 @@ function ReceiptSearchPage() {
   const [searched,   setSearched]   = useState(false);
   const [preview,    setPreview]    = useState(null);
   const [exporting,  setExporting]  = useState(false);
+  const [pdfLoading, setPdfLoading] = useState({});
+
+  // A plain window.open(url) can't attach the Authorization header your
+  // backend requires, so it always 401'd. Fetch the PDF through the
+  // authenticated `api` client instead, then hand the browser a blob: URL.
+  const openReceiptPdf = async (payId) => {
+    setPdfLoading(p => ({ ...p, [payId]: true }));
+    try {
+      const res = await api.get(`/payments/${payId}/receipt`, { responseType: "blob" });
+      const blobUrl = URL.createObjectURL(res.data);
+      window.open(blobUrl, "_blank");
+    } catch (e) {
+      console.error("Failed to load receipt PDF", e);
+      alert("Could not load the receipt PDF. Please try again.");
+    } finally {
+      setPdfLoading(p => ({ ...p, [payId]: false }));
+    }
+  };
 
   // Auto-load today's receipts on mount
   useEffect(() => { searchReceipts(true); }, []);
@@ -950,8 +990,8 @@ function ReceiptSearchPage() {
                 <div style={{ display: "flex", gap: 5 }}>
                   <button className="bs-btn bs-btn-ghost bs-btn-sm" onClick={() => setPreview(p)} title="View Receipt">🧾 View</button>
                   <button className="bs-btn bs-btn-primary bs-btn-sm"
-                    onClick={() => window.open(`${API_BASE}/api/payments/${p.id}/receipt`, "_blank")}
-                    title="Download PDF">⬇ PDF</button>
+                    onClick={() => openReceiptPdf(p.id)} disabled={pdfLoading[p.id]}
+                    title="Download PDF">{pdfLoading[p.id] ? "⏳" : "⬇ PDF"}</button>
                 </div>
               </div>
             </div>
@@ -961,6 +1001,332 @@ function ReceiptSearchPage() {
 
       {/* Receipt preview */}
       {preview && <ReceiptPreviewModal payment={preview} visit={preview} onClose={() => setPreview(null)} />}
+    </div>
+  );
+}
+
+
+/* ═══════════ FINAL ACCOUNT BILLING MODAL ═══════════════════════ */
+function FinalAccountBillingModal({ visit, onClose, onSaved }) {
+  const [account, setAccount] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+  const [method, setMethod] = useState("Cash");
+  const [payDate, setPayDate] = useState(today());
+  const [paidAmt, setPaidAmt] = useState("");
+  const [treatments, setTreatments] = useState([{ description: "", amount: "", discount: "", notes: "" }]);
+  const [preview, setPreview] = useState(null);
+  // Which previous outstanding charges this payment should be applied to.
+  // Empty = unchanged default behavior: auto-allocate oldest-first across
+  // every outstanding charge, exactly as before this feature existed.
+  const [selectedChargeIds, setSelectedChargeIds] = useState(new Set());
+  // Reception-entered exact amount per selected charge (chargeId -> string).
+  // Defaults to that charge's full due when checked, but is freely editable —
+  // supports splitting one payment across several specific old treatments
+  // with different amounts each.
+  const [manualAmounts, setManualAmounts] = useState({});
+
+  const loadAccount = useCallback(async () => {
+    if (!visit?.case_number) return;
+    setLoading(true);
+    try {
+      const r = await api.get(`/billing/accounts/by-case/${encodeURIComponent(visit.case_number)}`);
+      setAccount(r.data);
+      setSelectedChargeIds(new Set());
+      setManualAmounts({});
+    } catch (e) {
+      setErr(e?.response?.data?.error || "Could not load patient account.");
+    } finally { setLoading(false); }
+  }, [visit?.case_number]);
+
+  useEffect(() => { loadAccount(); }, [loadAccount]);
+
+  const activeCharges = account?.charges || [];
+  const outstandingCharges = activeCharges.filter(c => Number(c.balance_due) > 0);
+  const oldDue = outstandingCharges.reduce((sum, c) => sum + Number(c.balance_due || 0), 0);
+  const newTotal = treatments.reduce((sum, t) => {
+    const amount = Number(t.amount) || 0;
+    const discount = Number(t.discount) || 0;
+    return sum + Math.max(amount - discount, 0);
+  }, 0);
+  const totalDue = oldDue + newTotal;
+  const paid = Number(paidAmt) || 0;
+
+  const toggleCharge = (id) => {
+    setSelectedChargeIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+    setManualAmounts(prev => {
+      const next = { ...prev };
+      if (next[id] !== undefined) {
+        delete next[id]; // unchecking clears its amount
+      } else {
+        // checking pre-fills the full due amount, ready to edit down
+        const charge = outstandingCharges.find(c => c.id === id);
+        next[id] = String(Number(charge?.balance_due || 0));
+      }
+      return next;
+    });
+  };
+  const setChargeAmount = (id, val) => setManualAmounts(prev => ({ ...prev, [id]: val }));
+  const clearSelection = () => { setSelectedChargeIds(new Set()); setManualAmounts({}); };
+  const selectAllCharges = () => {
+    setSelectedChargeIds(new Set(outstandingCharges.map(c => c.id)));
+    setManualAmounts(Object.fromEntries(outstandingCharges.map(c => [c.id, String(Number(c.balance_due || 0))])));
+  };
+
+  // Selected charges are paid FIRST regardless of age, then the rest of the
+  // outstanding charges are paid oldest-first — matching exactly what the
+  // backend does: explicit `allocations` for the selected charges, then its
+  // own auto_allocate_remaining continues oldest-first across everything
+  // else. With no selection this is identical to outstandingCharges' own
+  // order, so preview/behavior are byte-for-byte the same as before this
+  // feature existed.
+  const orderedForAllocation = [
+    ...outstandingCharges.filter(c => selectedChargeIds.has(c.id)),
+    ...outstandingCharges.filter(c => !selectedChargeIds.has(c.id)),
+  ];
+
+  // This preview is intentionally deterministic so reception can see exactly
+  // where today's money will go before clicking Save. Respects a per-charge
+  // manual amount when the reception has typed one for a selected charge,
+  // still capped by that charge's own due and the remaining payment pool.
+  const allocationPreview = useMemo(() => {
+    let remaining = paid;
+    return orderedForAllocation.map(c => {
+      const due = Number(c.balance_due) || 0;
+      let take;
+      const manualRaw = manualAmounts[c.id];
+      if (selectedChargeIds.has(c.id) && manualRaw !== undefined && manualRaw !== "") {
+        const manualVal = Math.max(0, Number(manualRaw) || 0);
+        take = Math.min(remaining, due, manualVal);
+      } else {
+        take = Math.min(remaining, due);
+      }
+      remaining -= take;
+      return { ...c, allocation: take };
+    }).filter(c => c.allocation > 0);
+  }, [orderedForAllocation, paid, manualAmounts, selectedChargeIds]);
+
+  const targetOldDue = (selectedChargeIds.size > 0
+    ? outstandingCharges.filter(c => selectedChargeIds.has(c.id))
+    : outstandingCharges
+  ).reduce((sum, c) => sum + Number(c.balance_due || 0), 0);
+
+  const oldCollectedTotal = allocationPreview.reduce((sum, c) => sum + c.allocation, 0);
+  const newTreatmentRows = treatments.filter(t => t.description.trim() && Number(t.amount) > 0);
+  const amountLeftAfterOld = Math.max(paid - oldCollectedTotal, 0);
+  const newCollectedPreview = Math.min(amountLeftAfterOld, newTotal);
+  const remainingAfterPayment = Math.max(totalDue - paid, 0);
+
+  const addTreatment = () => setTreatments(v => [...v, { description: "", amount: "", discount: "", notes: "" }]);
+  const removeTreatment = (i) => setTreatments(v => v.length === 1 ? v : v.filter((_, j) => j !== i));
+  const updateTreatment = (i, key, value) => setTreatments(v => v.map((t, j) => j === i ? { ...t, [key]: value } : t));
+
+  const handleCollect = async () => {
+    if (!paid || paid <= 0) { setErr("Enter the amount received from the patient."); return; }
+    if (newTreatmentRows.length === 0 && oldDue <= 0) { setErr("There is nothing due on this account."); return; }
+    if (paid > totalDue) { setErr("Amount received is greater than the current amount due. Use the advance/credit workflow for future treatment."); return; }
+
+    setErr(""); setSaving(true);
+    try {
+      const selectedAllocations = allocationPreview.filter(c => selectedChargeIds.has(c.id));
+      const r = await api.post("/billing/collect", {
+        patient_id: account.patient_id,
+        visit_id: visit?.visit_id || null,
+        amount: paid,
+        payment_method: method,
+        payment_date: payDate,
+        new_charges: newTreatmentRows.map(t => ({
+          description: [t.description, t.notes].filter(Boolean).join("\n"),
+          gross_amount: Number(t.amount) || 0,
+          discount: Number(t.discount) || 0,
+        })),
+        ...(selectedAllocations.length > 0
+          ? { allocations: selectedAllocations.map(c => ({ charge_id: c.id, amount: c.allocation })) }
+          : {}),
+        auto_allocate_remaining: true,
+      });
+      const savedPayment = r.data?.payment;
+      if (!savedPayment?.id) {
+        throw new Error("Payment was saved but no receipt/payment record was returned.");
+      }
+      setPreview(savedPayment);
+    } catch (e) {
+      setErr(e?.response?.data?.error || "Could not collect payment.");
+    } finally { setSaving(false); }
+  };
+
+  const handleSaveDue = async () => {
+    if (newTreatmentRows.length === 0) { setErr("Add at least one new treatment."); return; }
+    setErr(""); setSaving(true);
+    try {
+      for (const t of newTreatmentRows) {
+        await api.post("/billing/charges", {
+          patient_id: account.patient_id,
+          visit_id: visit?.visit_id || null,
+          description: [t.description, t.notes].filter(Boolean).join("\n"),
+          gross_amount: Number(t.amount) || 0,
+          discount: Number(t.discount) || 0,
+        });
+      }
+      await onSaved();
+    } catch (e) {
+      setErr(e?.response?.data?.error || "Could not save the new treatment.");
+    } finally { setSaving(false); }
+  };
+
+  if (preview) {
+    return <ReceiptPreviewModal payment={preview} visit={visit} onClose={() => { setPreview(null); onSaved(); }} />;
+  }
+
+  return (
+    <div className="bs-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="bs-modal" style={{ maxWidth: 900 }}>
+        <div className="bs-modal-hd">
+          <div>
+            <div style={{ fontSize: 17, fontWeight: 800, color: "#0b2d4e" }}>💳 Patient Account Billing</div>
+            <div style={{ fontSize: 12, color: "#64748b", marginTop: 3 }}>{visit?.name} · Case #{visit?.case_number}</div>
+          </div>
+          <button onClick={onClose} className="bs-btn bs-btn-ghost bs-btn-sm">✕</button>
+        </div>
+
+        <div className="bs-modal-body">
+          {err && <div style={{ background: "#fef2f2", color: "#b91c1c", border: "1px solid #fecaca", borderRadius: 10, padding: "10px 12px", marginBottom: 14, fontSize: 12, fontWeight: 700 }}>{err}</div>}
+
+          {loading ? (
+            <div style={{ textAlign: "center", padding: 50, color: "#64748b" }}>Loading patient account…</div>
+          ) : (
+            <>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, marginBottom: 18 }}>
+                <div className="bs-card" style={{ padding: 13 }}><div className="bs-label">Previous Balance</div><strong style={{ color: oldDue > 0 ? "#dc2626" : "#0d6e4a", fontSize: 18 }}>₹{oldDue.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</strong></div>
+                <div className="bs-card" style={{ padding: 13 }}><div className="bs-label">New Treatments</div><strong style={{ color: "#1d4d7a", fontSize: 18 }}>₹{newTotal.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</strong></div>
+                <div className="bs-card" style={{ padding: 13 }}><div className="bs-label">Total Due</div><strong style={{ color: "#0b2d4e", fontSize: 18 }}>₹{totalDue.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</strong></div>
+                <div className="bs-card" style={{ padding: 13, background: "#f0fdf4" }}><div className="bs-label">After Payment</div><strong style={{ color: remainingAfterPayment > 0 ? "#dc2626" : "#0d6e4a", fontSize: 18 }}>₹{remainingAfterPayment.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</strong></div>
+              </div>
+
+              <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 12, padding: 14, marginBottom: 16 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 9 }}>
+                  <div style={{ fontSize: 12, fontWeight: 800, color: "#0b2d4e" }}>1. Previous Treatment Balances</div>
+                  {outstandingCharges.length > 1 && (
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <button className="bs-btn bs-btn-ghost bs-btn-sm" onClick={selectAllCharges}>Select All</button>
+                      {selectedChargeIds.size > 0 && <button className="bs-btn bs-btn-ghost bs-btn-sm" onClick={clearSelection}>Clear</button>}
+                    </div>
+                  )}
+                </div>
+                {outstandingCharges.length === 0 ? (
+                  <div style={{ fontSize: 12, color: "#64748b" }}>No previous outstanding treatment balance.</div>
+                ) : outstandingCharges.map(c => {
+                  const allocation = allocationPreview.find(x => x.id === c.id)?.allocation || 0;
+                  const checked = selectedChargeIds.has(c.id);
+                  return (
+                    <div key={c.id}
+                      style={{ display: "grid", gridTemplateColumns: "22px 1fr 120px 150px", gap: 10, alignItems: "center", padding: "9px 0", borderBottom: "1px solid #e5e7eb" }}>
+                      <input type="checkbox" checked={checked} onChange={() => toggleCharge(c.id)}
+                        style={{ width: 16, height: 16, cursor: "pointer" }} />
+                      <div style={{ cursor: "pointer" }} onClick={() => toggleCharge(c.id)}>
+                        <div style={{ fontWeight: 700, fontSize: 12 }}>{c.description}</div>
+                        <div style={{ color: "#94a3b8", fontSize: 10 }}>{c.charge_date || ""} · Visit #{c.visit_id || "—"}</div>
+                      </div>
+                      <div style={{ textAlign: "right", fontSize: 12, cursor: "pointer" }} onClick={() => toggleCharge(c.id)}>
+                        Due <strong>₹{Number(c.balance_due).toLocaleString("en-IN", { minimumFractionDigits: 2 })}</strong>
+                      </div>
+                      {checked ? (
+                        <div style={{ display: "flex", alignItems: "center", gap: 4, justifyContent: "flex-end" }}>
+                          <span style={{ fontSize: 12, color: "#64748b" }}>₹</span>
+                          <input
+                            type="number" min="0" max={c.balance_due} step="0.01"
+                            value={manualAmounts[c.id] ?? ""}
+                            onChange={e => setChargeAmount(c.id, e.target.value)}
+                            className="bs-input"
+                            style={{ width: 100, padding: "5px 8px", fontSize: 12, textAlign: "right" }}
+                          />
+                        </div>
+                      ) : (
+                        <div style={{ textAlign: "right", color: allocation > 0 ? "#0d6e4a" : "#94a3b8", fontSize: 12, fontWeight: 800 }}>
+                          {allocation > 0 ? `Pay ₹${allocation.toLocaleString("en-IN", { minimumFractionDigits: 2 })}` : "No payment"}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+                <div style={{ marginTop: 10, fontSize: 11, color: "#1d4d7a", fontWeight: 700 }}>
+                  {selectedChargeIds.size > 0
+                    ? `ℹ️ Paying the ${selectedChargeIds.size} selected treatment(s) above with the amount(s) entered — edit any amount to split the payment exactly how you want. Anything left over is applied automatically (oldest outstanding first) to the rest of the account, same as usual.`
+                    : "ℹ️ Allocation rule: oldest outstanding treatment is paid first. Select specific treatment(s) above to apply exact amounts to only those."}
+                </div>
+              </div>
+
+              <div style={{ background: "#fff", border: "1px solid #e2e8f0", borderRadius: 12, padding: 14, marginBottom: 16 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                  <div style={{ fontSize: 12, fontWeight: 800, color: "#0b2d4e" }}>2. Today's New Treatments</div>
+                  <button className="bs-btn bs-btn-primary bs-btn-sm" onClick={addTreatment}>＋ Add Treatment</button>
+                </div>
+                {treatments.map((t, i) => (
+                  <div key={i} style={{ display: "grid", gridTemplateColumns: "1fr 120px 110px 34px", gap: 8, marginBottom: 8 }}>
+                    <input className="bs-input" placeholder="Treatment / description" value={t.description} onChange={e => updateTreatment(i, "description", e.target.value)} />
+                    <input className="bs-input" type="number" min="0" placeholder="Fee" value={t.amount} onChange={e => updateTreatment(i, "amount", e.target.value)} />
+                    <input className="bs-input" type="number" min="0" placeholder="Discount" value={t.discount} onChange={e => updateTreatment(i, "discount", e.target.value)} />
+                    <button className="bs-btn bs-btn-ghost bs-btn-sm" onClick={() => removeTreatment(i)} title="Remove">✕</button>
+                    <input className="bs-input" style={{ gridColumn: "1 / -1" }} placeholder="Notes (optional)" value={t.notes} onChange={e => updateTreatment(i, "notes", e.target.value)} />
+                  </div>
+                ))}
+                {newTreatmentRows.length > 0 && <div style={{ textAlign: "right", fontSize: 12, fontWeight: 800, color: "#0b2d4e" }}>New treatment total: ₹{newTotal.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</div>}
+              </div>
+
+              <div style={{ background: "linear-gradient(135deg,#eff6ff,#f8fafc)", border: "1.5px solid #bfdbfe", borderRadius: 12, padding: 14 }}>
+                <div style={{ fontSize: 12, fontWeight: 800, color: "#0b2d4e", marginBottom: 10 }}>3. Collect Payment</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+                  <div><label className="bs-label">Amount Received</label><input autoFocus className="bs-input" type="number" min="0" value={paidAmt} onChange={e => setPaidAmt(e.target.value)} placeholder="₹ 0.00" /></div>
+                  <div><label className="bs-label">Payment Method</label><select className="bs-select" value={method} onChange={e => setMethod(e.target.value)}><option>Cash</option><option>UPI</option><option>A/c</option><option>Card</option><option>Cheque</option></select></div>
+                  <div><label className="bs-label">Payment Date</label><input className="bs-input" type="date" value={payDate} onChange={e => setPayDate(e.target.value)} /></div>
+                </div>
+                <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+                  {(() => {
+                    const enteredSum = Array.from(selectedChargeIds).reduce((sum, id) => {
+                      const c = outstandingCharges.find(x => x.id === id);
+                      const v = Math.min(Number(manualAmounts[id]) || 0, Number(c?.balance_due || 0));
+                      return sum + Math.max(v, 0);
+                    }, 0);
+                    const suggested = enteredSum + newTotal;
+                    return selectedChargeIds.size > 0 && suggested > 0 ? (
+                      <button className="bs-btn bs-btn-ghost bs-btn-sm" style={{ borderColor: "#93c5fd", color: "#1d4d7a" }}
+                        onClick={() => setPaidAmt(String(Math.min(suggested, totalDue)))}>
+                        ＝ Fill entered total ₹{suggested.toLocaleString("en-IN")}
+                      </button>
+                    ) : null;
+                  })()}
+                  {[oldDue, totalDue, 500, 1000].filter((v, i, a) => v > 0 && a.indexOf(v) === i).map(v => <button key={v} className="bs-btn bs-btn-ghost bs-btn-sm" onClick={() => setPaidAmt(String(Math.min(v, totalDue)))}>₹{v.toLocaleString("en-IN")}</button>)}
+                </div>
+                <div style={{ marginTop: 12, background: "#fff", borderRadius: 10, padding: 11, border: "1px solid #dbeafe", fontSize: 12 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between" }}><span>Old balance collected</span><strong>₹{oldCollectedTotal.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</strong></div>
+                  {selectedChargeIds.size > 0 && (
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#64748b", marginTop: 2 }}>
+                      <span>&nbsp;&nbsp;— of which, selected treatment(s)</span><span>₹{Math.min(paid, targetOldDue).toLocaleString("en-IN", { minimumFractionDigits: 2 })}</span>
+                    </div>
+                  )}
+                  <div style={{ display: "flex", justifyContent: "space-between" }}><span>Today's treatment collected</span><strong>₹{newCollectedPreview.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</strong></div>
+                  <div style={{ display: "flex", justifyContent: "space-between", borderTop: "1px solid #e5e7eb", marginTop: 7, paddingTop: 7, fontWeight: 800 }}><span>Balance after payment</span><strong style={{ color: remainingAfterPayment > 0 ? "#dc2626" : "#0d6e4a" }}>₹{remainingAfterPayment.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</strong></div>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+
+        <div className="bs-modal-ft" style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+          <button className="bs-btn bs-btn-ghost" onClick={onClose}>Cancel</button>
+          <div style={{ display: "flex", gap: 8 }}>
+            {newTreatmentRows.length > 0 && <button className="bs-btn bs-btn-amber" onClick={handleSaveDue} disabled={saving || loading}>Save Treatment as Due</button>}
+            <button className="bs-btn bs-btn-green" onClick={handleCollect} disabled={saving || loading || !paidAmt}>
+              {saving ? <><span className="bs-spinner" />Saving & Generating…</> : `💾 Save & Generate Receipt · ₹${paid.toLocaleString("en-IN", { minimumFractionDigits: 2 })}`}
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -981,20 +1347,30 @@ export default function BillingSection({ initialVisitId = null }) {
   const [delLoading, setDelLoading] = useState({});
   const [toast,      setToast]      = useState("");
   const [confirmDel, setConfirmDel] = useState(null);
+  const [closingId,  setClosingId]  = useState(null);
 
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(""), 3500); };
 
-  const loadQueue = useCallback(async () => {
+  // With no search term this returns only the active queue (visits not
+  // yet closed out). With a search term, the backend also looks through
+  // already-closed-out visits by name/mobile/case number, so reception
+  // can find (and reopen) them again.
+  const loadQueue = useCallback(async (q = "") => {
     setLoading(true);
     try {
-      const r = await api.get("/billing/closed-visits");
+      const r = await api.get("/billing/closed-visits", q ? { params: { q } } : undefined);
       setQueue(r.data || []);
     } catch (e) {
       console.error("Failed to load billing queue", e);
     } finally { setLoading(false); }
   }, []);
 
-  useEffect(() => { loadQueue(); }, [loadQueue]);
+  // Initial load, then debounced reload whenever the search box changes.
+  useEffect(() => {
+    if (!search) { loadQueue(); return; }
+    const handle = setTimeout(() => loadQueue(search.trim()), 350);
+    return () => clearTimeout(handle);
+  }, [search]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-select patient from initialVisitId once queue is loaded
   useEffect(() => {
@@ -1024,16 +1400,35 @@ export default function BillingSection({ initialVisitId = null }) {
     setModal(null);
     showToast("✅ Payment saved & receipt generated!");
     if (selected) await loadPayments(selected.visit_id);
-    await loadQueue();
+    await loadQueue(search.trim());
+  };
+
+  // Hides (or restores) a visit from the active billing queue. Used both
+  // when a patient pays and the receipt is printed, and when a patient
+  // (e.g. checkup-only) doesn't pay at all — either way, reception clicks
+  // Close and it's gone from the queue until searched for again.
+  const closeVisit = async (visitId, action = "close") => {
+    setClosingId(visitId);
+    try {
+      await api.put(`/billing/visits/${visitId}/${action}`);
+      showToast(action === "close"
+        ? "🔒 Visit closed — hidden from the queue. Search to find it again."
+        : "↩ Visit reopened — back in the active queue.");
+      if (action === "close" && selected?.visit_id === visitId) setSelected(null);
+      await loadQueue(search.trim());
+    } catch (e) {
+      console.error(`Failed to ${action} visit`, e);
+      alert(`Could not ${action} this visit. Please try again.`);
+    } finally {
+      setClosingId(null);
+    }
   };
 
   const downloadReceipt = async (payId, payName, receiptNo) => {
     setDwnLoading(p => ({ ...p, [payId]: true }));
     try {
-      const res = await fetch(`${API_BASE}/api/payments/${payId}/receipt`);
-      if (!res.ok) throw new Error("Failed");
-      const blob = await res.blob();
-      const url  = URL.createObjectURL(blob);
+      const res = await api.get(`/payments/${payId}/receipt`, { responseType: "blob" });
+      const url  = URL.createObjectURL(res.data);
       const a    = document.createElement("a");
       a.href = url;
       a.download = `receipt_${receiptNo}_${payName}.pdf`;
@@ -1051,17 +1446,22 @@ export default function BillingSection({ initialVisitId = null }) {
     setConfirmDel(null);
     setDelLoading(p => ({ ...p, [payId]: true }));
     try {
-      await api.delete(`/payments/${payId}`);
-      showToast(`🗑️ Receipt #${confirmDel.receipt_number} deleted.`);
+      if (confirmDel.is_ledger_payment || confirmDel.account_id) {
+        await api.post(`/billing/payments/${payId}/void`);
+        showToast(`↩️ Receipt #${confirmDel.receipt_number} voided and account history preserved.`);
+      } else {
+        await api.delete(`/payments/${payId}`);
+        showToast(`🗑️ Receipt #${confirmDel.receipt_number} deleted.`);
+      }
       if (selected) await loadPayments(selected.visit_id);
-      await loadQueue();
+      await loadQueue(search.trim());
     } catch (_) { alert("Delete failed."); }
     finally { setDelLoading(p => ({ ...p, [payId]: false })); }
   };
 
-  const filteredQueue = queue.filter(v =>
-    !search || [v.name, v.case_number, v.mobile].some(f => f && String(f).toLowerCase().includes(search.toLowerCase()))
-  );
+  // Filtering now happens server-side (loadQueue passes the search term as
+  // ?q=), so `queue` already reflects the current search.
+  const filteredQueue = queue;
 
   const getTreatmentSummary = (treatDesc) => {
     try {
@@ -1087,9 +1487,9 @@ export default function BillingSection({ initialVisitId = null }) {
               🏥 Billing Queue
               <span style={{ marginLeft: 8, background: "#eff6ff", color: "#1d4d7a", borderRadius: 20, padding: "2px 10px", fontSize: 11, fontWeight: 700 }}>{queue.length}</span>
             </div>
-            <button className="bs-btn bs-btn-ghost bs-btn-sm" onClick={loadQueue} title="Refresh">↻</button>
+            <button className="bs-btn bs-btn-ghost bs-btn-sm" onClick={() => loadQueue(search.trim())} title="Refresh">↻</button>
           </div>
-          <input className="bs-input" placeholder="🔍 Search patient…" value={search}
+          <input className="bs-input" placeholder="🔍 Search name, mobile, or case no… (also finds closed entries)" value={search}
             onChange={e => setSearch(e.target.value)} style={{ marginBottom: 12 }} />
           <div style={{ overflowY: "auto", maxHeight: "calc(100vh - 240px)", paddingBottom: 16 }}>
             {loading ? (
@@ -1105,11 +1505,15 @@ export default function BillingSection({ initialVisitId = null }) {
               const isSel   = selected?.visit_id === v.visit_id;
               const hasPaid = v.total_paid > 0;
               const isFullyPaidV = v.is_fully_paid;
+              const isClosedV = v.billing_closed;
               return (
                 <div key={v.visit_id} className={`bs-patient-row ${isSel ? "sel" : ""}`}
-                  onClick={() => setSelected(v)} style={{ marginBottom: 8 }}>
+                  onClick={() => setSelected(v)} style={{ marginBottom: 8, opacity: isClosedV ? 0.72 : 1 }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 700, fontSize: 13, color: "#0b2d4e", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{v.name}</div>
+                    <div style={{ fontWeight: 700, fontSize: 13, color: "#0b2d4e", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {v.name}
+                      {isClosedV && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: "#92400e", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 20, padding: "1px 8px" }}>🔒 Closed</span>}
+                    </div>
                     <div style={{ fontSize: 11, color: "#64748b", marginTop: 2 }}>
                       Case #{v.case_number}{v.mobile && ` · ${v.mobile}`}
                     </div>
@@ -1131,7 +1535,7 @@ export default function BillingSection({ initialVisitId = null }) {
                     )}
                     <div style={{ fontSize: 10, color: "#94a3b8", marginTop: 3 }}>Closed: {v.closed_at}</div>
                   </div>
-                  <div style={{ textAlign: "right", flexShrink: 0 }}>
+                  <div style={{ textAlign: "right", flexShrink: 0, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
                     {isFullyPaidV ? (
                       <span className="bs-badge-paid">✓ Paid</span>
                     ) : hasPaid ? (
@@ -1139,8 +1543,16 @@ export default function BillingSection({ initialVisitId = null }) {
                     ) : (
                       <span className="bs-chip" style={{ background: "#fff7ed", color: "#ea580c", border: "1px solid #fed7aa" }}>Pending</span>
                     )}
-                    {hasPaid && <div style={{ fontSize: 11, color: "#16a34a", fontWeight: 700, marginTop: 4 }}>₹{(v.total_paid || 0).toLocaleString("en-IN")}</div>}
-                    {v.balance_due > 0 && <div style={{ fontSize: 10.5, color: "#dc2626", fontWeight: 700, marginTop: 2 }}>Bal: {fmt(v.balance_due)}</div>}
+                    {hasPaid && <div style={{ fontSize: 11, color: "#16a34a", fontWeight: 700 }}>₹{(v.total_paid || 0).toLocaleString("en-IN")}</div>}
+                    {v.balance_due > 0 && <div style={{ fontSize: 10.5, color: "#dc2626", fontWeight: 700 }}>Bal: {fmt(v.balance_due)}</div>}
+                    <button
+                      className={`bs-btn bs-btn-sm ${isClosedV ? "bs-btn-ghost" : "bs-btn-red"}`}
+                      disabled={closingId === v.visit_id}
+                      onClick={(e) => { e.stopPropagation(); closeVisit(v.visit_id, isClosedV ? "reopen" : "close"); }}
+                      title={isClosedV ? "Bring this visit back into the active billing queue" : "Hide this patient from the queue (paid or not)"}
+                    >
+                      {closingId === v.visit_id ? <span className="bs-spinner" /> : (isClosedV ? "↩ Reopen" : "✕ Close")}
+                    </button>
                   </div>
                 </div>
               );
@@ -1189,14 +1601,29 @@ export default function BillingSection({ initialVisitId = null }) {
                       {selected.gender && ` · ${selected.gender}`}
                     </div>
                     {selected.closed_at && <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 2 }}>Visit closed: {selected.closed_at}</div>}
+                    {selected.billing_closed && (
+                      <div style={{ fontSize: 11, color: "#b45309", marginTop: 4, fontWeight: 700 }}>
+                        🔒 This visit is closed out of the billing queue — found via search
+                      </div>
+                    )}
                   </div>
-                  <div style={{ display: "flex", gap: 8 }}>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                     {isFullyPaid && (
                       <span className="bs-badge-paid" style={{ padding: "8px 16px", fontSize: 12, display: "flex", alignItems: "center" }}>✓ FULLY PAID</span>
                     )}
                     <button className="bs-btn bs-btn-primary" onClick={() => setModal({ visit: selected })}>
                       {payments.length === 0 ? "+ New Billing" : hasBalance ? "💳 Collect Balance" : "+ Add Payment"}
                     </button>
+                    {selected.billing_closed ? (
+                      <button className="bs-btn bs-btn-ghost" onClick={() => closeVisit(selected.visit_id, "reopen")} disabled={closingId === selected.visit_id}>
+                        {closingId === selected.visit_id ? <span className="bs-spinner" /> : "↩ Reopen"}
+                      </button>
+                    ) : (
+                      <button className="bs-btn bs-btn-red" onClick={() => closeVisit(selected.visit_id, "close")} disabled={closingId === selected.visit_id}
+                        title="Hide this patient from the billing queue (whether paid or not). Find it again by searching name / mobile / case number.">
+                        {closingId === selected.visit_id ? <span className="bs-spinner" /> : "✕ Close"}
+                      </button>
+                    )}
                   </div>
                 </div>
 
@@ -1324,12 +1751,18 @@ export default function BillingSection({ initialVisitId = null }) {
 
       {/* ── BILLING MODAL ── */}
       {modal && modal.visit && !modal.receiptPreview && (
-        <BillingModal
-          visit={modal.visit}
-          editPayment={modal.editPayment}
-          onClose={() => setModal(null)}
-          onSaved={handleSaved}
-        />
+        modal.editPayment
+          ? <LegacyBillingModal
+              visit={modal.visit}
+              editPayment={modal.editPayment}
+              onClose={() => setModal(null)}
+              onSaved={handleSaved}
+            />
+          : <FinalAccountBillingModal
+              visit={modal.visit}
+              onClose={() => setModal(null)}
+              onSaved={handleSaved}
+            />
       )}
 
       {/* ── RECEIPT PREVIEW MODAL (from payment history row) ── */}

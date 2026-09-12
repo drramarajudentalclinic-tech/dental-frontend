@@ -1365,11 +1365,37 @@ export default function DoctorDashboard() {
   const [rawSample,   setRawSample]   = useState(null);
   const navigate = useNavigate();
 
-  useEffect(() => { injectStyles(); loadOpenVisits(); }, []);
+  useEffect(() => {
+    injectStyles();
+    loadOpenVisits();
 
-  const loadOpenVisits = async () => {
+    // ── Auto-refresh so a visit created from Reception shows up here ──
+    // without a manual page reload. Two complementary triggers:
+    //  1. Light polling (every 15s) — catches new/changed visits even if
+    //     this tab is just sitting open and idle.
+    //  2. Refetch on tab focus / visibility — near-instant update for the
+    //     common case of switching back to this tab after creating a
+    //     visit elsewhere, without waiting for the next poll tick.
+    // Both call loadOpenVisits(true) — silent mode — so they update the
+    // table in place instead of flashing the full-page loading spinner
+    // every 15 seconds.
+    const intervalId = setInterval(() => loadOpenVisits(true), 15000);
+
+    const onFocus = () => { if (document.visibilityState === "visible") loadOpenVisits(true); };
+    document.addEventListener("visibilitychange", onFocus);
+    window.addEventListener("focus", onFocus);
+
+    return () => {
+      clearInterval(intervalId);
+      document.removeEventListener("visibilitychange", onFocus);
+      window.removeEventListener("focus", onFocus);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const loadOpenVisits = async (silent = false) => {
     try {
-      setLoading(true);
+      if (!silent) setLoading(true);
       const res = await api.get("/doctor/visits");
       // Backend returns patient_name — normalize to `name` since the rest
       // of this component (avatar initials, search filter, confirm
@@ -1386,14 +1412,19 @@ export default function DoctorDashboard() {
         setRawSample(data[0]);
 
         // Show debug banner if complaint is missing on ALL visits
-        const anyHasComplaint = data.some(v => resolveComplaint(v));
-        if (!anyHasComplaint) setShowDebug(true);
+        // Only warn about a broken backend when NEITHER field has data
+        // anywhere — a visit legitimately having one but not the other
+        // (e.g. a follow-up visit with a blank chief complaint, or a new
+        // complaint with no follow-up notes yet) is normal, expected data,
+        // not a sign the API is missing a field.
+        const anyHasInfo = data.some(v => resolveComplaint(v) || resolveFollowup(v));
+        if (!anyHasInfo) setShowDebug(true);
       }
     } catch (err) {
       console.error(err);
-      alert("Failed to load visits");
+      if (!silent) alert("Failed to load visits");
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 
@@ -1536,11 +1567,18 @@ export default function DoctorDashboard() {
             <span className="dd-search-bar-icon">🔍</span>
             <input
               className="dd-search-bar"
-              placeholder="Search by name, mobile, case no…"
+              placeholder="Filter open visits by name, mobile, case no…"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />
           </div>
+          <button
+            className="dd-appt-nav-btn"
+            onClick={() => setLookupOpen(true)}
+            title="Search all patients, including those with no active visit"
+          >
+            🔎 Patient Lookup
+          </button>
           <button
             className="dd-appt-nav-btn"
             onClick={() => setApptOpen(true)}
@@ -1557,13 +1595,15 @@ export default function DoctorDashboard() {
 
       <div className="dd-body">
 
-        {/* ══ DEBUG BANNER — shown only when no complaints found ══ */}
+        {/* ══ DEBUG BANNER — shown only when NEITHER chief complaint NOR
+             follow-up notes is found on ANY visit (real backend/field issue,
+             not just today's visits legitimately having one field blank) ══ */}
         {showDebug && rawSample && (
           <div className="dd-debug-banner">
             <button className="dd-debug-close" onClick={() => setShowDebug(false)}>✕</button>
-            <strong>⚠️ Chief Complaint not found in API response.</strong>
+            <strong>⚠️ Chief Complaint / Followup Notes not found in API response.</strong>
             <br />
-            Your backend <code>/doctor/visits</code> is not returning the complaint field.
+            Your backend <code>/doctor/visits</code> doesn't appear to be returning either field.
             Open <strong>DevTools → Console</strong> to see the exact field names being returned.
             <br />
             Fields available on first visit:{" "}
@@ -1602,7 +1642,7 @@ export default function DoctorDashboard() {
                   {filtered.length} result{filtered.length !== 1 ? "s" : ""} for "{search}"
                 </span>
               )}
-              <button className="dd-refresh-btn" onClick={loadOpenVisits}>↻ Refresh</button>
+              <button className="dd-refresh-btn" onClick={() => loadOpenVisits()}>↻ Refresh</button>
             </div>
           </div>
 

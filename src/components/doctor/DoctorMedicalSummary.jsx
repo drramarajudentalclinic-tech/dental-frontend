@@ -102,21 +102,8 @@ export default function DoctorMedicalSummary({ data }) {
 
   if (selected.length === 0 && !hasOther) return null;
 
-  const isHighRisk = selected.some(i => i.critical);
-
   return (
     <section style={{ marginTop: 20 }}>
-      {isHighRisk && (
-        <div style={{
-          backgroundColor: "#b00020", color: "white",
-          padding: "10px 14px", marginBottom: 14,
-          fontWeight: "bold", borderRadius: 8,
-          fontSize: 14, letterSpacing: 0.5,
-        }}>
-          🚨 HIGH RISK PATIENT – Review medical history carefully
-        </div>
-      )}
-
       <h3 style={{ marginBottom: 10 }}>Medical History</h3>
       <ul style={{ listStyle: "none", paddingLeft: 0, margin: 0 }}>
         {selected.map(item => (

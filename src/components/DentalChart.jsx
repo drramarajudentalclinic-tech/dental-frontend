@@ -662,10 +662,19 @@ const injectStyles = () => {
    DATA
 ═══════════════════════════════════════════════════════ */
 const CONDITIONS = [
-  "Caries","Missing","RC Treated","Crown","Bridge","Implant","Attrition","Impacted",
-  "Fracture","Restored","Cervical Abrasion","Mobility I","Mobility II","Mobility III",
-  "Gum Recession","Pockets","Other"
+  "Caries","Deep Caries","Missing","RC Treated","Crown","Bridge","Implant","Attrition",
+  "Impacted","Fracture","Restored","Cervical Abrasion","Mobility I","Mobility II","Mobility III",
+  "Gum Recession","Pockets","Root Stump","Periapical Pathology","Sensitive Tooth","Other"
 ];
+
+// Diagnosis-panel label → canonical Dental Chart condition. Anything not listed here
+// that also isn't a key in CONDITIONS falls through to "Other" (see resolveDiagnosisCondition).
+const DIAGNOSIS_CONDITION_ALIASES = {
+  "Missing Tooth":   "Missing",
+  "Fractured Tooth": "Fracture",
+  "Mobile Tooth":    "Mobility I",
+  "Impacted Tooth":  "Impacted",
+};
 const SEVERITY_LEVELS = [
   { key:"mild",   label:"Mild",     cls:"s1" },
   { key:"moderate",label:"Moderate",cls:"s2" },
@@ -689,8 +698,21 @@ const CMAP = {
   "Mobility III":     { a:"#dc2626", dark:"#7f1d1d", hi:"rgba(220,38,38,.15)",   emoji:"Ⅲ",  short:"M-III"},
   "Gum Recession":    { a:"#be185d", dark:"#831843", hi:"rgba(190,24,93,.15)",   emoji:"📉", short:"GRC" },
   "Pockets":          { a:"#7e22ce", dark:"#4a044e", hi:"rgba(126,34,206,.15)",  emoji:"🫧", short:"PKT" },
+  "Deep Caries":       { a:"#991b1b", dark:"#450a0a", hi:"rgba(153,27,27,.15)",  emoji:"🦷", short:"DCR" },
+  "Root Stump":        { a:"#57534e", dark:"#292524", hi:"rgba(87,83,78,.15)",   emoji:"🪵", short:"RTS" },
+  "Periapical Pathology": { a:"#a21caf", dark:"#701a75", hi:"rgba(162,28,175,.15)", emoji:"🔬", short:"PAP" },
+  "Sensitive Tooth":   { a:"#0d9488", dark:"#134e4a", hi:"rgba(13,148,136,.15)", emoji:"❄️", short:"SEN" },
   "Other":            { a:"#6366f1", dark:"#312e81", hi:"rgba(99,102,241,.15)",  emoji:"📋", short:"OTH" },
 };
+
+// Resolves a Diagnosis-panel condition label to the canonical Dental Chart condition
+// (aliased where an equivalent already exists, "Other" as a last resort otherwise).
+export function resolveDiagnosisCondition(label) {
+  if (CMAP[label]) return { condition: label, otherText: "" };
+  if (DIAGNOSIS_CONDITION_ALIASES[label]) return { condition: DIAGNOSIS_CONDITION_ALIASES[label], otherText: "" };
+  return { condition: "Other", otherText: label };
+}
+export { CONDITIONS, CMAP };
 const OTHER_PALETTE = [
   "#ef4444","#f97316","#eab308","#84cc16","#22c55e",
   "#14b8a6","#06b6d4","#3b82f6","#6366f1","#8b5cf6",
@@ -1876,7 +1898,7 @@ function EditModeBar({condition,rows,onClose}){
 /* ═══════════════════════════════════════════════════════
    MAIN EXPORT
 ═══════════════════════════════════════════════════════ */
-export default function DentalChart({visitId,disabled=false,onRecordsChange}){
+export default function DentalChart({visitId,disabled=false,onRecordsChange,externalRecords}){
   const[records,setRecords]=useState([]);
   const[chartType,setChartType]=useState("permanent");
   const[saving,setSaving]=useState(false);
@@ -1894,7 +1916,32 @@ export default function DentalChart({visitId,disabled=false,onRecordsChange}){
   // Add modal (direct add from conditions log)
   const[showAddModal,setShowAddModal]=useState(false);
 
-  useEffect(()=>{injectStyles();if(visitId)load();},[visitId]);
+  // When the doctor moves to a different visit (e.g. a brand-new visit was
+  // just created for the patient), reset every piece of visual chart state
+  // right away instead of waiting for the fetch to resolve. Without this,
+  // the previous visit's colored teeth can stay on screen for a moment
+  // (or, on a slow network, persist while the doctor starts clicking teeth)
+  // even though they belong to a different visit_id.
+  //
+  // This never deletes or touches anything in the database — DentalChart
+  // rows are already stored per visit_id, so a new visit's records were
+  // always empty on the server. This fix only makes sure the UI reflects
+  // that immediately, while every past visit's treatment data stays intact
+  // and fully visible from its own visit / the patient's complete history.
+  useEffect(()=>{
+    setRecords([]);
+    setActiveCondition(null);
+    setCondExtras({severity:"",surfaces:[],notes:"",otherText:"",otherColor:OTHER_PALETTE[8]});
+    setPendingTeeth(new Set());
+    setEditMode(null);
+    setEditModalTooth(null);
+    setShowAddModal(false);
+    if(onRecordsChange)onRecordsChange([]);
+
+    injectStyles();
+    if(visitId)load();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[visitId]);
 
   const load=async()=>{
     try{
@@ -1904,6 +1951,22 @@ export default function DentalChart({visitId,disabled=false,onRecordsChange}){
       if(onRecordsChange)onRecordsChange(data);
     }catch(e){console.error(e);}
   };
+
+  // Keep this chart in sync with records that were added/edited/deleted from
+  // *outside* it — most importantly, the Diagnosis panel's "+ Add" flow, which
+  // writes real records via VisitPage rather than through this component's own
+  // handlers. Compares content (not reference) so this component's own writes —
+  // which already set both `records` and the lifted state to the same array —
+  // don't bounce back and cause an extra render.
+  useEffect(()=>{
+    if(externalRecords===undefined)return;
+    setRecords(prev=>{
+      const prevJSON=JSON.stringify(prev);
+      const extJSON=JSON.stringify(externalRecords);
+      return prevJSON===extJSON?prev:externalRecords;
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[JSON.stringify(externalRecords)]);
 
   const getRecord=n=>records.find(r=>r.tooth_number===n)||null;
 

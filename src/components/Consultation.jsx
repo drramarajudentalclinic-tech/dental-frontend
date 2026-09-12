@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import api from "../api/api";
+import { CONDITIONS as DENTAL_CHART_CONDITIONS, CMAP as DENTAL_CHART_CMAP } from "./DentalChart";
 
 const PERMANENT = {
   upperRight: [18,17,16,15,14,13,12,11],
@@ -13,6 +14,91 @@ const DECIDUOUS = {
   lowerLeft:  [71,72,73,74,75],
   lowerRight: [85,84,83,82,81],
 };
+
+// ── Treatment options shown per-tooth in "Treatment Done Today" ─────────────
+const PERMANENT_TREATMENTS = [
+  "A/O Done",
+  "Obturation Done",
+  "Implant Done",
+  "Extraction",
+  "Surgical Extraction",
+  "Composite Restoration",
+  "GIC Restoration",
+  "Permanent Cementation",
+  "Temporary Cementation",
+  "Temporary Restoration",
+  "Other",
+];
+const DECIDUOUS_TREATMENTS = [
+  "Pulpectomy",
+  "Space Maintainer",
+  "Extraction",
+  "Other",
+];
+
+// ── Treatment options shown per-tooth in "Advice & Treatment Plan" chart ────
+const ADVICE_PERMANENT_TREATMENTS = [
+  "Rct & Crown",
+  "Re-Rct",
+  "Zirconia Crown",
+  "Dmls Crown",
+  "Bridge",
+  "Implant",
+  "Ortho Extraction",
+  "Surgical Extraction",
+  "Composite Restoration",
+  "Gic Restoration",
+  "Permanent Cementation",
+  "Temporary Cementation",
+  "Temporary Restoration",
+  "Other",
+];
+const ADVICE_DECIDUOUS_TREATMENTS = [
+  "Pulpectomy",
+  "Space Maintainer",
+  "Extraction",
+  "Other",
+];
+
+// ── Conditions shown per-tooth when adding a Dental Chart finding to Diagnosis ─
+// Sourced directly from DentalChart.jsx's own CONDITIONS/CMAP so this picker
+// always matches the real Dental Chart tab — no separately-maintained list to
+// drift out of sync. The Dental Chart doesn't restrict conditions by chart type
+// (only tooth numbering differs for permanent vs deciduous), so both pickers
+// use the same full set.
+const DIAGNOSIS_CONDITIONS = DENTAL_CHART_CONDITIONS.map(label => ({
+  label,
+  color: DENTAL_CHART_CMAP[label]?.a || "#475569",
+}));
+const PERMANENT_DIAGNOSIS_CONDITIONS  = DIAGNOSIS_CONDITIONS;
+const DECIDUOUS_DIAGNOSIS_CONDITIONS  = DIAGNOSIS_CONDITIONS;
+
+// ── Findings offered when adding an "Other Finding" to Diagnosis (not tooth-specific) ─
+const OTHER_FINDINGS_OPTIONS = [
+  "Calculus / Tartar",
+  "Gingivitis",
+  "Periodontitis",
+  "Malocclusion",
+  "Bruxism / Attrition",
+  "TMJ Disorder",
+  "Halitosis",
+  "Ulcer / Soft Tissue Lesion",
+  "Stains / Discoloration",
+  "Other",
+];
+
+// ── Color helpers: any condition label — known or freeform — gets a stable color ─
+const CONDITION_COLOR_MAP = [...PERMANENT_DIAGNOSIS_CONDITIONS, ...DECIDUOUS_DIAGNOSIS_CONDITIONS]
+  .reduce((m, c) => (m[c.label] = c.color, m), {});
+const FALLBACK_PALETTE = ["#ef4444","#f97316","#eab308","#22c55e","#06b6d4","#3b82f6","#8b5cf6","#ec4899","#64748b","#0d9488"];
+function colorForLabel(label) {
+  if (!label) return "#94a3b8";
+  if (CONDITION_COLOR_MAP[label]) return CONDITION_COLOR_MAP[label];
+  let hash = 0;
+  for (let i = 0; i < label.length; i++) hash = (hash * 31 + label.charCodeAt(i)) >>> 0;
+  return FALLBACK_PALETTE[hash % FALLBACK_PALETTE.length];
+}
+function isDeciduousTooth(n) { return Number(n) >= 51 && Number(n) <= 85; }
 
 function todayStr() { return new Date().toISOString().split("T")[0]; }
 function fmtDate(d) {
@@ -86,6 +172,239 @@ function DentalChartModal({ onClose, onConfirm }) {
   );
 }
 
+// ── Treatment Chart Modal — click a tooth → pick a treatment from dropdown ──
+// Every treatment option gets a note textarea: optional for the fixed options,
+// required for "Other" (since its whole description comes from the textarea).
+function TreatmentChartModal({
+  onClose,
+  onConfirm,
+  permanentOptions = PERMANENT_TREATMENTS,
+  deciduousOptions = DECIDUOUS_TREATMENTS,
+  title = "✅ Treatment Done — Select Tooth",
+}) {
+  const [chartType,   setChartType]   = useState("permanent");
+  const [assign,      setAssign]      = useState({});   // { toothNum: { label, note } }
+  const [activeTooth, setActiveTooth] = useState(null);
+  const [draftLabel,  setDraftLabel]  = useState(null);  // currently-picked option, awaiting confirm
+  const [noteDraft,   setNoteDraft]   = useState("");
+  const [date,        setDate]        = useState(todayStr());
+
+  const chart   = chartType === "permanent" ? PERMANENT : DECIDUOUS;
+  const rawOptions = chartType === "permanent" ? permanentOptions : deciduousOptions;
+  // Normalize to {label,color} — plain-string option lists (existing callers) still work.
+  const options = rawOptions.map(o => typeof o === "string" ? { label: o, color: null } : o);
+
+  const openTooth = n => {
+    if (activeTooth === n) { setActiveTooth(null); setDraftLabel(null); setNoteDraft(""); return; }
+    setActiveTooth(n);
+    const existing = assign[n];
+    setDraftLabel(existing?.label || null);
+    setNoteDraft(existing?.note || "");
+  };
+
+  const pick = (n, label) => {
+    setDraftLabel(label);
+    setNoteDraft(assign[n]?.label === label ? (assign[n].note || "") : "");
+  };
+
+  const confirmPick = n => {
+    if (!draftLabel) return;
+    if (draftLabel === "Other" && !noteDraft.trim()) return; // Other needs its description
+    const color = options.find(o => o.label === draftLabel)?.color || null;
+    setAssign(p => ({ ...p, [n]: { label: draftLabel, note: noteDraft.trim(), color } }));
+    setActiveTooth(null);
+    setDraftLabel(null);
+    setNoteDraft("");
+  };
+
+  const removeTooth = n => {
+    setAssign(p => { const c = { ...p }; delete c[n]; return c; });
+    if (activeTooth === n) { setActiveTooth(null); setDraftLabel(null); setNoteDraft(""); }
+  };
+
+  const entries = Object.entries(assign).sort((a, b) => Number(a[0]) - Number(b[0]));
+
+  // How a tooth's treatment renders as text, e.g. "Extraction — deep decay" or just "Other" text
+  const fmtInfo = info => {
+    if (info.label === "Other") return info.note || "Other";
+    return info.note ? `${info.label} — ${info.note}` : info.label;
+  };
+
+  const handleOk = () => {
+    // Group teeth by identical treatment+note text — mirrors auto-diagnosis grouping
+    const groups = {};
+    entries.forEach(([tooth, info]) => {
+      const text = fmtInfo(info);
+      if (!groups[text]) groups[text] = { note: text, label: info.label, freeText: info.note || "", teeth: [], color: info.color || null };
+      groups[text].teeth.push(Number(tooth));
+    });
+    onConfirm({ groups: Object.values(groups), date, chartType });
+  };
+
+  const renderTooth = n => (
+    <button key={n}
+      style={{
+        ...S.tooth,
+        ...(assign[n] ? { ...S.toothDone, ...(assign[n].color ? { background: assign[n].color, borderColor: assign[n].color } : {}) } : {}),
+        ...(activeTooth === n ? S.toothActive : {}),
+      }}
+      onClick={() => openTooth(n)}>
+      {n}
+    </button>
+  );
+
+  return (
+    <div style={S.overlay}>
+      <div style={S.modal}>
+        <div style={S.modalHeader}>
+          <span style={S.modalTitle}>{title}</span>
+          <button style={S.closeBtn} onClick={onClose}>✕</button>
+        </div>
+        <div style={S.toggleRow}>
+          {["permanent","deciduous"].map(t=>(
+            <button key={t} style={{...S.toggleBtn,...(chartType===t?S.toggleActive:{})}}
+              onClick={()=>{setChartType(t);setAssign({});setActiveTooth(null);setDraftLabel(null);setNoteDraft("");}}>
+              {t==="permanent"?"Permanent":"Deciduous"}
+            </button>
+          ))}
+        </div>
+        <div style={S.chartWrap}>
+          <div style={S.quadrantRow}>
+            <div style={S.quadrant}>{chart.upperRight.map(renderTooth)}</div>
+            <div style={S.dividerV}/>
+            <div style={S.quadrant}>{chart.upperLeft.map(renderTooth)}</div>
+          </div>
+          <div style={S.dividerH}/>
+          <div style={S.quadrantRow}>
+            <div style={S.quadrant}>{chart.lowerRight.map(renderTooth)}</div>
+            <div style={S.dividerV}/>
+            <div style={S.quadrant}>{chart.lowerLeft.map(renderTooth)}</div>
+          </div>
+        </div>
+
+        {activeTooth != null && (
+          <div style={S.treatDropdown}>
+            <div style={S.treatDropdownHeader}>
+              <span>Tooth <b>{activeTooth}</b> — select treatment</span>
+              <button style={S.closeBtn} onClick={()=>{setActiveTooth(null);setDraftLabel(null);setNoteDraft("");}}>✕</button>
+            </div>
+            <div style={S.treatOptionList}>
+              {options.map(opt=>(
+                <button key={opt.label}
+                  style={{...S.treatOption,...(draftLabel===opt.label?S.treatOptionSel:{})}}
+                  onClick={()=>pick(activeTooth,opt.label)}>
+                  {opt.color && <span style={{display:"inline-block",width:8,height:8,borderRadius:"50%",background:opt.color,marginRight:6}}/>}
+                  {DENTAL_CHART_CMAP[opt.label]?.emoji && <span style={{marginRight:4}}>{DENTAL_CHART_CMAP[opt.label].emoji}</span>}
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+            {draftLabel && (
+              <div style={{marginTop:10}}>
+                <textarea style={S.modalTextarea}
+                  placeholder={draftLabel==="Other" ? "Describe treatment…" : "Add a note (optional)…"}
+                  value={noteDraft} onChange={e=>setNoteDraft(e.target.value)} autoFocus/>
+                <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:-4}}>
+                  <button style={S.okBtnSt}
+                    disabled={draftLabel==="Other" && !noteDraft.trim()}
+                    onClick={()=>confirmPick(activeTooth)}>
+                    Set {draftLabel}
+                  </button>
+                </div>
+              </div>
+            )}
+            {assign[activeTooth] && (
+              <button style={{...S.cancelBtnSt,marginTop:10}} onClick={()=>removeTooth(activeTooth)}>🗑️ Remove treatment</button>
+            )}
+          </div>
+        )}
+
+        {entries.length>0 && (
+          <div style={S.selectedTeeth}>
+            <span style={S.selectedLabel}>Assigned: </span>
+            {entries.map(([tooth,info])=>(
+              <span key={tooth} style={S.toothTag}>
+                {info.color && <span style={{display:"inline-block",width:7,height:7,borderRadius:"50%",background:"#fff",opacity:0.9,marginRight:5}}/>}
+                {tooth}: {fmtInfo(info)}
+                <span style={S.toothTagDel} onClick={()=>removeTooth(Number(tooth))}> ✕</span>
+              </span>
+            ))}
+          </div>
+        )}
+
+        <div style={S.modalDateRow}>
+          <span style={S.dateLabel}>Date:</span>
+          <span style={S.autoChip}>📅 {fmtDate(todayStr())} <span style={S.autoTag}>auto</span></span>
+          <div style={S.manualChip}>
+            🗓 {fmtDate(date)} <span style={S.autoTag}>manual</span>
+            <input type="date" value={date} onChange={e=>setDate(e.target.value)} style={S.hiddenDate}/>
+          </div>
+        </div>
+
+        <div style={S.modalActions}>
+          <button style={S.cancelBtnSt} onClick={onClose}>Cancel</button>
+          <button style={S.okBtnSt} disabled={entries.length===0}
+            onClick={handleOk}>OK</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Other Finding Modal — pick a whole-mouth finding (not tooth-specific) ───
+// Selecting "Other" requires the text area, since its description comes from there.
+function OtherFindingModal({ onClose, onConfirm, options = OTHER_FINDINGS_OPTIONS, title = "🔍 Add Other Finding" }) {
+  const [label, setLabel] = useState(null);
+  const [note,  setNote]  = useState("");
+  const [date,  setDate]  = useState(todayStr());
+
+  const pick = l => { setLabel(l); setNote(""); };
+  const canConfirm = label && (label !== "Other" || note.trim());
+
+  const handleOk = () => {
+    if (!canConfirm) return;
+    const text = label === "Other" ? note.trim() : (note.trim() ? `${label} — ${note.trim()}` : label);
+    onConfirm({ note: text, date });
+  };
+
+  return (
+    <div style={S.overlay}>
+      <div style={S.modal}>
+        <div style={S.modalHeader}>
+          <span style={S.modalTitle}>{title}</span>
+          <button style={S.closeBtn} onClick={onClose}>✕</button>
+        </div>
+        <div style={S.treatOptionList}>
+          {options.map(opt=>(
+            <button key={opt}
+              style={{...S.treatOption,...(label===opt?S.treatOptionSel:{})}}
+              onClick={()=>pick(opt)}>
+              {opt}
+            </button>
+          ))}
+        </div>
+        {label && (
+          <textarea style={{...S.modalTextarea,marginTop:12}}
+            placeholder={label==="Other" ? "Describe the finding…" : "Add a note (optional)…"}
+            value={note} onChange={e=>setNote(e.target.value)} autoFocus/>
+        )}
+        <div style={S.modalDateRow}>
+          <span style={S.dateLabel}>Date:</span>
+          <span style={S.autoChip}>📅 {fmtDate(todayStr())} <span style={S.autoTag}>auto</span></span>
+          <div style={S.manualChip}>
+            🗓 {fmtDate(date)} <span style={S.autoTag}>manual</span>
+            <input type="date" value={date} onChange={e=>setDate(e.target.value)} style={S.hiddenDate}/>
+          </div>
+        </div>
+        <div style={S.modalActions}>
+          <button style={S.cancelBtnSt} onClick={onClose}>Cancel</button>
+          <button style={S.okBtnSt} disabled={!canConfirm} onClick={handleOk}>OK</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Entry item (with IRT teeth display) ──────────────────────────────────────
 function EntryItem({ entry, onEdit, onDelete }) {
   const [editing, setEditing] = useState(false);
@@ -130,7 +449,7 @@ function EntryItem({ entry, onEdit, onDelete }) {
 }
 
 // ── Entry section ─────────────────────────────────────────────────────────────
-function EntrySection({ title, entries, onAdd, onEdit, onDelete, showChart=false, placeholder="" }) {
+function EntrySection({ title, entries, onAdd, onEdit, onDelete, showChart=false, chartVariant="teeth", placeholder="", treatmentOptions=null }) {
   const [open,      setOpen]      = useState(false);
   const [text,      setText]      = useState("");
   const [date,      setDate]      = useState(todayStr());
@@ -168,7 +487,19 @@ function EntrySection({ title, entries, onAdd, onEdit, onDelete, showChart=false
           </div>
         </div>
       )}
-      {chartOpen&&(
+      {chartOpen && chartVariant==="treatment" && (
+        <TreatmentChartModal onClose={()=>setChartOpen(false)}
+          permanentOptions={treatmentOptions?.permanent}
+          deciduousOptions={treatmentOptions?.deciduous}
+          title={treatmentOptions?.title}
+          onConfirm={({groups,date,chartType})=>{
+            groups.forEach((g,i)=>{
+              onAdd({id:Date.now()+i,note:g.note,date,teeth:g.teeth,chartType});
+            });
+            setChartOpen(false);
+          }}/>
+      )}
+      {chartOpen && chartVariant!=="treatment" && (
         <DentalChartModal onClose={()=>setChartOpen(false)}
           onConfirm={data=>{
             onAdd({id:Date.now(),note:data.note,date:data.date,teeth:data.teeth,chartType:data.chartType});
@@ -323,57 +654,141 @@ function HistoryRow({ r, onSave, onDelete }) {
   );
 }
 
-// ── Separated Diagnosis Section with dental chart + other findings ──────────
-function DiagnosisSection({ dentalEntries, findingEntries, onEditDental, onDeleteDental, onAddManual, onEditManual, onDeleteManual }) {
-  const [addOpen, setAddOpen] = useState(false);
-  const [addText, setAddText] = useState("");
-  const [addDate, setAddDate] = useState(todayStr());
-  const [chartOpen, setChartOpen] = useState(false);
+// ── Dental Chart Overview — color-coded full-mouth view built from diagnosis entries ─
+function DentalChartOverview({ entries }) {
+  const toothMap = {};
+  entries.forEach(e => {
+    const label = (e.note || "").split(" — ")[0];
+    const color = e.color || colorForLabel(label);
+    (e.teeth || []).forEach(t => { toothMap[t] = { color, label }; });
+  });
 
-  const handleAdd = () => {
-    if (!addText.trim()) return;
-    onAddManual({ id: Date.now(), note: addText.trim(), date: addDate, teeth: [], manual: true });
-    setAddText(""); setAddDate(todayStr()); setAddOpen(false);
+  if (Object.keys(toothMap).length === 0) return null;
+
+  const hasPerm = Object.keys(toothMap).some(t => !isDeciduousTooth(t));
+  const hasDec  = Object.keys(toothMap).some(t => isDeciduousTooth(t));
+
+  const legend = {};
+  Object.values(toothMap).forEach(({ color, label }) => { legend[label] = color; });
+
+  const renderTooth = n => {
+    const info = toothMap[n];
+    return (
+      <span key={n} title={info ? `${n}: ${info.label}` : String(n)}
+        style={{
+          ...S.miniTooth,
+          ...(info ? { background: info.color, borderColor: info.color, color: "#fff" } : {}),
+        }}>
+        {n}
+      </span>
+    );
   };
+
+  const renderArch = chart => (
+    <div style={S.miniChartWrap}>
+      <div style={S.miniQuadRow}>
+        <div style={S.miniQuad}>{chart.upperRight.map(renderTooth)}</div>
+        <div style={S.miniDividerV}/>
+        <div style={S.miniQuad}>{chart.upperLeft.map(renderTooth)}</div>
+      </div>
+      <div style={S.miniDividerH}/>
+      <div style={S.miniQuadRow}>
+        <div style={S.miniQuad}>{chart.lowerRight.map(renderTooth)}</div>
+        <div style={S.miniDividerV}/>
+        <div style={S.miniQuad}>{chart.lowerLeft.map(renderTooth)}</div>
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={S.chartOverviewBox}>
+      <div style={S.chartOverviewTitle}>🦷 Dental Chart Overview</div>
+      {hasPerm && (
+        <div style={{marginBottom: hasDec?10:0}}>
+          <div style={S.miniArchLabel}>Permanent</div>
+          {renderArch(PERMANENT)}
+        </div>
+      )}
+      {hasDec && (
+        <div>
+          <div style={S.miniArchLabel}>Deciduous</div>
+          {renderArch(DECIDUOUS)}
+        </div>
+      )}
+      <div style={S.chartLegend}>
+        {Object.entries(legend).map(([label,color])=>(
+          <span key={label} style={S.legendChip}>
+            <span style={{...S.legendDot,background:color}}/>
+            {label}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Separated Diagnosis Section with dental chart + other findings ──────────
+function DiagnosisSection({
+  dentalEntries, findingEntries,
+  onAddDental, onEditDental, onDeleteDental,
+  onAddFinding, onEditFinding, onDeleteFinding,
+}) {
+  const [addChoice, setAddChoice] = useState(false);   // shows the "Dental Chart / Other Finding" chooser
+  const [dentalModalOpen,  setDentalModalOpen]  = useState(false);
+  const [findingModalOpen, setFindingModalOpen] = useState(false);
 
   return (
     <div style={S.section}>
       <div style={S.sectionHeader}>
         <span style={S.sectionTitle}>📋 Diagnosis</span>
         <div style={{display:"flex",gap:6}}>
-          <button style={S.addBtn} onClick={()=>setChartOpen(true)}>🦷 Chart</button>
-          <button style={S.addBtn} onClick={()=>setAddOpen(o=>!o)}>+ Add</button>
+          <button style={S.addBtn} onClick={()=>setAddChoice(o=>!o)}>+ Add</button>
         </div>
       </div>
 
       {/* Auto-fill notice */}
-      <div style={S.autoNote}>✅ Auto-filled from Dental Chart &amp; Other Findings</div>
+      <div style={S.autoNote}>✅ Auto-filled from Dental Chart &amp; Other Findings — editable, addable, deletable</div>
 
-      {addOpen && (
-        <div style={S.inputBox}>
-          <textarea style={S.inputArea} placeholder="Enter diagnosis manually…" value={addText} onChange={e=>setAddText(e.target.value)} autoFocus/>
-          <div style={S.dateRow}>
-            <span style={S.dateLabel}>Date:</span>
-            <span style={S.autoChip}>📅 {fmtDate(todayStr())} <span style={S.autoTag}>auto</span></span>
-            <div style={S.manualChip}>
-              🗓 {fmtDate(addDate)} <span style={S.autoTag}>manual</span>
-              <input type="date" value={addDate} onChange={e=>setAddDate(e.target.value)} style={S.hiddenDate}/>
-            </div>
+      {addChoice && (
+        <div style={S.addChooserBox}>
+          <div style={S.addChooserLabel}>What would you like to add?</div>
+          <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+            <button style={S.chooserBtn}
+              onClick={()=>{setAddChoice(false);setDentalModalOpen(true);}}>
+              🦷 Dental Chart Finding
+            </button>
+            <button style={S.chooserBtn}
+              onClick={()=>{setAddChoice(false);setFindingModalOpen(true);}}>
+              🔍 Other Finding
+            </button>
           </div>
-          <div style={{display:"flex",gap:8,justifyContent:"flex-end",marginTop:8}}>
-            <button style={S.cancelBtnSt} onClick={()=>setAddOpen(false)}>Cancel</button>
-            <button style={S.okBtnSt} onClick={handleAdd} disabled={!addText.trim()}>OK</button>
-          </div>
+          <button style={{...S.cancelBtnSt,marginTop:8}} onClick={()=>setAddChoice(false)}>Cancel</button>
         </div>
       )}
 
-      {chartOpen && (
-        <DentalChartModal onClose={()=>setChartOpen(false)}
-          onConfirm={data=>{
-            onAddManual({id:Date.now(),note:data.note,date:data.date,teeth:data.teeth,chartType:data.chartType});
-            setChartOpen(false);
+      {dentalModalOpen && (
+        <TreatmentChartModal onClose={()=>setDentalModalOpen(false)}
+          permanentOptions={PERMANENT_DIAGNOSIS_CONDITIONS}
+          deciduousOptions={DECIDUOUS_DIAGNOSIS_CONDITIONS}
+          title="🦷 Dental Chart — Select Tooth & Condition"
+          onConfirm={async ({groups,date})=>{
+            for (const g of groups) {
+              await onAddDental({ teeth: g.teeth, label: g.label, freeText: g.freeText, date, color: g.color });
+            }
+            setDentalModalOpen(false);
           }}/>
       )}
+
+      {findingModalOpen && (
+        <OtherFindingModal onClose={()=>setFindingModalOpen(false)}
+          onConfirm={async ({note,date})=>{
+            await onAddFinding({ note, date });
+            setFindingModalOpen(false);
+          }}/>
+      )}
+
+      {/* Visual full-mouth chart, colored by condition */}
+      <DentalChartOverview entries={dentalEntries}/>
 
       {/* Dental Chart sub-section */}
       {dentalEntries.length > 0 && (
@@ -388,9 +803,22 @@ function DiagnosisSection({ dentalEntries, findingEntries, onEditDental, onDelet
             🦷 Dental Chart Conditions
           </div>
           <div style={{border:"1px solid #bfdbfe",borderTop:"none",borderRadius:"0 0 6px 6px",overflow:"hidden"}}>
-            {dentalEntries.map(e => (
-              <EntryItem key={e.id} entry={e} onEdit={onEditDental} onDelete={onDeleteDental}/>
-            ))}
+            {dentalEntries.map(e => {
+              const label = (e.note || "").split(" — ")[0];
+              const color = e.color || colorForLabel(label);
+              return (
+                <div key={e.id} style={{borderLeft:`4px solid ${color}`}}>
+                  <EntryItem
+                    entry={e}
+                    onEdit={(_id, txt) => Promise.all(e.recordIds.map(rid => onEditDental(rid, { notes: txt })))}
+                    onDelete={() => {
+                      if (!window.confirm(`Delete "${label}" from ${e.recordIds.length} tooth record(s)?`)) return;
+                      Promise.all(e.recordIds.map(rid => onDeleteDental(rid)));
+                    }}
+                  />
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
@@ -409,7 +837,15 @@ function DiagnosisSection({ dentalEntries, findingEntries, onEditDental, onDelet
           </div>
           <div style={{border:"1px solid #7dd3fc",borderTop:"none",borderRadius:"0 0 6px 6px",overflow:"hidden"}}>
             {findingEntries.map(e => (
-              <EntryItem key={e.id} entry={e} onEdit={onEditManual} onDelete={onDeleteManual}/>
+              <EntryItem
+                key={e.id}
+                entry={e}
+                onEdit={(_id, txt) => onEditFinding(e.findingId, txt)}
+                onDelete={() => {
+                  if (!window.confirm(`Delete this finding?`)) return;
+                  onDeleteFinding(e.findingId);
+                }}
+              />
             ))}
           </div>
         </div>
@@ -430,11 +866,17 @@ export default function Consultation({
   dentalChartLog = [],
   patient        = null,
   onSaved,                  // FIX: callback to notify parent after a successful save
+  onAddDentalRecord,        // writes a real dental-chart record (single source of truth lives in VisitPage)
+  onEditDentalRecord,
+  onDeleteDentalRecord,
+  onAddFindingRecord,       // writes a real findings record
+  onEditFindingRecord,
+  onDeleteFindingRecord,
 }) {
   const [records,        setRecords]        = useState([]);
   // Separated diagnosis
-  const [dentalDiag,     setDentalDiag]     = useState([]);   // auto from dental chart
-  const [findingsDiag,   setFindingsDiag]   = useState([]);   // auto from other findings + manual
+  const [dentalDiag,     setDentalDiag]     = useState([]);   // derived from dentalChartLog (real records)
+  const [findingsDiag,   setFindingsDiag]   = useState([]);   // derived from otherFindings (real records)
   const [advice,         setAdvice]         = useState([]);
   const [treatDone,      setTreatDone]      = useState([]);
   const [followUps,      setFollowUps]      = useState([]);
@@ -463,7 +905,10 @@ export default function Consultation({
   const chartLogKey  = JSON.stringify(dentalChartLog);
   const findingsKey  = JSON.stringify(otherFindings);
 
-  // Auto-fill dental chart diagnosis
+  // Auto-fill dental chart diagnosis — fully derived from the real dental-chart
+  // records passed down from VisitPage. Manual "+ Add" entries from this panel are
+  // now written straight to those same records (see onAddDentalRecord), so this
+  // view is always in sync with the Dental Chart tab — no separate manual state.
   useEffect(() => {
     const today = todayStr();
     const condGroups = {};
@@ -471,21 +916,24 @@ export default function Consultation({
       const rowDate = row.created_at ? row.created_at.split("T")[0] : today;
       if (rowDate !== today) return;
       const condLabel = row.condition==="Other"&&row.other_text ? row.other_text : row.condition;
-      if (!condGroups[condLabel]) condGroups[condLabel] = { teeth: [], notes: [] };
+      if (!condGroups[condLabel]) condGroups[condLabel] = { teeth: [], notes: [], ids: [] };
       condGroups[condLabel].teeth.push(row.tooth_number);
+      condGroups[condLabel].ids.push(row.id);
       if (row.notes) condGroups[condLabel].notes.push(row.notes);
     });
 
     const auto = [];
-    Object.entries(condGroups).forEach(([condLabel, { teeth, notes }]) => {
+    Object.entries(condGroups).forEach(([condLabel, { teeth, notes, ids }]) => {
       const sortedTeeth = [...teeth].sort((a,b)=>a-b);
       const noteStr = notes.length > 0 ? ` — ${notes.join("; ")}` : "";
       auto.push({
-        id:   `auto-chart-${condLabel.replace(/\s+/g,"-")}`,
-        auto: true,
-        date: today,
-        teeth: sortedTeeth,
-        note: `${condLabel}${noteStr}`,
+        id:        `auto-chart-${condLabel.replace(/\s+/g,"-")}`,
+        auto:      true,
+        date:      today,
+        teeth:     sortedTeeth,
+        recordIds: ids,           // real dental_chart row ids behind this grouped entry
+        note:      `${condLabel}${noteStr}`,
+        color:     colorForLabel(condLabel),
       });
     });
 
@@ -493,7 +941,8 @@ export default function Consultation({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chartLogKey]);
 
-  // Auto-fill other findings diagnosis (keep manual entries)
+  // Auto-fill other findings diagnosis — fully derived from the real findings
+  // records, same reasoning as above.
   useEffect(() => {
     const today = todayStr();
     const auto = [];
@@ -501,15 +950,16 @@ export default function Consultation({
       const fDate = f.value ? f.value.split("T")[0] : today;
       if (fDate !== today) return;
       auto.push({
-        id:    `auto-finding-${f.id}`,
-        auto:  true,
-        date:  today,
-        teeth: [],
-        note:  f.finding_type,
+        id:        `auto-finding-${f.id}`,
+        auto:      true,
+        date:      today,
+        teeth:     [],
+        findingId: f.id,          // real findings row id behind this entry
+        note:      f.finding_type,
       });
     });
 
-    setFindingsDiag(prev => [...auto, ...prev.filter(e => !e.auto)]);
+    setFindingsDiag(auto);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [findingsKey]);
 
@@ -547,7 +997,6 @@ export default function Consultation({
     setFollowDate("");
     setFollowTime("09:00");
     setShowFollowAdd(false);
-    setFindingsDiag(prev => prev.filter(e=>e.auto));
   };
 
   // Combined diagnosis string for saving: dental chart + other findings
@@ -660,11 +1109,12 @@ export default function Consultation({
             <DiagnosisSection
               dentalEntries={dentalDiag}
               findingEntries={findingsDiag}
-              onEditDental={editEntry(setDentalDiag)}
-              onDeleteDental={delEntry(setDentalDiag)}
-              onAddManual={addEntry(setFindingsDiag)}
-              onEditManual={editEntry(setFindingsDiag)}
-              onDeleteManual={delEntry(setFindingsDiag)}
+              onAddDental={onAddDentalRecord}
+              onEditDental={onEditDentalRecord}
+              onDeleteDental={onDeleteDentalRecord}
+              onAddFinding={onAddFindingRecord}
+              onEditFinding={onEditFindingRecord}
+              onDeleteFinding={onDeleteFindingRecord}
             />
           </div>
 
@@ -677,6 +1127,12 @@ export default function Consultation({
               onEdit={editEntry(setAdvice)}
               onDelete={delEntry(setAdvice)}
               showChart={true}
+              chartVariant="treatment"
+              treatmentOptions={{
+                permanent: ADVICE_PERMANENT_TREATMENTS,
+                deciduous: ADVICE_DECIDUOUS_TREATMENTS,
+                title: "💊 Advice & Treatment Plan — Select Tooth",
+              }}
               placeholder="Enter advice or treatment plan…"
             />
           </div>
@@ -690,6 +1146,7 @@ export default function Consultation({
               onEdit={editEntry(setTreatDone)}
               onDelete={delEntry(setTreatDone)}
               showChart={true}
+              chartVariant="treatment"
               placeholder="Enter treatment done today…"
             />
           </div>
@@ -912,10 +1369,18 @@ const S = {
   dividerH:     {height:2,background:"#cbd5e1",margin:"3px 0"},
   tooth:        {width:32,height:32,borderRadius:7,border:"1.5px solid #e2e8f0",background:"#fff",fontSize:10,fontWeight:600,cursor:"pointer",color:"#475569",fontFamily:"'DM Mono',monospace",transition:"all 0.12s"},
   toothSel:     {background:"#3b82f6",color:"#fff",borderColor:"#2563eb",transform:"scale(1.1)"},
+  toothDone:    {background:"#16a34a",color:"#fff",borderColor:"#15803d"},
+  toothActive:  {borderColor:"#3b82f6",boxShadow:"0 0 0 2px rgba(59,130,246,0.35)",transform:"scale(1.08)"},
   selectedTeeth:{display:"flex",flexWrap:"wrap",gap:4,alignItems:"center",marginBottom:10,padding:"8px 10px",background:"#eff6ff",borderRadius:8,border:"1px solid #bfdbfe"},
   selectedLabel:{fontSize:11,color:"#3b82f6",fontWeight:700},
   toothTag:     {background:"#3b82f6",color:"#fff",borderRadius:5,padding:"2px 7px",fontSize:11,fontWeight:600,fontFamily:"'DM Mono',monospace"},
   toothTagSm:   {background:"#dbeafe",color:"#1d4ed8",borderRadius:4,padding:"1px 5px",fontSize:10,fontWeight:600,fontFamily:"'DM Mono',monospace"},
+  toothTagDel:  {marginLeft:4,cursor:"pointer",opacity:0.8},
+  treatDropdown:{background:"#fff",border:"1.5px solid #bfdbfe",borderRadius:10,padding:12,marginBottom:12,boxShadow:"0 4px 14px rgba(0,0,0,0.08)"},
+  treatDropdownHeader:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:9,fontSize:12.5,color:"#1e293b",fontWeight:500,fontFamily:"'DM Sans',sans-serif"},
+  treatOptionList:{display:"flex",flexWrap:"wrap",gap:6},
+  treatOption:  {padding:"6px 11px",borderRadius:7,border:"1.5px solid #e2e8f0",background:"#f8fafc",fontSize:12,fontWeight:500,cursor:"pointer",color:"#475569",fontFamily:"'DM Sans',sans-serif",transition:"all 0.12s"},
+  treatOptionSel:{background:"#3b82f6",color:"#fff",borderColor:"#2563eb"},
   modalTextarea:{width:"100%",minHeight:68,padding:"10px 12px",border:"1.5px solid #e2e8f0",borderRadius:10,fontFamily:"'DM Sans',sans-serif",fontSize:13,resize:"vertical",outline:"none",marginBottom:12,boxSizing:"border-box"},
   modalDateRow: {display:"flex",alignItems:"center",gap:8,marginBottom:14,flexWrap:"wrap"},
   dateLabel:    {fontSize:12,color:"#64748b",fontWeight:500},
@@ -950,6 +1415,25 @@ const S = {
   cancelSm:     {padding:"4px 12px",background:"#f1f5f9",color:"#64748b",border:"none",borderRadius:6,fontSize:12,cursor:"pointer",fontFamily:"'DM Sans',sans-serif"},
   emptyMsg:     {fontSize:12,color:"#cbd5e1",fontStyle:"italic",padding:"6px 0"},
   autoNote:     {fontSize:11,color:"#16a34a",background:"#f0fdf4",border:"1px solid #bbf7d0",borderRadius:7,padding:"5px 10px",marginBottom:10},
+
+  // Diagnosis "+ Add" chooser (Dental Chart vs Other Finding)
+  addChooserBox:{background:"#f8fafc",border:"1.5px solid #e2e8f0",borderRadius:10,padding:12,marginBottom:10},
+  addChooserLabel:{fontSize:12,color:"#475569",fontWeight:600,marginBottom:8},
+  chooserBtn:   {padding:"8px 14px",background:"#fff",color:"#334155",border:"1.5px solid #cbd5e1",borderRadius:8,fontSize:12.5,fontWeight:500,cursor:"pointer",fontFamily:"'DM Sans',sans-serif"},
+
+  // Dental Chart Overview (color-coded full-mouth mini chart)
+  chartOverviewBox:{background:"#fff",border:"1.5px solid #e9eef4",borderRadius:10,padding:12,marginBottom:10},
+  chartOverviewTitle:{fontSize:11.5,fontWeight:700,color:"#1e293b",marginBottom:8},
+  miniArchLabel:{fontSize:10,fontWeight:600,color:"#94a3b8",textTransform:"uppercase",letterSpacing:"0.05em",marginBottom:4},
+  miniChartWrap:{background:"#f8fafc",borderRadius:8,padding:8,border:"1px solid #eef2f7"},
+  miniQuadRow:  {display:"flex",alignItems:"center",justifyContent:"center"},
+  miniQuad:     {display:"flex",gap:2,padding:"3px 6px",flexWrap:"wrap",justifyContent:"center"},
+  miniDividerV: {width:1.5,background:"#cbd5e1",alignSelf:"stretch",margin:"0 2px"},
+  miniDividerH: {height:1.5,background:"#cbd5e1",margin:"2px 0"},
+  miniTooth:    {width:22,height:22,borderRadius:5,border:"1.5px solid #e2e8f0",background:"#fff",fontSize:8,fontWeight:600,color:"#94a3b8",fontFamily:"'DM Mono',monospace",display:"inline-flex",alignItems:"center",justifyContent:"center"},
+  chartLegend:  {display:"flex",flexWrap:"wrap",gap:8,marginTop:10},
+  legendChip:   {display:"inline-flex",alignItems:"center",gap:5,fontSize:10.5,color:"#475569",fontWeight:500},
+  legendDot:    {width:8,height:8,borderRadius:"50%",display:"inline-block"},
 };
 
 const css = `
