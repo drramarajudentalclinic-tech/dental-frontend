@@ -487,7 +487,7 @@ const PatientMedicationsTable = ({ data, setData }) => {
             display: "flex", flexDirection: "column", gap: 10,
           }}>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10 }}>
-              <Field label="Medicine Name" required>
+              <Field label="Medicine Name">
                 <input className="rpf-input" placeholder="e.g. Metformin" value={row.medicine_name}
                   onChange={(e) => updateRow(row.key, "medicine_name", e.target.value)} />
               </Field>
@@ -495,21 +495,21 @@ const PatientMedicationsTable = ({ data, setData }) => {
                 <input className="rpf-input" placeholder="e.g. 500mg" value={row.dosage}
                   onChange={(e) => updateRow(row.key, "dosage", e.target.value)} />
               </Field>
-              <Field label="Frequency" required>
+              <Field label="Frequency">
                 <select className="rpf-input" value={row.frequency}
                   onChange={(e) => updateRow(row.key, "frequency", e.target.value)}>
                   <option value="">Select</option>
                   {MED_FREQUENCIES.map((f) => <option key={f}>{f}</option>)}
                 </select>
               </Field>
-              <Field label="Duration" required>
+              <Field label="Duration">
                 <select className="rpf-input" value={row.duration}
                   onChange={(e) => updateRow(row.key, "duration", e.target.value)}>
                   <option value="">Select</option>
                   {MED_DURATIONS.map((d) => <option key={d}>{d}</option>)}
                 </select>
               </Field>
-              <Field label="Purpose" required>
+              <Field label="Purpose">
                 <select className="rpf-input" value={row.purpose}
                   onChange={(e) => updateRow(row.key, "purpose", e.target.value)}>
                   <option value="">Select</option>
@@ -813,16 +813,10 @@ const savePatient = async () => {
     return;
   }
 
-  // Any row with a medicine name must also have frequency/duration/purpose —
-  // the backend requires all three (see add_medication in patients.py).
-  const incompleteMed = (medications.rows || []).find((r) => {
-    const name = (r.medicine_name || "").trim();
-    return name !== "" && (!r.frequency || !r.duration || !r.purpose);
-  });
-  if (incompleteMed) {
-    alert(`Please complete Frequency, Duration and Purpose for "${incompleteMed.medicine_name}".`);
-    return;
-  }
+  // Current Medications is an optional section — frequency/duration/purpose
+  // are no longer required, so no blocking validation here. Any row that
+  // still lacks a medicine name is simply skipped when saving (see the
+  // Current Medications Sync block below).
 
   setSaving(true);
 
