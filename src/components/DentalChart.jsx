@@ -1,13 +1,33 @@
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import api from "../api/api";
+
+/* ═══════════════════════════════════════════════════════
+   DENTAL CHART
+
+   What this component does
+     • A tooth can carry SEVERAL findings (e.g. 16: Caries + Calculus).
+       Every finding is its own record with its own Edit and Delete.
+     • Click a tooth      → that tooth's findings: add, edit, delete.
+     • Quick mark         → pick one condition, then click every tooth
+                            that has it (fast for calculus, stains…).
+     • The chart shows the main finding as the tooth colour, affected
+       surfaces as coloured bands, and extra findings as small dots.
+
+   Props (unchanged)
+     visitId, disabled, onRecordsChange(records), externalRecords
+
+   Exports (unchanged, used by the Diagnosis panel)
+     default DentalChart, CONDITIONS, CMAP, resolveDiagnosisCondition
+═══════════════════════════════════════════════════════ */
 
 /* ═══════════════════════════════════════════════════════
    INJECT STYLES
 ═══════════════════════════════════════════════════════ */
 const injectStyles = () => {
-  if (document.getElementById("dc-pro-styles")) return;
+  if (document.getElementById("dc-pro-styles-v2")) return;
   const s = document.createElement("style");
-  s.id = "dc-pro-styles";
+  s.id = "dc-pro-styles-v2";
   s.textContent = `
     @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=DM+Mono:wght@400;500&display=swap');
 
@@ -19,641 +39,175 @@ const injectStyles = () => {
       --dc-border2: #d1d8e4;
       --dc-text: #0d1b2a;
       --dc-text2: #4a5568;
-      --dc-text3: #8a96a8;
+      --dc-text3: #6b7789;
       --dc-accent: #1a56db;
       --dc-accent2: #1046c4;
       --dc-accent-soft: #e8effe;
       --dc-shadow: 0 1px 3px rgba(13,27,42,0.08), 0 4px 16px rgba(13,27,42,0.06);
-      --dc-shadow-lg: 0 8px 32px rgba(13,27,42,0.14), 0 2px 8px rgba(13,27,42,0.08);
       --dc-radius: 14px;
-      --dc-radius-sm: 8px;
       --dc-font: 'DM Sans', sans-serif;
       --dc-mono: 'DM Mono', monospace;
     }
 
     * { box-sizing: border-box; }
 
-    .dc-root {
-      font-family: var(--dc-font);
-      color: var(--dc-text);
-      background: var(--dc-bg);
-      padding: 0;
-    }
+    .dc-root { font-family: var(--dc-font); color: var(--dc-text); background: var(--dc-bg); padding: 0; text-align: left; }
+    .dc-root button, .dc-overlay button { font-family: var(--dc-font); }
+    .dc-root button:focus-visible, .dc-overlay button:focus-visible,
+    .dc-root input:focus-visible, .dc-overlay input:focus-visible,
+    .dc-overlay textarea:focus-visible { outline: 2px solid var(--dc-accent); outline-offset: 2px; }
 
-    /* ── HEADER PANEL ── */
-    .dc-header {
-      background: var(--dc-surface);
-      border: 1px solid var(--dc-border);
-      border-radius: var(--dc-radius);
-      padding: 18px 22px;
-      margin-bottom: 14px;
-      box-shadow: var(--dc-shadow);
-      display: flex;
-      align-items: center;
-      gap: 20px;
-      flex-wrap: wrap;
-    }
-    .dc-header-title {
-      font-size: 16px;
-      font-weight: 700;
-      color: var(--dc-text);
-      letter-spacing: -0.3px;
-      display: flex;
-      align-items: center;
-      gap: 9px;
-    }
-    .dc-header-title-icon {
-      width: 34px; height: 34px;
-      background: linear-gradient(135deg, #1a56db, #2e70f0);
-      border-radius: 9px;
-      display: flex; align-items: center; justify-content: center;
-      font-size: 17px;
-      box-shadow: 0 3px 10px rgba(26,86,219,.30);
-    }
-    .dc-tab-group {
-      display: flex;
-      background: var(--dc-surface2);
-      border: 1px solid var(--dc-border);
-      border-radius: 10px;
-      padding: 3px;
-      gap: 2px;
-    }
-    .dc-tab {
-      padding: 7px 18px;
-      border-radius: 8px;
-      border: none;
-      background: transparent;
-      font-family: var(--dc-font);
-      font-size: 12.5px;
-      font-weight: 600;
-      color: var(--dc-text3);
-      cursor: pointer;
-      transition: all .18s;
-      white-space: nowrap;
-    }
-    .dc-tab.active {
-      background: var(--dc-surface);
-      color: var(--dc-accent);
-      box-shadow: 0 1px 4px rgba(0,0,0,.10);
-    }
-    .dc-stats-row {
-      display: flex;
-      gap: 10px;
-      margin-left: auto;
-      flex-wrap: wrap;
-    }
-    .dc-stat-chip {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      padding: 6px 13px;
-      border-radius: 20px;
-      font-size: 11.5px;
-      font-weight: 600;
-      border: 1.5px solid;
-    }
-    .dc-stat-dot {
-      width: 7px; height: 7px;
-      border-radius: 50%;
-    }
+    /* ── PANELS ── */
+    .dc-panel { background: var(--dc-surface); border: 1px solid var(--dc-border); border-radius: var(--dc-radius); box-shadow: var(--dc-shadow); margin-bottom: 14px; overflow: hidden; }
 
-    /* ── CHART PANEL ── */
-    .dc-chart-panel {
-      background: var(--dc-surface);
-      border: 1px solid var(--dc-border);
-      border-radius: var(--dc-radius);
-      box-shadow: var(--dc-shadow);
-      overflow: hidden;
-      margin-bottom: 14px;
-    }
-    .dc-chart-inner {
-      background: #f8fafd;
-      background-image:
-        radial-gradient(circle at 50% 50%, rgba(26,86,219,0.03) 0%, transparent 70%);
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      padding: 28px 16px 20px;
-    }
+    /* ── HEADER ── */
+    .dc-header { padding: 16px 20px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; overflow: visible; }
+    .dc-header-title { font-size: 16px; font-weight: 700; letter-spacing: -0.3px; display: flex; align-items: center; gap: 9px; }
+    .dc-header-title-icon { width: 34px; height: 34px; background: linear-gradient(135deg, #1a56db, #2e70f0); border-radius: 9px; display: flex; align-items: center; justify-content: center; font-size: 17px; box-shadow: 0 3px 10px rgba(26,86,219,.30); }
+    .dc-tab-group { display: flex; background: var(--dc-surface2); border: 1px solid var(--dc-border); border-radius: 10px; padding: 3px; gap: 2px; }
+    .dc-tab { padding: 7px 16px; border-radius: 8px; border: none; background: transparent; font-size: 12.5px; font-weight: 600; color: var(--dc-text3); cursor: pointer; transition: all .18s; white-space: nowrap; }
+    .dc-tab.active { background: var(--dc-surface); color: var(--dc-accent); box-shadow: 0 1px 4px rgba(0,0,0,.10); }
+    .dc-stats-row { display: flex; gap: 8px; margin-left: auto; flex-wrap: wrap; align-items: center; }
+    .dc-stat-chip { display: flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: 20px; font-size: 11.5px; font-weight: 600; border: 1.5px solid; white-space: nowrap; }
+    .dc-stat-dot { width: 7px; height: 7px; border-radius: 50%; }
 
-    /* ── TOOTH ── */
-    .dc-tooth-g { cursor: pointer; transition: filter .15s; }
-    .dc-tooth-g:hover .dc-tooth-body {
-      filter: brightness(0.9) drop-shadow(0 3px 8px rgba(0,0,0,.22));
-    }
-    .dc-tooth-g.selected .dc-tooth-body {
-      filter: drop-shadow(0 0 6px rgba(26,86,219,.7));
-    }
-    .dc-tooth-g.disabled { cursor: default; pointer-events: none; }
+    /* ── MODE BAR (click a tooth / quick mark) ── */
+    .dc-mode { padding: 14px 18px; }
+    .dc-mode-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    .dc-mode-hint { font-size: 13px; color: var(--dc-text2); font-weight: 500; }
+    .dc-mode-hint b { color: var(--dc-text); }
+    .dc-mode-active { border: 2px solid var(--dc-qm, var(--dc-accent)); }
+    .dc-pill { display: inline-flex; align-items: center; gap: 6px; padding: 5px 13px; border-radius: 20px; color: #fff; font-size: 12.5px; font-weight: 700; white-space: nowrap; }
+    .dc-opt-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px 22px; margin-top: 14px; padding-top: 14px; border-top: 1px dashed var(--dc-border2); }
+    .dc-marked { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 12px; }
+    .dc-marked-chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 4px 3px 10px; border-radius: 20px; font-family: var(--dc-mono); font-size: 12px; font-weight: 600; background: var(--dc-surface2); border: 1px solid var(--dc-border2); color: var(--dc-text); }
+    .dc-marked-chip button { width: 20px; height: 20px; border-radius: 50%; border: none; background: transparent; color: var(--dc-text3); cursor: pointer; font-size: 11px; line-height: 1; }
+    .dc-marked-chip button:hover { background: #fee2e2; color: #dc2626; }
+    .dc-notice { margin-top: 10px; padding: 8px 12px; border-radius: 8px; font-size: 12.5px; font-weight: 500; }
+    .dc-notice-info { background: #eff6ff; border: 1px solid #bfdbfe; color: #1e40af; }
+    .dc-notice-warn { background: #fffbeb; border: 1px solid #fde68a; color: #92400e; }
+    .dc-notice-error { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; }
 
-    /* ── QUADRANT LABEL ── */
-    .dc-qlabel {
-      font-family: var(--dc-mono);
-      font-size: 8.5px;
-      font-weight: 500;
-      fill: rgba(26,86,219,0.30);
-      letter-spacing: .5px;
-    }
+    /* ── BUTTONS ── */
+    .dc-btn { padding: 8px 15px; border-radius: 9px; font-size: 12.5px; font-weight: 700; cursor: pointer; border: 1.5px solid transparent; transition: all .14s; white-space: nowrap; line-height: 1.2; }
+    .dc-btn:disabled { opacity: .45; cursor: not-allowed; }
+    .dc-btn-primary { background: linear-gradient(135deg,#1a56db,#2e70f0); color: #fff; box-shadow: 0 3px 10px rgba(26,86,219,.25); }
+    .dc-btn-primary:hover:not(:disabled) { box-shadow: 0 5px 16px rgba(26,86,219,.38); }
+    .dc-btn-update { background: #b45309; color: #fff; }
+    .dc-btn-update:hover:not(:disabled) { background: #92400e; }
+    .dc-btn-soft { background: var(--dc-accent-soft); color: var(--dc-accent); border-color: #bcd0fb; }
+    .dc-btn-soft:hover:not(:disabled) { background: #dbe6fd; }
+    .dc-btn-ghost { background: var(--dc-surface); color: var(--dc-text2); border-color: var(--dc-border2); }
+    .dc-btn-ghost:hover:not(:disabled) { background: var(--dc-surface2); }
+    .dc-btn-danger { background: #dc2626; color: #fff; }
+    .dc-btn-danger:hover:not(:disabled) { background: #b91c1c; }
+    .dc-btn-danger-soft { background: #fff1f2; color: #be123c; border-color: #fecdd3; }
+    .dc-btn-danger-soft:hover:not(:disabled) { background: #ffe4e6; }
+    .dc-btn-sm { padding: 4px 10px; font-size: 11.5px; border-radius: 7px; }
 
-    /* ── LEGEND BAR ── */
-    .dc-legend-bar {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 6px;
-      align-items: center;
-      padding: 12px 18px;
-      border-top: 1px solid var(--dc-border);
-      background: var(--dc-surface2);
-    }
-    .dc-legend-item {
-      display: inline-flex;
-      align-items: center;
-      gap: 5px;
-      padding: 4px 10px;
-      border-radius: 20px;
-      font-size: 11px;
-      font-weight: 600;
-      background: var(--dc-surface);
-      border: 1px solid var(--dc-border);
-      color: var(--dc-text2);
-      cursor: default;
-    }
-    .dc-legend-dot {
-      width: 8px; height: 8px;
-      border-radius: 3px;
-      flex-shrink: 0;
-    }
+    /* ── CHART ── */
+    .dc-chart-inner { background: #f8fafd; background-image: radial-gradient(circle at 50% 50%, rgba(26,86,219,0.04) 0%, transparent 70%); display: flex; justify-content: center; align-items: center; padding: 22px 12px 14px; }
+    .dc-chart-inner svg { display: block; width: 100%; height: auto; }
+    .dc-tooth-g { cursor: pointer; transition: opacity .15s; }
+    .dc-tooth-g:hover .dc-tooth-body { filter: brightness(0.94) drop-shadow(0 3px 7px rgba(0,0,0,.22)); }
+    .dc-tooth-g.dim { opacity: .22; }
+    .dc-tooth-g:focus { outline: none; }
+    .dc-focus-ring { opacity: 0; pointer-events: none; }
+    .dc-tooth-g:focus-visible .dc-focus-ring { opacity: 1; }
+    .dc-qlabel { font-family: var(--dc-mono); font-size: 9px; font-weight: 500; fill: rgba(26,86,219,0.45); letter-spacing: .5px; }
+    .dc-sidelabel { font-family: var(--dc-font); font-size: 9.5px; font-weight: 700; fill: #8a96a8; letter-spacing: 1.2px; }
 
-    /* ── MODAL OVERLAY ── */
-    .dc-overlay {
-      position: fixed; inset: 0;
-      background: rgba(8,15,30,.60);
-      backdrop-filter: blur(14px) saturate(0.8);
-      display: flex; align-items: center; justify-content: center;
-      z-index: 9000;
-      animation: dcFadeIn .16s ease both;
-    }
-    @keyframes dcFadeIn { from { opacity:0 } to { opacity:1 } }
-    @keyframes dcSlideUp {
-      from { opacity:0; transform: translateY(24px) scale(0.96) }
-      to   { opacity:1; transform: none }
-    }
+    /* ── LEGEND ── */
+    .dc-legend-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 11px 16px; border-top: 1px solid var(--dc-border); background: var(--dc-surface2); }
+    .dc-legend-cap { font-size: 10px; font-weight: 700; color: var(--dc-text3); text-transform: uppercase; letter-spacing: .8px; margin-right: 4px; }
+    .dc-legend-item { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 20px; font-size: 11.5px; font-weight: 600; background: var(--dc-surface); border: 1.5px solid var(--dc-border); color: var(--dc-text2); cursor: pointer; transition: all .12s; }
+    .dc-legend-item.static { cursor: default; }
+    .dc-legend-item.on { border-color: var(--dc-accent); background: var(--dc-accent-soft); color: var(--dc-accent); }
+    .dc-legend-dot { width: 9px; height: 9px; border-radius: 3px; flex-shrink: 0; }
+    .dc-legend-key { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--dc-text3); font-weight: 500; margin-left: 6px; }
 
-    .dc-modal {
-      background: var(--dc-surface);
-      border-radius: 20px;
-      width: 96%;
-      max-width: 520px;
-      max-height: 90vh;
-      overflow: hidden;
-      display: flex;
-      flex-direction: column;
-      box-shadow: 0 40px 100px rgba(8,15,30,.40), 0 0 0 1px rgba(255,255,255,.08);
-      animation: dcSlideUp .22s cubic-bezier(.22,.68,0,1.15) both;
-    }
-    .dc-modal-top {
-      padding: 22px 24px 18px;
-      border-bottom: 1px solid var(--dc-border);
-      flex-shrink: 0;
-      background: linear-gradient(160deg, #f8faff 0%, var(--dc-surface) 100%);
-    }
-    .dc-modal-scroll { overflow-y: auto; flex: 1; padding: 20px 24px 24px; }
+    /* ── CONDITION PICKER ── */
+    .dc-search { width: 100%; padding: 9px 12px; border: 1.5px solid var(--dc-border2); border-radius: 9px; font-family: var(--dc-font); font-size: 13px; color: var(--dc-text); background: #fff; margin-bottom: 10px; }
+    .dc-cond-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 6px; }
+    .dc-cond-btn { display: flex; align-items: center; gap: 7px; padding: 6px 10px; border-radius: 8px; border: 1.5px solid transparent; background: #fff; font-size: 12px; font-weight: 600; cursor: pointer; transition: all .12s; text-align: left; line-height: 1.25; }
+    .dc-cond-btn:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 3px 10px rgba(0,0,0,.10); }
+    .dc-cond-btn:disabled { opacity: .5; cursor: not-allowed; }
+    .dc-cond-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+    .dc-cond-tag { font-size: 9.5px; font-weight: 700; opacity: .8; text-transform: uppercase; letter-spacing: .4px; }
 
-    .dc-modal-head-row {
-      display: flex; align-items: center; gap: 14px; margin-bottom: 0;
-    }
-    .dc-modal-badge {
-      width: 52px; height: 52px;
-      border-radius: 14px;
-      display: flex; align-items: center; justify-content: center;
-      font-weight: 800; font-size: 17px;
-      flex-shrink: 0;
-      font-family: var(--dc-mono);
-      transition: all .2s;
-    }
-    .dc-modal-title { font-size: 18px; font-weight: 700; color: var(--dc-text); }
-    .dc-modal-sub { font-size: 12px; color: var(--dc-text3); margin-top: 2px; font-weight: 500; }
-    .dc-close-btn {
-      margin-left: auto;
-      width: 34px; height: 34px;
-      border-radius: 9px;
-      border: 1px solid var(--dc-border);
-      background: var(--dc-surface);
-      color: var(--dc-text3);
-      font-size: 16px;
-      cursor: pointer;
-      display: flex; align-items: center; justify-content: center;
-      flex-shrink: 0;
-      transition: all .12s;
-    }
-    .dc-close-btn:hover { background: #fee2e2; color: #dc2626; border-color: #fecdd3; }
-
-    /* ── FORM ELEMENTS ── */
-    .dc-field-label {
-      font-size: 10.5px;
-      font-weight: 700;
-      color: var(--dc-text3);
-      letter-spacing: .8px;
-      text-transform: uppercase;
-      display: block;
-      margin-bottom: 9px;
-    }
-    .dc-field-group { margin-bottom: 20px; }
-
-    /* Condition grid */
-    .dc-cond-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
-      gap: 7px;
-    }
-    .dc-cond-btn {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 9px 11px;
-      border-radius: 10px;
-      border: 1.5px solid transparent;
-      background: var(--dc-surface2);
-      font-family: var(--dc-font);
-      font-size: 12px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: all .14s;
-      text-align: left;
-      line-height: 1.3;
-      word-break: break-word;
-    }
-    .dc-cond-btn:hover { transform: translateY(-1px); box-shadow: 0 4px 14px rgba(0,0,0,.10); }
-    .dc-cond-btn.active {
-      box-shadow: 0 3px 12px rgba(0,0,0,.18), inset 0 1px 0 rgba(255,255,255,.20);
-    }
-    .dc-cond-dot {
-      width: 10px; height: 10px;
-      border-radius: 50%;
-      flex-shrink: 0;
-    }
-
-    /* Severity */
-    .dc-severity-row { display: flex; gap: 6px; }
-    .dc-sev-btn {
-      flex: 1; padding: 9px 6px;
-      border-radius: 9px;
-      border: 1.5px solid var(--dc-border);
-      background: var(--dc-surface2);
-      font-family: var(--dc-font);
-      font-size: 11.5px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: all .13s;
-      text-align: center;
-      color: var(--dc-text2);
-    }
+    /* ── FORM BITS ── */
+    .dc-field-label { font-size: 10.5px; font-weight: 700; color: var(--dc-text3); letter-spacing: .8px; text-transform: uppercase; display: block; margin-bottom: 7px; }
+    .dc-field-group { margin-bottom: 16px; }
+    .dc-severity-row { display: flex; gap: 6px; flex-wrap: wrap; }
+    .dc-sev-btn { flex: 1; min-width: 70px; padding: 8px 6px; border-radius: 9px; border: 1.5px solid var(--dc-border); background: var(--dc-surface2); font-size: 11.5px; font-weight: 600; cursor: pointer; transition: all .13s; text-align: center; color: var(--dc-text2); }
     .dc-sev-btn.s1.active { background:#dcfce7; border-color:#16a34a; color:#15803d; }
     .dc-sev-btn.s2.active { background:#fef9c3; border-color:#ca8a04; color:#a16207; }
     .dc-sev-btn.s3.active { background:#ffedd5; border-color:#ea580c; color:#c2410c; }
     .dc-sev-btn.s4.active { background:#fee2e2; border-color:#dc2626; color:#b91c1c; }
-
-    /* Surface map */
-    .dc-surface-map { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-    .dc-surf-key {
-      width: 42px; height: 42px;
-      border-radius: 9px;
-      border: 1.5px solid var(--dc-border);
-      background: var(--dc-surface2);
-      font-family: var(--dc-mono);
-      font-size: 12px;
-      font-weight: 600;
-      cursor: pointer;
-      color: var(--dc-text2);
-      transition: all .12s;
-      display: flex; align-items: center; justify-content: center;
-    }
-    .dc-surf-key:hover { border-color: #93c5fd; background: #eff6ff; }
-    .dc-surf-key.on {
-      background: linear-gradient(135deg,#1a56db,#2e70f0);
-      color: #fff;
-      border-color: #1046c4;
-      box-shadow: 0 2px 8px rgba(26,86,219,.30);
-    }
-    .dc-surf-key:disabled { opacity:.35; cursor:not-allowed; }
-
-    /* Other panel */
-    .dc-other-panel {
-      background: linear-gradient(135deg,#f5f7ff,#eff1ff);
-      border: 1.5px solid #c7d2fe;
-      border-radius: 13px;
-      padding: 16px;
-      margin-top: 10px;
-    }
-    .dc-other-ta {
-      width: 100%; padding: 10px 13px;
-      border: 1.5px solid #c7d2fe;
-      border-radius: 9px;
-      font-family: var(--dc-font);
-      font-size: 13px;
-      color: var(--dc-text);
-      background: #fff;
-      outline: none;
-      resize: none;
-      height: 68px;
-      line-height: 1.5;
-      transition: border-color .14s;
-    }
-    .dc-other-ta:focus { border-color: #6366f1; box-shadow: 0 0 0 3px rgba(99,102,241,.12); }
-    .dc-other-ta::placeholder { color: #a5b4fc; font-style: italic; }
+    .dc-surf-wrap { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+    .dc-surf-zone { cursor: pointer; transition: fill .12s; }
+    .dc-surf-zone:hover { fill: #dbeafe; }
+    .dc-surf-zone.on, .dc-surf-zone.on:hover { fill: var(--dc-accent); }
+    .dc-surf-letter { font-family: var(--dc-mono); font-size: 13px; font-weight: 600; fill: #4a5568; pointer-events: none; }
+    .dc-surf-letter.on { fill: #fff; }
+    .dc-surf-list { font-size: 12px; color: var(--dc-text2); font-weight: 500; line-height: 1.6; }
+    .dc-notes-ta { width: 100%; padding: 9px 12px; border: 1.5px solid var(--dc-border2); border-radius: 9px; font-family: var(--dc-font); font-size: 13px; color: var(--dc-text); background: #fff; resize: vertical; min-height: 58px; line-height: 1.5; }
+    .dc-input { width: 100%; padding: 9px 12px; border: 1.5px solid var(--dc-border2); border-radius: 9px; font-family: var(--dc-font); font-size: 13px; color: var(--dc-text); background: #fff; }
+    .dc-other-panel { background: linear-gradient(135deg,#f5f7ff,#eff1ff); border: 1.5px solid #c7d2fe; border-radius: 12px; padding: 14px; margin-top: 10px; }
     .dc-palette { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
-    .dc-pdot {
-      width: 26px; height: 26px;
-      border-radius: 50%;
-      cursor: pointer;
-      border: 3px solid transparent;
-      transition: all .13s;
-    }
-    .dc-pdot:hover { transform: scale(1.25); }
+    .dc-pdot { width: 24px; height: 24px; border-radius: 50%; cursor: pointer; border: 2px solid transparent; padding: 0; }
     .dc-pdot.sel { box-shadow: 0 0 0 2px #fff, 0 0 0 4px #0f172a; }
 
-    /* Notes textarea */
-    .dc-notes-ta {
-      width: 100%; padding: 10px 13px;
-      border: 1.5px solid var(--dc-border);
-      border-radius: 9px;
-      font-family: var(--dc-font);
-      font-size: 13px;
-      color: var(--dc-text);
-      background: var(--dc-surface2);
-      outline: none;
-      resize: vertical;
-      min-height: 64px;
-      line-height: 1.5;
-    }
-    .dc-notes-ta:focus { border-color: var(--dc-accent); box-shadow: 0 0 0 3px rgba(26,86,219,.10); }
-
-    /* Divider */
-    .dc-divider { border: none; border-top: 1px solid var(--dc-border); margin: 18px 0; }
-
-    /* Action buttons */
-    .dc-actions { display: flex; gap: 8px; margin-top: 22px; }
-    .dc-btn-primary {
-      flex: 2; padding: 12px;
-      border-radius: 11px;
-      background: linear-gradient(135deg,#1a56db,#2e70f0);
-      color: #fff; border: none;
-      font-family: var(--dc-font);
-      font-size: 13.5px; font-weight: 700;
-      cursor: pointer;
-      box-shadow: 0 4px 16px rgba(26,86,219,.28);
-      transition: all .14s;
-    }
-    .dc-btn-primary:hover { box-shadow: 0 6px 22px rgba(26,86,219,.40); transform: translateY(-1px); }
-    .dc-btn-primary:disabled { opacity:.45; cursor:not-allowed; transform:none; }
-    .dc-btn-danger {
-      flex: 1; padding: 12px;
-      border-radius: 11px;
-      background: #fff1f2; color: #be123c;
-      border: 1.5px solid #fecdd3;
-      font-family: var(--dc-font);
-      font-size: 13px; font-weight: 700; cursor: pointer;
-      transition: all .13s;
-    }
-    .dc-btn-danger:hover { background: #ffe4e6; border-color: #fda4af; }
-    .dc-btn-ghost {
-      flex: 1; padding: 12px;
-      border-radius: 11px;
-      background: var(--dc-surface2); color: var(--dc-text2);
-      border: 1.5px solid var(--dc-border);
-      font-family: var(--dc-font);
-      font-size: 13px; font-weight: 600; cursor: pointer;
-      transition: all .13s;
-    }
-    .dc-btn-ghost:hover { background: var(--dc-border); }
-
-    /* ── SELECTED TOOTH INFO PANEL ── */
-    .dc-info-panel {
-      background: var(--dc-surface);
-      border: 1px solid var(--dc-border);
-      border-radius: var(--dc-radius);
-      box-shadow: var(--dc-shadow);
-      overflow: hidden;
-      margin-bottom: 14px;
-      transition: all .25s ease;
-    }
-    .dc-info-panel-head {
-      padding: 14px 18px;
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      border-bottom: 1px solid var(--dc-border);
-      background: var(--dc-surface2);
-    }
-    .dc-info-panel-body { padding: 16px 18px; }
-
-    /* ── CONDITIONS LOG ── */
-    .dc-log-panel {
-      background: var(--dc-surface);
-      border: 1px solid var(--dc-border);
-      border-radius: var(--dc-radius);
-      box-shadow: var(--dc-shadow);
-      overflow: hidden;
-    }
-    .dc-log-head {
-      padding: 14px 18px;
-      border-bottom: 1px solid var(--dc-border);
-      background: var(--dc-surface2);
-      display: flex;
-      align-items: center;
-      gap: 10px;
-    }
-    .dc-log-title {
-      font-size: 13px;
-      font-weight: 700;
-      color: var(--dc-text);
-    }
-    .dc-count-badge {
-      padding: 2px 9px;
-      border-radius: 20px;
-      font-size: 11px;
-      font-weight: 700;
-    }
-    .dc-filter-row {
-      display: flex;
-      gap: 6px;
-      padding: 10px 18px;
-      border-bottom: 1px solid var(--dc-border);
-      flex-wrap: wrap;
-      background: #fafbfd;
-    }
-    .dc-filter-btn {
-      padding: 4px 12px;
-      border-radius: 20px;
-      border: 1.5px solid var(--dc-border);
-      background: var(--dc-surface);
-      font-family: var(--dc-font);
-      font-size: 11px;
-      font-weight: 600;
-      color: var(--dc-text2);
-      cursor: pointer;
-      transition: all .12s;
-    }
-    .dc-filter-btn.active {
-      background: var(--dc-accent-soft);
-      border-color: var(--dc-accent);
-      color: var(--dc-accent);
-    }
-    .dc-log-empty {
-      padding: 36px 20px;
-      text-align: center;
-      color: var(--dc-text3);
-      font-size: 13px;
-    }
-    /* ── TABLE HEADER ── */
-    .dc-log-table-head {
-      display: grid;
-      grid-template-columns: 52px 190px 1fr 110px 96px 76px;
-      align-items: center;
-      padding: 9px 20px;
-      background: #f4f6fa;
-      border-bottom: 1.5px solid var(--dc-border);
-      gap: 16px;
-    }
-    .dc-log-th {
-      font-size: 9.5px;
-      font-weight: 700;
-      color: var(--dc-text3);
-      letter-spacing: .9px;
-      text-transform: uppercase;
-      padding: 0 2px;
-    }
-    .dc-log-row {
-      display: grid;
-      grid-template-columns: 52px 190px 1fr 110px 96px 76px;
-      align-items: center;
-      gap: 16px;
-      padding: 9px 20px;
-      border-bottom: 1px solid var(--dc-border);
-      transition: background .12s;
-      cursor: default;
-      min-height: 50px;
-    }
-    .dc-log-row:last-child { border-bottom: none; }
-    .dc-log-row:hover { background: #f8fafd; }
-    .dc-log-num {
-      width: 36px; height: 36px;
-      border-radius: 10px;
-      display: flex; align-items: center; justify-content: center;
-      font-family: var(--dc-mono);
-      font-weight: 700; font-size: 13px;
-      flex-shrink: 0;
-    }
-    .dc-log-cond-pill {
-      display: inline-flex;
-      align-items: center;
-      gap: 5px;
-      padding: 5px 12px;
-      border-radius: 20px;
-      font-size: 12px;
-      font-weight: 700;
-      cursor: pointer;
-      transition: all .12s;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      max-width: 100%;
-    }
-    .dc-log-cond-pill:hover { opacity: .85; transform: translateY(-1px); }
-    .dc-sev-tag {
-      display: inline-block;
-      padding: 2px 8px;
-      border-radius: 5px;
-      font-size: 10px;
-      font-weight: 700;
-      font-family: var(--dc-mono);
-      letter-spacing: .3px;
-      white-space: nowrap;
-    }
-    .dc-log-surf {
-      display: inline-block;
-      padding: 2px 8px;
-      border-radius: 5px;
-      font-family: var(--dc-mono);
-      font-size: 10.5px;
-      font-weight: 500;
-      background: var(--dc-surface2);
-      border: 1px solid var(--dc-border);
-      color: var(--dc-text2);
-      white-space: nowrap;
-    }
-    .dc-log-notes-cell {
-      font-size: 12px;
-      color: var(--dc-text2);
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      font-style: italic;
-    }
-    .dc-log-date {
-      font-family: var(--dc-mono);
-      font-size: 10.5px;
-      color: var(--dc-text3);
-      white-space: nowrap;
-      text-align: right;
-    }
-    .dc-log-actions {
-      display: flex;
-      gap: 4px;
-      justify-content: flex-end;
-    }
-    .dc-del-btn {
-      width: 30px; height: 30px;
-      border-radius: 8px;
-      background: transparent;
-      border: 1.5px solid transparent;
-      color: var(--dc-text3);
-      font-size: 13px;
-      cursor: pointer;
-      display: flex; align-items: center; justify-content: center;
-      transition: all .12s;
-      flex-shrink: 0;
-    }
-    .dc-del-btn:hover { background: #fee2e2; border-color: #fecdd3; color: #dc2626; }
-    .dc-edit-btn {
-      width: 30px; height: 30px;
-      border-radius: 8px;
-      background: transparent;
-      border: 1.5px solid transparent;
-      color: var(--dc-text3);
-      font-size: 13px;
-      cursor: pointer;
-      display: flex; align-items: center; justify-content: center;
-      transition: all .12s;
-      flex-shrink: 0;
-    }
-    .dc-edit-btn:hover { background: var(--dc-accent-soft); border-color: #93c5fd; color: var(--dc-accent); }
-
-    /* ── TOOLTIP ── */
-    .dc-tooltip-wrap { position: relative; }
-    .dc-tooltip-content {
-      position: absolute;
-      bottom: calc(100% + 8px);
-      left: 50%;
-      transform: translateX(-50%);
-      background: var(--dc-text);
-      color: #fff;
-      font-size: 10.5px;
-      font-weight: 600;
-      padding: 5px 10px;
-      border-radius: 7px;
-      white-space: nowrap;
-      pointer-events: none;
-      opacity: 0;
-      transition: opacity .12s;
-      z-index: 100;
-    }
-    .dc-tooltip-wrap:hover .dc-tooltip-content { opacity: 1; }
-
-    /* ── SCROLLBAR ── */
-    .dc-modal-scroll::-webkit-scrollbar { width: 5px; }
-    .dc-modal-scroll::-webkit-scrollbar-track { background: transparent; }
+    /* ── MODAL ── */
+    .dc-overlay { position: fixed; inset: 0; background: rgba(8,15,30,.58); display: flex; align-items: center; justify-content: center; z-index: 9000; padding: 14px; animation: dcFadeIn .16s ease both; font-family: var(--dc-font); color: var(--dc-text); text-align: left; }
+    @keyframes dcFadeIn { from { opacity:0 } to { opacity:1 } }
+    .dc-modal { background: var(--dc-surface); border-radius: 18px; width: 100%; max-width: 780px; max-height: 92vh; overflow: hidden; display: flex; flex-direction: column; box-shadow: 0 40px 100px rgba(8,15,30,.40); }
+    .dc-modal-top { padding: 18px 22px; border-bottom: 1px solid var(--dc-border); flex-shrink: 0; background: linear-gradient(160deg, #f8faff 0%, var(--dc-surface) 100%); display: flex; align-items: center; gap: 14px; }
+    .dc-modal-scroll { overflow-y: auto; flex: 1; padding: 18px 22px 22px; }
+    .dc-modal-badge { width: 50px; height: 50px; border-radius: 13px; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 17px; flex-shrink: 0; font-family: var(--dc-mono); background: var(--dc-accent-soft); color: var(--dc-accent); border: 2px solid #bcd0fb; }
+    .dc-modal-title { font-size: 17px; font-weight: 700; }
+    .dc-modal-sub { font-size: 12.5px; color: var(--dc-text3); margin-top: 2px; font-weight: 500; }
+    .dc-close-btn { margin-left: auto; width: 34px; height: 34px; border-radius: 9px; border: 1px solid var(--dc-border); background: var(--dc-surface); color: var(--dc-text3); font-size: 15px; cursor: pointer; flex-shrink: 0; }
+    .dc-close-btn:hover { background: #fee2e2; color: #dc2626; border-color: #fecdd3; }
+    .dc-section-title { font-size: 12px; font-weight: 700; color: var(--dc-text2); text-transform: uppercase; letter-spacing: .7px; margin: 0 0 10px; display: flex; align-items: center; gap: 8px; }
+    .dc-form { border-radius: 13px; padding: 16px; margin-top: 14px; }
+    .dc-form-add { background: #f3fbf7; border: 1.5px solid #86e3b9; }
+    .dc-form-edit { background: #fffaf0; border: 1.5px solid #fbbf24; }
+    .dc-form-title { font-size: 15px; font-weight: 700; margin: 0 0 2px; }
+    .dc-form-hint { font-size: 12px; color: var(--dc-text3); margin: 0 0 14px; }
+    .dc-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; margin-top: 6px; }
+    .dc-modal-scroll::-webkit-scrollbar { width: 6px; }
     .dc-modal-scroll::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 99px; }
+    .dc-confirm { max-width: 420px; padding: 22px 24px; }
+    .dc-confirm h4 { font-size: 16px; font-weight: 700; margin: 0 0 10px; }
+    .dc-confirm p { font-size: 13px; color: var(--dc-text2); margin: 0 0 18px; line-height: 1.55; }
+
+    /* ── FINDING ROWS (modal + log) ── */
+    .dc-frow { display: flex; align-items: center; gap: 9px; padding: 5px 8px; border-radius: 9px; background: var(--dc-surface2); border: 1px solid var(--dc-border); margin-bottom: 5px; }
+    .dc-frow-main { flex: 1; min-width: 0; }
+    .dc-frow-line { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+    .dc-frow-notes { font-size: 12px; color: var(--dc-text2); font-style: italic; margin-top: 3px; line-height: 1.4; overflow-wrap: anywhere; }
+    .dc-frow-actions { display: flex; gap: 5px; flex-shrink: 0; }
+    .dc-sev-tag { display: inline-block; padding: 2px 8px; border-radius: 5px; font-size: 10px; font-weight: 700; font-family: var(--dc-mono); letter-spacing: .3px; white-space: nowrap; text-transform: uppercase; }
+    .dc-surf-tag { display: inline-block; padding: 2px 8px; border-radius: 5px; font-family: var(--dc-mono); font-size: 10.5px; font-weight: 600; background: #fff; border: 1px solid var(--dc-border2); color: var(--dc-text2); white-space: nowrap; }
+    .dc-date { font-family: var(--dc-mono); font-size: 10.5px; color: var(--dc-text3); white-space: nowrap; }
+    .dc-tooth-badge { min-width: 32px; height: 26px; padding: 0 6px; border-radius: 8px; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; font-family: var(--dc-mono); font-weight: 700; font-size: 12px; cursor: pointer; border: 1.5px solid; background: #fff; }
+
+    /* ── LOG ── */
+    .dc-log-head { padding: 13px 18px; border-bottom: 1px solid var(--dc-border); background: var(--dc-surface2); display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .dc-log-title { font-size: 13.5px; font-weight: 700; }
+    .dc-count-badge { padding: 2px 9px; border-radius: 20px; font-size: 11px; font-weight: 700; background: #fee2e2; color: #b91c1c; border: 1px solid #fecaca; }
+    .dc-log-body { padding: 12px 14px 4px; columns: 2 400px; column-gap: 10px; }
+    .dc-log-empty { padding: 34px 20px; text-align: center; color: var(--dc-text3); font-size: 13px; line-height: 1.6; }
+    .dc-gcard { background: #fff; border: 1.5px solid var(--dc-border); border-radius: 12px; padding: 9px 10px 5px; margin-bottom: 9px; break-inside: avoid; }
+    .dc-gcard-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+    .dc-gcard-teeth { font-size: 11.5px; color: var(--dc-text3); }
+    .dc-gcard-teeth b { font-family: var(--dc-mono); font-weight: 600; }
+
+    @media (prefers-reduced-motion: reduce) {
+      .dc-overlay { animation: none; }
+      .dc-btn, .dc-cond-btn, .dc-tab, .dc-tooth-g { transition: none; }
+    }
   `;
   document.head.appendChild(s);
 };
@@ -661,79 +215,220 @@ const injectStyles = () => {
 /* ═══════════════════════════════════════════════════════
    DATA
 ═══════════════════════════════════════════════════════ */
+/* Conditions, in alphabetical order (A–Z), with "Other" last because it is
+   the catch-all. The 21 names that existed before are unchanged (records are
+   stored by name); the rest are new. */
 const CONDITIONS = [
-  "Caries","Deep Caries","Missing","RC Treated","Crown","Bridge","Implant","Attrition",
-  "Impacted","Fracture","Restored","Cervical Abrasion","Mobility I","Mobility II","Mobility III",
-  "Gum Recession","Pockets","Root Stump","Periapical Pathology","Sensitive Tooth","Other"
+  "Abscess", "Attrition", "Bridge", "Calculus", "Caries", "Cervical Abrasion", "Crown",
+  "Deep Caries", "Erosion", "Faulty Restoration", "Fluorosis", "Food Impaction", "Fracture",
+  "Furcation", "Gingivitis", "Gum Recession", "Hypoplasia", "Impacted", "Implant", "Malposed",
+  "Missing", "Mobility I", "Mobility II", "Mobility III", "Occlusal Pits", "Partially Erupted",
+  "Periapical Pathology", "Pockets", "Proximal Caries", "Pulpitis", "RC Treated", "Restored",
+  "Retained Deciduous", "Root Caries", "Root Stump", "Secondary Caries", "Sensitive Tooth",
+  "Stains", "Supernumerary", "Veneer",
+  "Other",
+];
+const byName = (a, b) => a.localeCompare(b, "en", { sensitivity: "base" });
+
+const SEVERITY_LEVELS = [
+  { key:"mild",    label:"Mild",     cls:"s1" },
+  { key:"moderate",label:"Moderate", cls:"s2" },
+  { key:"severe",  label:"Severe",   cls:"s3" },
+  { key:"critical",label:"Critical", cls:"s4" },
+];
+const SEV_STYLE = {
+  critical:{bg:"#fee2e2",col:"#b91c1c",bdr:"#fca5a5",ring:"#dc2626"},
+  severe:  {bg:"#ffedd5",col:"#c2410c",bdr:"#fdba74",ring:"#ea580c"},
+  moderate:{bg:"#fef9c3",col:"#a16207",bdr:"#fde047",ring:"#ca8a04"},
+  mild:    {bg:"#dcfce7",col:"#15803d",bdr:"#86efac",ring:null},
+};
+const SEV_RANK = { mild:1, moderate:2, severe:3, critical:4 };
+
+/* a = main colour, dark = outline/text, hi = soft tint, short = code on the tooth.
+   `surf` (optional) = surfaces pre-selected when the condition is picked. */
+const CMAP = {
+  // ── Caries ──
+  "Caries":           { a:"#dc2626", dark:"#7f1d1d", hi:"rgba(220,38,38,.15)",   emoji:"🔴", short:"CAR" },
+  "Deep Caries":      { a:"#991b1b", dark:"#450a0a", hi:"rgba(153,27,27,.15)",   emoji:"🦷", short:"DCR" },
+  "Proximal Caries":  { a:"#e11d48", dark:"#881337", hi:"rgba(225,29,72,.15)",   emoji:"↔️", short:"PXC" },
+  "Occlusal Pits":    { a:"#9f1239", dark:"#4c0519", hi:"rgba(159,18,57,.15)",   emoji:"⚫", short:"PIT", surf:["O"] },
+  "Root Caries":      { a:"#b91c1c", dark:"#7f1d1d", hi:"rgba(185,28,28,.15)",   emoji:"🔻", short:"RTC" },
+  "Secondary Caries": { a:"#f43f5e", dark:"#9f1239", hi:"rgba(244,63,94,.15)",   emoji:"♻️", short:"SCR" },
+  // ── Deposits & stains ──
+  "Calculus":         { a:"#a16207", dark:"#713f12", hi:"rgba(161,98,7,.15)",    emoji:"🪨", short:"CAL" },
+  "Stains":           { a:"#78350f", dark:"#451a03", hi:"rgba(120,53,15,.15)",   emoji:"🟤", short:"STN" },
+  // ── Wear & defects ──
+  "Attrition":        { a:"#065f46", dark:"#022c22", hi:"rgba(6,95,70,.15)",     emoji:"⚡", short:"ATT" },
+  "Cervical Abrasion":{ a:"#0891b2", dark:"#164e63", hi:"rgba(8,145,178,.15)",   emoji:"🪥", short:"CAB" },
+  "Erosion":          { a:"#0f766e", dark:"#134e4a", hi:"rgba(15,118,110,.15)",  emoji:"💧", short:"ERO" },
+  "Fracture":         { a:"#d97706", dark:"#78350f", hi:"rgba(217,119,6,.15)",   emoji:"💥", short:"FRC" },
+  "Fluorosis":        { a:"#65a30d", dark:"#365314", hi:"rgba(101,163,13,.15)",  emoji:"⚪", short:"FLU" },
+  "Hypoplasia":       { a:"#4d7c0f", dark:"#1a2e05", hi:"rgba(77,124,15,.15)",   emoji:"◌",  short:"HYP" },
+  "Sensitive Tooth":  { a:"#0d9488", dark:"#134e4a", hi:"rgba(13,148,136,.15)",  emoji:"❄️", short:"SEN" },
+  // ── Gums & support ──
+  "Gingivitis":       { a:"#db2777", dark:"#831843", hi:"rgba(219,39,119,.15)",  emoji:"🩸", short:"GIN" },
+  "Gum Recession":    { a:"#be185d", dark:"#831843", hi:"rgba(190,24,93,.15)",   emoji:"📉", short:"GRC" },
+  "Pockets":          { a:"#7e22ce", dark:"#4a044e", hi:"rgba(126,34,206,.15)",  emoji:"🫧", short:"PKT" },
+  "Furcation":        { a:"#9333ea", dark:"#581c87", hi:"rgba(147,51,234,.15)",  emoji:"🔱", short:"FUR" },
+  "Mobility I":       { a:"#d97706", dark:"#92400e", hi:"rgba(217,119,6,.15)",   emoji:"Ⅰ",  short:"M-I" },
+  "Mobility II":      { a:"#ea580c", dark:"#7c2d12", hi:"rgba(234,88,12,.15)",   emoji:"Ⅱ",  short:"M-II"},
+  "Mobility III":     { a:"#dc2626", dark:"#7f1d1d", hi:"rgba(220,38,38,.15)",   emoji:"Ⅲ",  short:"M-III"},
+  "Food Impaction":   { a:"#ca8a04", dark:"#854d0e", hi:"rgba(202,138,4,.15)",   emoji:"🍃", short:"FIM" },
+  // ── Pulp & root ──
+  "Pulpitis":         { a:"#c026d3", dark:"#701a75", hi:"rgba(192,38,211,.15)",  emoji:"🔥", short:"PUL" },
+  "Periapical Pathology": { a:"#a21caf", dark:"#701a75", hi:"rgba(162,28,175,.15)", emoji:"🔬", short:"PAP" },
+  "Abscess":          { a:"#86198f", dark:"#4a044e", hi:"rgba(134,25,143,.15)",  emoji:"🟣", short:"ABS" },
+  "RC Treated":       { a:"#7c3aed", dark:"#4c1d95", hi:"rgba(124,58,237,.15)",  emoji:"🔩", short:"RCT" },
+  "Root Stump":       { a:"#57534e", dark:"#292524", hi:"rgba(87,83,78,.15)",    emoji:"🪵", short:"RTS" },
+  // ── Restorations ──
+  "Restored":         { a:"#0369a1", dark:"#0c4a6e", hi:"rgba(3,105,161,.15)",   emoji:"🛡", short:"RST" },
+  "Faulty Restoration": { a:"#0284c7", dark:"#075985", hi:"rgba(2,132,199,.15)", emoji:"⚠️", short:"FRS" },
+  "Crown":            { a:"#b45309", dark:"#78350f", hi:"rgba(180,83,9,.15)",    emoji:"👑", short:"CRW" },
+  "Bridge":           { a:"#c2410c", dark:"#7c2d12", hi:"rgba(194,65,12,.15)",   emoji:"🌉", short:"BRG" },
+  "Veneer":           { a:"#0ea5e9", dark:"#0c4a6e", hi:"rgba(14,165,233,.15)",  emoji:"✨", short:"VNR" },
+  "Implant":          { a:"#1d4ed8", dark:"#1e3a8a", hi:"rgba(29,78,216,.15)",   emoji:"🔧", short:"IMP" },
+  // ── Tooth status ──
+  "Missing":          { a:"#475569", dark:"#1e293b", hi:"rgba(71,85,105,.15)",   emoji:"✖",  short:"MIS" },
+  "Impacted":         { a:"#9d174d", dark:"#500724", hi:"rgba(157,23,77,.15)",   emoji:"⬇", short:"IPT" },
+  "Partially Erupted":{ a:"#64748b", dark:"#334155", hi:"rgba(100,116,139,.15)", emoji:"🌱", short:"PER" },
+  "Retained Deciduous": { a:"#525252", dark:"#262626", hi:"rgba(82,82,82,.15)",  emoji:"👶", short:"RTD" },
+  "Supernumerary":    { a:"#3f3f46", dark:"#18181b", hi:"rgba(63,63,70,.15)",    emoji:"➕", short:"SUP" },
+  "Malposed":         { a:"#4338ca", dark:"#312e81", hi:"rgba(67,56,202,.15)",   emoji:"↪️", short:"MAL" },
+  // ── Other ──
+  "Other":            { a:"#6366f1", dark:"#312e81", hi:"rgba(99,102,241,.15)",  emoji:"📋", short:"OTH" },
+};
+
+/* When a tooth has several findings, the one highest in this list gives
+   the tooth its main colour. */
+const PRIORITY = [
+  "Missing", "Root Stump", "Impacted", "Implant", "Bridge", "Crown", "Veneer", "RC Treated",
+  "Periapical Pathology", "Abscess", "Fracture", "Deep Caries", "Pulpitis", "Caries", "Proximal Caries",
+  "Root Caries", "Secondary Caries", "Occlusal Pits", "Faulty Restoration", "Restored",
+  "Mobility III", "Mobility II", "Mobility I", "Furcation", "Pockets", "Gum Recession", "Gingivitis",
+  "Cervical Abrasion", "Attrition", "Erosion", "Hypoplasia", "Fluorosis", "Sensitive Tooth",
+  "Partially Erupted", "Retained Deciduous", "Supernumerary", "Malposed", "Food Impaction",
+  "Calculus", "Stains", "Other",
 ];
 
-// Diagnosis-panel label → canonical Dental Chart condition. Anything not listed here
-// that also isn't a key in CONDITIONS falls through to "Other" (see resolveDiagnosisCondition).
+// Other wordings (Diagnosis panel labels, older "Other" entries) → the chart's own name.
 const DIAGNOSIS_CONDITION_ALIASES = {
   "Missing Tooth":   "Missing",
   "Fractured Tooth": "Fracture",
   "Mobile Tooth":    "Mobility I",
   "Impacted Tooth":  "Impacted",
+  "Stain":           "Stains",
+  "Staining":        "Stains",
+  "Tartar":          "Calculus",
+  "Interproximal Caries": "Proximal Caries",
+  "Proximal Decay":  "Proximal Caries",
+  "Pit and Fissure Caries": "Occlusal Pits",
+  "Pits and Fissures": "Occlusal Pits",
+  "Occlusal Pit":    "Occlusal Pits",
+  "Recurrent Caries": "Secondary Caries",
+  "Filling":         "Restored",
+  "Root Canal Treated": "RC Treated",
 };
-const SEVERITY_LEVELS = [
-  { key:"mild",   label:"Mild",     cls:"s1" },
-  { key:"moderate",label:"Moderate",cls:"s2" },
-  { key:"severe", label:"Severe",   cls:"s3" },
-  { key:"critical",label:"Critical",cls:"s4" },
-];
-const CMAP = {
-  "Caries":           { a:"#dc2626", dark:"#7f1d1d", hi:"rgba(220,38,38,.15)",   emoji:"🔴", short:"CAR" },
-  "Missing":          { a:"#475569", dark:"#1e293b", hi:"rgba(71,85,105,.15)",   emoji:"✖",  short:"MIS" },
-  "RC Treated":       { a:"#7c3aed", dark:"#4c1d95", hi:"rgba(124,58,237,.15)",  emoji:"🔩", short:"RCT" },
-  "Crown":            { a:"#b45309", dark:"#78350f", hi:"rgba(180,83,9,.15)",    emoji:"👑", short:"CRW" },
-  "Bridge":           { a:"#c2410c", dark:"#7c2d12", hi:"rgba(194,65,12,.15)",   emoji:"🌉", short:"BRG" },
-  "Implant":          { a:"#1d4ed8", dark:"#1e3a8a", hi:"rgba(29,78,216,.15)",   emoji:"🔧", short:"IMP" },
-  "Attrition":        { a:"#065f46", dark:"#022c22", hi:"rgba(6,95,70,.15)",     emoji:"⚡", short:"ATT" },
-  "Impacted":         { a:"#9d174d", dark:"#500724", hi:"rgba(157,23,77,.15)",   emoji:"⬇", short:"IMP" },
-  "Fracture":         { a:"#d97706", dark:"#78350f", hi:"rgba(217,119,6,.15)",   emoji:"💥", short:"FRC" },
-  "Restored":         { a:"#0369a1", dark:"#0c4a6e", hi:"rgba(3,105,161,.15)",   emoji:"🛡", short:"RST" },
-  "Cervical Abrasion":{ a:"#0891b2", dark:"#164e63", hi:"rgba(8,145,178,.15)",   emoji:"🪥", short:"CAB" },
-  "Mobility I":       { a:"#d97706", dark:"#92400e", hi:"rgba(217,119,6,.15)",   emoji:"Ⅰ",  short:"M-I" },
-  "Mobility II":      { a:"#ea580c", dark:"#7c2d12", hi:"rgba(234,88,12,.15)",   emoji:"Ⅱ",  short:"M-II"},
-  "Mobility III":     { a:"#dc2626", dark:"#7f1d1d", hi:"rgba(220,38,38,.15)",   emoji:"Ⅲ",  short:"M-III"},
-  "Gum Recession":    { a:"#be185d", dark:"#831843", hi:"rgba(190,24,93,.15)",   emoji:"📉", short:"GRC" },
-  "Pockets":          { a:"#7e22ce", dark:"#4a044e", hi:"rgba(126,34,206,.15)",  emoji:"🫧", short:"PKT" },
-  "Deep Caries":       { a:"#991b1b", dark:"#450a0a", hi:"rgba(153,27,27,.15)",  emoji:"🦷", short:"DCR" },
-  "Root Stump":        { a:"#57534e", dark:"#292524", hi:"rgba(87,83,78,.15)",   emoji:"🪵", short:"RTS" },
-  "Periapical Pathology": { a:"#a21caf", dark:"#701a75", hi:"rgba(162,28,175,.15)", emoji:"🔬", short:"PAP" },
-  "Sensitive Tooth":   { a:"#0d9488", dark:"#134e4a", hi:"rgba(13,148,136,.15)", emoji:"❄️", short:"SEN" },
-  "Other":            { a:"#6366f1", dark:"#312e81", hi:"rgba(99,102,241,.15)",  emoji:"📋", short:"OTH" },
-};
+const KNOWN_BY_LOWER = {};
+Object.keys(CMAP).forEach(k => { KNOWN_BY_LOWER[k.toLowerCase()] = k; });
+Object.entries(DIAGNOSIS_CONDITION_ALIASES).forEach(([k, v]) => { KNOWN_BY_LOWER[k.toLowerCase()] = v; });
+const knownCondition = (label) => KNOWN_BY_LOWER[String(label || "").trim().toLowerCase()] || null;
 
 // Resolves a Diagnosis-panel condition label to the canonical Dental Chart condition
 // (aliased where an equivalent already exists, "Other" as a last resort otherwise).
 export function resolveDiagnosisCondition(label) {
   if (CMAP[label]) return { condition: label, otherText: "" };
-  if (DIAGNOSIS_CONDITION_ALIASES[label]) return { condition: DIAGNOSIS_CONDITION_ALIASES[label], otherText: "" };
+  const known = knownCondition(label);
+  if (known) return { condition: known, otherText: "" };
   return { condition: "Other", otherText: label };
 }
 export { CONDITIONS, CMAP };
+
 const OTHER_PALETTE = [
   "#ef4444","#f97316","#eab308","#84cc16","#22c55e",
   "#14b8a6","#06b6d4","#3b82f6","#6366f1","#8b5cf6",
   "#ec4899","#f43f5e","#d97706","#7c3aed","#0ea5e9",
   "#10b981","#64748b","#dc2626","#0f172a","#374151",
 ];
-const SURFACES = ["M","D","O","B","L","I"];
-const SURF_FULL = {M:"Mesial",D:"Distal",O:"Occlusal",B:"Buccal",L:"Lingual",I:"Incisal"};
+
+/* Surfaces. Stored as before: comma-separated letters, e.g. "M,O,D". */
+const SURF_ORDER = ["M","O","I","D","B","L"];
+const SURF_FULL = { M:"Mesial", D:"Distal", O:"Occlusal", B:"Buccal / Labial", L:"Lingual / Palatal", I:"Incisal" };
 
 function hexToRgba(hex,a){
   const r=parseInt(hex.slice(1,3),16),g=parseInt(hex.slice(3,5),16),b=parseInt(hex.slice(5,7),16);
   return `rgba(${r},${g},${b},${a})`;
 }
+const isHex = (v) => /^#[0-9a-fA-F]{6}$/.test(String(v || ""));
 function colorEntryFromHex(hex){
   return { a:hex, dark:hexToRgba(hex,.88), hi:hexToRgba(hex,.15), emoji:"📋", short:"OTH" };
 }
-function resolveColor(condition,customColor){
+function resolveColor(condition,customColor,otherText){
   if(!condition) return null;
-  if(condition==="Other"&&customColor) return { ...colorEntryFromHex(customColor), emoji:"📋", short:"OTH" };
-  return CMAP[condition]||CMAP["Other"];
+  if(condition==="Other"){
+    if(isHex(customColor)) return colorEntryFromHex(customColor);
+    const known = knownCondition(otherText);          // older "Other: Calculus" entries
+    if(known) return CMAP[known];
+    return CMAP["Other"];
+  }
+  return CMAP[condition] || CMAP[knownCondition(condition)] || CMAP["Other"];
 }
+
+/* ── Tooth helpers (FDI numbering) ── */
+const inChart = (n, chartType) => chartType === "permanent" ? (n >= 11 && n <= 48) : (n >= 51 && n <= 85);
+const isAnterior = (n) => (n % 10) <= 3;
+const centerCode = (n) => (isAnterior(n) ? "I" : "O");
+function toothName(n){
+  const q = Math.floor(n / 10), p = n % 10;
+  const side = { 1:"Upper right", 2:"Upper left", 3:"Lower left", 4:"Lower right", 5:"Upper right", 6:"Upper left", 7:"Lower left", 8:"Lower right" }[q];
+  const kind = q >= 5
+    ? { 1:"central incisor", 2:"lateral incisor", 3:"canine", 4:"first molar", 5:"second molar" }[p]
+    : { 1:"central incisor", 2:"lateral incisor", 3:"canine", 4:"first premolar", 5:"second premolar", 6:"first molar", 7:"second molar", 8:"third molar" }[p];
+  if (!side || !kind) return `Tooth ${n}`;
+  return `${side} ${kind}${q >= 5 ? " (deciduous)" : ""}`;
+}
+
+/* ── Finding helpers ── */
+function parseSurfaces(value){
+  const raw = String(value || "").toUpperCase();
+  const letters = raw.replace(/[^A-Z]/g, "").split("");
+  if (!letters.length || !letters.every(c => SURF_ORDER.includes(c))) return [];
+  return SURF_ORDER.filter(c => letters.includes(c));
+}
+const findingLabel = (r) => (r.condition === "Other" && r.other_text ? r.other_text : r.condition);
+const sameFinding = (r, condition, otherText) =>
+  String(r.condition || "").toLowerCase() === String(condition || "").toLowerCase() &&
+  (String(condition).toLowerCase() !== "other" ||
+    String(r.other_text || "").trim().toLowerCase() === String(otherText || "").trim().toLowerCase());
+
+/* Server rows → rows the chart can work with. The server sends tooth numbers
+   as text ("16"); everything in here compares them as numbers. */
+function normalize(raw){
+  const byId = new Map();                       // the same row listed twice counts once
+  (Array.isArray(raw) ? raw : []).forEach((r, i) => { if (r) byId.set(r.id != null ? `id-${r.id}` : `row-${i}`, r); });
+  return [...byId.values()]
+    .map(r => {
+      const label = findingLabel(r);
+      const known = r.condition === "Other" ? (knownCondition(r.other_text) || "Other") : (knownCondition(r.condition) || r.condition);
+      const rank = PRIORITY.indexOf(known);
+      return {
+        ...r,
+        tooth_number: Number(r.tooth_number),
+        _label: label,
+        _known: known,
+        _cm: resolveColor(r.condition, r.custom_color, r.other_text),
+        _surf: parseSurfaces(r.surface),
+        _rank: rank < 0 ? PRIORITY.length : rank,
+      };
+    })
+    .filter(r => Number.isFinite(r.tooth_number))
+    .sort((a, b) => a._rank - b._rank || (a.id || 0) - (b.id || 0));
+}
+const formatDate = (d) => {
+  if (!d) return "";
+  try { return new Date(d).toLocaleDateString("en-GB", { day:"2-digit", month:"short", year:"numeric" }); }
+  catch { return ""; }
+};
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
 /* ═══════════════════════════════════════════════════════
    TOOTH PATHS
@@ -847,74 +542,145 @@ function buildArch(isDeciduous){
   return{teeth,W,H:Math.max(...teeth.map(t=>t.y))+58,CX};
 }
 
+/* Which side of each tooth is mesial / buccal on screen, worked out from the
+   arch itself (so the surface bands always sit on the correct side). */
+function orientArch(arch){
+  const half = arch.teeth.length / 2;
+  const annotate = (row) => {
+    const cx = row.reduce((s,t)=>s+t.x,0)/row.length;
+    const cy = row.reduce((s,t)=>s+t.y,0)/row.length;
+    const mid = row.length / 2;
+    row.forEach((t,i)=>{
+      const th = t.rot * Math.PI / 180;
+      const ax = [Math.cos(th), Math.sin(th)];        // tooth's own +x on screen
+      const ay = [-Math.sin(th), Math.cos(th)];       // tooth's own +y on screen
+      const nb = row[i < mid ? i + 1 : i - 1];        // neighbour towards the midline
+      t.mesial = (ax[0]*(nb.x-t.x) + ax[1]*(nb.y-t.y)) >= 0 ? 1 : -1;
+      t.buccal = (ay[0]*(t.x-cx) + ay[1]*(t.y-cy)) >= 0 ? 1 : -1;   // away from the arch centre
+    });
+  };
+  annotate(arch.teeth.slice(0, half));
+  annotate(arch.teeth.slice(half));
+  return arch;
+}
+
 /* ═══════════════════════════════════════════════════════
    TOOTH SVG
+   findings = this tooth's findings, most important first.
 ═══════════════════════════════════════════════════════ */
-function ToothSVG({num,x,y,rot,condition,customColor,severity,onClick,disabled,isSelected}){
-  const{path,w,h}=toothShape(num);
-  const cm=resolveColor(condition,customColor);
-  const fill=cm?cm.a:"#cdd2db";
-  const stroke=cm?cm.dark:"#9aa3b2";
-  const txtC=cm?"#fff":"#2d3748";
-  const fs=w>30?11:w>22?10:9;
+let clipSeq = 0;
 
-  // Severity pulse ring
-  const sevColor=
-    severity==="critical"?"#dc2626":
-    severity==="severe"?"#ea580c":
-    severity==="moderate"?"#ca8a04":null;
+function ToothSVG({t,findings,clipPrefix,onClick,isSelected,isMarked,dim}){
+  const {num,x,y,rot,mesial,buccal}=t;
+  const{path,w,h}=toothShape(num);
+  const fs=w>30?11:w>22?10:9;
+  const clipId=`${clipPrefix}-${num}`;
+
+  const missing=findings.find(f=>f._known==="Missing");
+  const top=findings[0]||null;                               // the main (most important) finding
+  const whole=top&&top._surf.length===0?top:null;            // it colours the tooth unless it is limited to surfaces
+  const withSurf=findings.filter(f=>f._surf.length>0);
+
+  let fill="#ffffff",stroke="#9aa6b8",dash=undefined;
+  if(missing){fill="#eef1f5";stroke="#64748b";dash="3 2.5";}
+  else if(whole){fill=whole._cm.a;stroke=whole._cm.dark;}
+  else if(top){stroke=top._cm.dark;}
+
+  const centreBand=!missing&&withSurf.some(f=>f._surf.includes("O")||f._surf.includes("I"));
+  const filled=Boolean(!missing&&whole);
+  const txtC=filled||centreBand?"#fff":"#1f2937";
+
+  const sevKey=findings.reduce((best,f)=>(SEV_RANK[f.severity]||0)>(SEV_RANK[best]||0)?f.severity:best,"");
+  const sevColor=SEV_STYLE[sevKey]?.ring||null;
+
+  // Surface bands, drawn inside the tooth outline.
+  const tb=Math.max(6,Math.min(w,h)*0.26);
+  const bands=[];
+  if(!missing){
+    [...withSurf].reverse().forEach(f=>{
+      f._surf.forEach(s=>{
+        const key=`${f.id}-${s}`;
+        const paint={fill:f._cm.a,stroke:"#fff",strokeWidth:0.8};
+        if(s==="B") bands.push(<rect key={key} {...paint} x={-w/2-4} y={buccal<0?-h/2-6:h/2-tb} width={w+8} height={tb+6}/>);
+        if(s==="L") bands.push(<rect key={key} {...paint} x={-w/2-4} y={buccal<0?h/2-tb:-h/2-6} width={w+8} height={tb+6}/>);
+        if(s==="M") bands.push(<rect key={key} {...paint} x={mesial>0?w/2-tb:-w/2-6} y={-h/2-6} width={tb+6} height={h+12}/>);
+        if(s==="D") bands.push(<rect key={key} {...paint} x={mesial>0?-w/2-6:w/2-tb} y={-h/2-6} width={tb+6} height={h+12}/>);
+        if(s==="O"||s==="I") bands.push(<circle key={key} {...paint} cy={-1} r={Math.max(8.5,Math.min(w,h)*0.27)}/>);
+      });
+    });
+  }
+
+  // One small dot per finding when there is more than one.
+  const pips=findings.length>1?findings.slice(0,4):[];
+  const pipY=buccal<0?-h/2-9:h/2+9;
+
+  const summary=findings.length
+    ? findings.map(f=>`${f._label}${f._surf.length?` (${f._surf.join("")})`:""}${f.severity?` – ${f.severity}`:""}`).join("; ")
+    : "no findings";
 
   return(
-    <g className={`dc-tooth-g${disabled?" disabled":""}${isSelected?" selected":""}`}
+    <g className={`dc-tooth-g${dim?" dim":""}`}
       transform={`translate(${x.toFixed(1)},${y.toFixed(1)}) rotate(${rot.toFixed(1)})`}
-      onClick={()=>!disabled&&onClick(num)}>
+      role="button" tabIndex={0}
+      aria-label={`Tooth ${num}, ${toothName(num)}: ${summary}`}
+      onClick={()=>onClick(num)}
+      onKeyDown={e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();onClick(num);}}}>
+      <title>{`${num} · ${toothName(num)}\n${summary}`}</title>
 
-      {/* Severity ring */}
+      <defs><clipPath id={clipId}><path d={path}/></clipPath></defs>
+
       {sevColor&&(
-        <ellipse rx={w/2+5} ry={h/2+5} fill="none"
-          stroke={sevColor} strokeWidth={2} strokeDasharray="4 3" opacity={0.7}/>
+        <ellipse rx={w/2+5} ry={h/2+5} fill="none" stroke={sevColor} strokeWidth={2} strokeDasharray="4 3" opacity={0.75}/>
       )}
-
-      {/* Selection ring */}
+      {isMarked&&!isSelected&&(
+        <ellipse rx={w/2+7} ry={h/2+7} fill="none" stroke="#16a34a" strokeWidth={2.2} opacity={0.85}/>
+      )}
       {isSelected&&(
-        <ellipse rx={w/2+7} ry={h/2+7} fill="none"
-          stroke="#1a56db" strokeWidth={2.5} opacity={0.8}/>
+        <ellipse rx={w/2+7} ry={h/2+7} fill="none" stroke="#1a56db" strokeWidth={2.5} opacity={0.85}/>
       )}
+      <ellipse className="dc-focus-ring" rx={w/2+8} ry={h/2+8} fill="none" stroke="#0d1b2a" strokeWidth={2} strokeDasharray="2 2"/>
 
-      {/* Shadow */}
-      <path d={path} transform="translate(0.5,1.5)" fill="rgba(0,0,0,0.09)"/>
+      {/* Shadow + body */}
+      <path d={path} transform="translate(0.5,1.5)" fill="rgba(0,0,0,0.10)"/>
+      <path className="dc-tooth-body" d={path} fill={fill} stroke="none"/>
 
-      {/* Body */}
-      <path className="dc-tooth-body" d={path}
-        fill={fill} stroke={stroke} strokeWidth={0.9} strokeLinejoin="round"/>
+      {/* Surface bands */}
+      {bands.length>0&&<g clipPath={`url(#${clipId})`}>{bands}</g>}
 
-      {/* Gloss on healthy */}
-      {!cm&&<path d={path} fill="rgba(255,255,255,0.28)" transform="scale(0.68) translate(0,-3)" stroke="none"/>}
+      {/* Outline on top so bands never spill over it */}
+      <path d={path} fill="none" stroke={stroke} strokeWidth={findings.length?1.4:1} strokeLinejoin="round" strokeDasharray={dash}/>
 
       {/* Missing X */}
-      {condition==="Missing"&&(
-        <g opacity={0.65}>
-          <line x1={-w*.22} y1={-h*.22} x2={w*.22} y2={h*.22} stroke={stroke} strokeWidth={1.6} strokeLinecap="round"/>
-          <line x1={w*.22}  y1={-h*.22} x2={-w*.22} y2={h*.22} stroke={stroke} strokeWidth={1.6} strokeLinecap="round"/>
+      {missing&&(
+        <g opacity={0.7}>
+          <line x1={-w*.26} y1={-h*.26} x2={w*.26} y2={h*.26} stroke="#475569" strokeWidth={1.8} strokeLinecap="round"/>
+          <line x1={w*.26}  y1={-h*.26} x2={-w*.26} y2={h*.26} stroke="#475569" strokeWidth={1.8} strokeLinecap="round"/>
         </g>
       )}
 
       {/* Number */}
-      <text x={0} y={0} textAnchor="middle" dominantBaseline="middle"
-        fontSize={fs} fontWeight="600"
-        fontFamily="'DM Mono','Courier New',monospace"
-        fill={txtC}
-        transform={`rotate(${(-rot).toFixed(1)})`}
+      <text x={0} y={(findings.length===1&&!missing)||centreBand?-1.5:0} textAnchor="middle" dominantBaseline="middle"
+        fontSize={fs} fontWeight="600" fontFamily="'DM Mono','Courier New',monospace"
+        fill={txtC} transform={`rotate(${(-rot).toFixed(1)})`}
         pointerEvents="none" style={{userSelect:"none"}}>{num}</text>
 
-      {/* Condition short code */}
-      {cm&&cm.short&&(
-        <text x={0} y={h*0.27} textAnchor="middle" dominantBaseline="middle"
-          fontSize={7} fontWeight="700"
-          fontFamily="'DM Mono','Courier New',monospace"
-          fill="rgba(255,255,255,0.75)"
+      {/* Short code when the tooth has exactly one finding (and room for it) */}
+      {findings.length===1&&!missing&&!centreBand&&(
+        <text x={0} y={h*0.31} textAnchor="middle" dominantBaseline="middle"
+          fontSize={6.4} fontWeight="700" fontFamily="'DM Mono','Courier New',monospace"
+          fill={filled?"rgba(255,255,255,0.9)":top._cm.dark}
           transform={`rotate(${(-rot).toFixed(1)})`}
-          pointerEvents="none" style={{userSelect:"none"}}>{cm.short}</text>
+          pointerEvents="none" style={{userSelect:"none"}}>{top._cm.short}</text>
+      )}
+
+      {/* Dots: one per finding */}
+      {pips.map((f,i)=>(
+        <circle key={f.id} cx={(i-(pips.length-1)/2)*7.6} cy={pipY} r={3.2}
+          fill={f._cm.a} stroke="#fff" strokeWidth={1}/>
+      ))}
+      {findings.length>4&&(
+        <text x={(pips.length-1)/2*7.6+9} y={pipY} dominantBaseline="middle" fontSize={7} fontWeight="700" fill="#4a5568"
+          pointerEvents="none">+</text>
       )}
     </g>
   );
@@ -923,318 +689,237 @@ function ToothSVG({num,x,y,rot,condition,customColor,severity,onClick,disabled,i
 /* ═══════════════════════════════════════════════════════
    DENTAL DIAGRAM
 ═══════════════════════════════════════════════════════ */
-function DentalDiagram({records,chartType,onToothClick,disabled,selectedTooth}){
+function DentalDiagram({findings,chartType,onToothClick,selectedTooth,markedTeeth,focus}){
   const isDeciduous=chartType==="deciduous";
-  const{teeth,W,H,CX}=buildArch(isDeciduous);
+  const arch=useMemo(()=>orientArch(buildArch(isDeciduous)),[isDeciduous]);
+  const[clipPrefix]=useState(()=>`dc-clip-${++clipSeq}`);
+  const{teeth,W,H,CX}=arch;
 
-  const condMap={},colorMap={},sevMap={};
-  records.forEach(r=>{
-    condMap[r.tooth_number]=r.condition;
-    if(r.custom_color)colorMap[r.tooth_number]=r.custom_color;
-    if(r.severity)sevMap[r.tooth_number]=r.severity;
-  });
-
-  // selectedTooth can be a number or null — highlight it
-  const selSet=selectedTooth!=null?new Set([selectedTooth]):new Set();
+  const byTooth={};
+  findings.forEach(f=>{(byTooth[f.tooth_number]=byTooth[f.tooth_number]||[]).push(f);});
+  const upperBottom=Math.max(...teeth.filter(t=>t.isUpper).map(t=>t.y));
+  const lowerTop=Math.min(...teeth.filter(t=>!t.isUpper).map(t=>t.y));
+  const midY=(upperBottom+lowerTop)/2;
 
   return(
     <div className="dc-chart-inner">
-      <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} style={{display:"block",maxWidth:W}}>
-        {/* Arch guide line */}
-        <line x1={CX} y1={10} x2={CX} y2={H-10}
-          stroke="rgba(26,86,219,0.12)" strokeWidth={1} strokeDasharray="5 4"/>
+      <svg viewBox={`0 0 ${W} ${H}`} style={{maxWidth:Math.round(W*1.22)}} role="group"
+        aria-label={`${isDeciduous?"Deciduous":"Permanent"} teeth chart. Patient's right is on the left of the picture.`}>
+        <line x1={CX} y1={10} x2={CX} y2={H-10} stroke="rgba(26,86,219,0.14)" strokeWidth={1} strokeDasharray="5 4"/>
 
-        {/* Quadrant labels */}
-        {[{t:"UR",x:CX-8,y:12,a:"end"},{t:"UL",x:CX+8,y:12,a:"start"},
-          {t:"LR",x:CX-8,y:H-4,a:"end"},{t:"LL",x:CX+8,y:H-4,a:"start"}].map(q=>(
-          <text key={q.t} x={q.x} y={q.y} textAnchor={q.a}
-            className="dc-qlabel">{q.t}</text>
+        {[{t:"UR",x:CX-8,y:13,a:"end"},{t:"UL",x:CX+8,y:13,a:"start"},
+          {t:"LR",x:CX-8,y:H-5,a:"end"},{t:"LL",x:CX+8,y:H-5,a:"start"}].map(q=>(
+          <text key={q.t} x={q.x} y={q.y} textAnchor={q.a} className="dc-qlabel">{q.t}</text>
         ))}
+        <text x={CX} y={midY-7} textAnchor="middle" className="dc-sidelabel">UPPER</text>
+        <text x={CX} y={midY+15} textAnchor="middle" className="dc-sidelabel">LOWER</text>
+        <text x={12} y={midY+4} textAnchor="start" className="dc-sidelabel">RIGHT</text>
+        <text x={W-12} y={midY+4} textAnchor="end" className="dc-sidelabel">LEFT</text>
 
-        {teeth.map(({num,x,y,rot,isUpper})=>(
-          <ToothSVG key={num} num={num} x={x} y={y} rot={rot} isUpper={isUpper}
-            condition={condMap[num]||null}
-            customColor={colorMap[num]||null}
-            severity={sevMap[num]||null}
-            onClick={onToothClick}
-            disabled={disabled}
-            isSelected={selSet.has(num)}/>
-        ))}
+        {teeth.map(t=>{
+          const list=byTooth[t.num]||[];
+          const dim=Boolean(focus)&&!list.some(f=>f._label.toLowerCase()===focus);
+          return(
+            <ToothSVG key={t.num} t={t} findings={list} clipPrefix={clipPrefix}
+              onClick={onToothClick}
+              isSelected={selectedTooth===t.num}
+              isMarked={markedTeeth.has(t.num)}
+              dim={dim}/>
+          );
+        })}
       </svg>
     </div>
   );
 }
 
 /* ═══════════════════════════════════════════════════════
-   TOOTH MODAL
+   SMALL SHARED PIECES
 ═══════════════════════════════════════════════════════ */
-function ToothModal({tooth,existing,disabled,onSave,onDelete,onClose,saving,deleting}){
-  const[condition,setCondition]=useState(existing?.condition||"");
-  const[severity,setSeverity]=useState(existing?.severity||"");
-  const[otherText,setOtherText]=useState(existing?.other_text||"");
-  const[otherColor,setOtherColor]=useState(existing?.custom_color||OTHER_PALETTE[8]);
-  const[surfaces,setSurfaces]=useState(existing?.surface?existing.surface.split(",").filter(Boolean):[]);
-  const[notes,setNotes]=useState(existing?.notes||"");
-  const taRef=useRef(null);
+function ConditionPill({cm,label,small}){
+  return(
+    <span className="dc-pill" style={{background:cm.a,boxShadow:`0 2px 8px ${hexToRgbaSafe(cm.a,.27)}`,
+      ...(small?{padding:"3px 10px",fontSize:11.5}:{})}}>
+      <span aria-hidden="true">{cm.emoji}</span> {label}
+    </span>
+  );
+}
+function hexToRgbaSafe(c,a){ return isHex(c)?hexToRgba(c,a):"rgba(0,0,0,.15)"; }
 
-  const isOther=condition==="Other";
-  const cm=resolveColor(condition,isOther?otherColor:null);
-  const canSave=condition&&(!isOther||otherText.trim().length>0);
+function SeverityTag({value}){
+  const sv=SEV_STYLE[value];
+  if(!sv) return null;
+  return <span className="dc-sev-tag" style={{background:sv.bg,color:sv.col,border:`1px solid ${sv.bdr}`}}>{value}</span>;
+}
 
-  useEffect(()=>{if(isOther&&taRef.current)setTimeout(()=>taRef.current?.focus(),80);},[isOther]);
-
-  const togSurf=s=>{if(disabled)return;setSurfaces(p=>p.includes(s)?p.filter(x=>x!==s):[...p,s]);};
-
-  const badgeBg=cm?cm.a:"#e2d0b0";
-  const badgeBorder=cm?cm.dark:"#8c6030";
+/* Searchable list of conditions in alphabetical order.
+   taken = labels already on the tooth (shown, but cannot be picked again). */
+function ConditionPicker({value,onPick,taken,autoFocus}){
+  const[q,setQ]=useState("");
+  const needle=q.trim().toLowerCase();
+  const items=CONDITIONS.filter(c=>!needle||c.toLowerCase().includes(needle));
 
   return(
-    <div className="dc-overlay" onClick={onClose}>
-      <div className="dc-modal" onClick={e=>e.stopPropagation()}>
-
-        {/* Header */}
-        <div className="dc-modal-top">
-          <div className="dc-modal-head-row">
-            <div className="dc-modal-badge"
-              style={{background:badgeBg,border:`2px solid ${badgeBorder}`,color:"#fff",
-                boxShadow:`0 4px 16px ${badgeBg}55`}}>
-              {tooth}
-            </div>
-            <div>
-              <div className="dc-modal-title">Tooth #{tooth}</div>
-              <div className="dc-modal-sub">
-                {existing?"Edit existing condition":"Record new condition"}
-                {existing?.updated_at&&` · Last updated ${new Date(existing.updated_at).toLocaleDateString("en-GB",{day:"2-digit",month:"short",year:"numeric"})}`}
-              </div>
-            </div>
-            <button className="dc-close-btn" onClick={onClose}>✕</button>
-          </div>
+    <div>
+      <input className="dc-search" type="search" placeholder="Search conditions… (e.g. calculus, caries, crown)"
+        aria-label="Search conditions" value={q} autoFocus={autoFocus}
+        onChange={e=>setQ(e.target.value)}/>
+      {items.length===0&&(
+        <div className="dc-notice dc-notice-info" style={{marginTop:0}}>
+          Nothing matches “{q}”. Clear the search and choose <b>Other</b> to type your own description.
         </div>
+      )}
+      <div className="dc-cond-grid" role="group" aria-label="Conditions, A to Z">
+        {items.map(c=>{
+          const cm=CMAP[c];
+          const sel=value===c;
+          const isTaken=c!=="Other"&&!sel&&taken&&taken.has(c.toLowerCase());
+          return(
+            <button key={c} type="button" className="dc-cond-btn"
+              aria-pressed={sel} disabled={isTaken}
+              title={isTaken?"Already recorded on this tooth":undefined}
+              style={sel?{background:cm.a,color:"#fff",borderColor:cm.dark}:{borderColor:hexToRgba(cm.a,.25),color:cm.dark}}
+              onClick={()=>onPick(c)}>
+              <span className="dc-cond-dot" style={{background:sel?"#fff":cm.a}}/>
+              {c}
+              {isTaken&&<span className="dc-cond-tag">✓ on tooth</span>}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
-        {/* Scrollable body */}
-        <div className="dc-modal-scroll">
+function OtherFields({text,color,onText,onColor,autoFocus}){
+  return(
+    <div className="dc-other-panel">
+      <label className="dc-field-label" style={{color:"#4f46e5"}} htmlFor="dc-other-text">Describe the condition</label>
+      <input id="dc-other-text" className="dc-input" placeholder="Type the condition name…" maxLength={200}
+        value={text} autoFocus={autoFocus} onChange={e=>onText(e.target.value)}/>
+      <div className="dc-palette" role="radiogroup" aria-label="Colour on the chart">
+        {OTHER_PALETTE.map(hex=>(
+          <button key={hex} type="button" className={`dc-pdot${color===hex?" sel":""}`}
+            role="radio" aria-checked={color===hex} aria-label={`Colour ${hex}`}
+            style={{background:hex}} onClick={()=>onColor(hex)}/>
+        ))}
+      </div>
+    </div>
+  );
+}
 
-          {/* Condition */}
-          <div className="dc-field-group">
-            <label className="dc-field-label">Diagnosis / Condition</label>
-            <div className="dc-cond-grid">
-              {CONDITIONS.map(c=>{
-                const cm2=CMAP[c];
-                const sel=condition===c;
-                return(
-                  <button key={c} className={`dc-cond-btn${sel?" active":""}`}
-                    disabled={disabled}
-                    style={sel?{background:cm2.a,color:"#fff",borderColor:cm2.dark}:
-                      {borderColor:`${cm2.a}33`,color:cm2.dark}}
-                    onClick={()=>setCondition(c)}>
-                    <span className="dc-cond-dot"
-                      style={{background:cm2.a,boxShadow:sel?`0 0 0 2px rgba(255,255,255,.4)`:""}}/>
-                    <span style={{fontSize:11.5}}>{cm2.emoji}</span>
-                    {c}
-                  </button>
-                );
-              })}
-            </div>
+function SeverityPicker({value,onChange}){
+  return(
+    <div className="dc-severity-row" role="group" aria-label="Severity">
+      {SEVERITY_LEVELS.map(sv=>(
+        <button key={sv.key} type="button" aria-pressed={value===sv.key}
+          className={`dc-sev-btn ${sv.cls}${value===sv.key?" active":""}`}
+          onClick={()=>onChange(value===sv.key?"":sv.key)}>
+          {sv.label}
+        </button>
+      ))}
+    </div>
+  );
+}
 
-            {/* Other panel */}
-            {isOther&&(
-              <div className="dc-other-panel">
-                <label className="dc-field-label" style={{color:"#6366f1"}}>Custom description</label>
-                <textarea ref={taRef} className="dc-other-ta"
-                  placeholder="e.g. Fracture, Erosion, Fluorosis, Hypersensitivity…"
-                  value={otherText} disabled={disabled}
-                  onChange={e=>setOtherText(e.target.value)}/>
-                <div style={{fontSize:10,fontWeight:700,color:"#6366f1",letterSpacing:".7px",
-                  textTransform:"uppercase",margin:"12px 0 8px"}}>Highlight color</div>
-                <div className="dc-palette">
-                  {OTHER_PALETTE.map(hex=>(
-                    <div key={hex} className={`dc-pdot${otherColor===hex?" sel":""}`}
-                      style={{background:hex,borderColor:otherColor===hex?"#0f172a":"transparent"}}
-                      onClick={()=>!disabled&&setOtherColor(hex)}/>
-                  ))}
-                </div>
-                <div style={{marginTop:12,padding:"9px 12px",borderRadius:9,
-                  background:`${otherColor}18`,border:`1.5px solid ${otherColor}44`,
-                  display:"flex",gap:10,alignItems:"center"}}>
-                  <div style={{width:28,height:28,borderRadius:8,background:otherColor,flexShrink:0,
-                    border:`2px solid ${otherColor}cc`,boxShadow:`0 2px 8px ${otherColor}66`}}/>
-                  <div style={{fontSize:12,fontWeight:600,color:otherColor}}>
-                    {otherText.trim()||"Custom condition"}
-                    <div style={{fontSize:10,color:"#94a3b8",fontWeight:400,marginTop:1}}>Preview color</div>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
+/* Five-surface picture of a tooth. centre = "O", "I", or "O/I" when several
+   teeth are being marked at once (each tooth then gets the right one). */
+function SurfacePicker({value,onChange,centre}){
+  const centreCode=centre==="I"?"I":"O";
+  const has=c=>value.includes(c);
+  const toggle=c=>onChange(has(c)?value.filter(x=>x!==c):SURF_ORDER.filter(x=>has(x)||x===c));
+  const zones=[
+    {c:"B",pts:"6,6 94,6 68,32 32,32",lx:50,ly:20,name:SURF_FULL.B},
+    {c:"L",pts:"6,94 94,94 68,68 32,68",lx:50,ly:82,name:SURF_FULL.L},
+    {c:"M",pts:"6,6 32,32 32,68 6,94",lx:19,ly:51,name:SURF_FULL.M},
+    {c:"D",pts:"94,6 94,94 68,68 68,32",lx:81,ly:51,name:SURF_FULL.D},
+    {c:centreCode,pts:"32,32 68,32 68,68 32,68",lx:50,ly:51,
+      name:centre==="O/I"?"Occlusal / Incisal":SURF_FULL[centreCode],letter:centre==="O/I"?"O/I":centreCode},
+  ];
+  return(
+    <div className="dc-surf-wrap">
+      <svg viewBox="0 0 100 100" width={104} height={104} role="group" aria-label="Affected surfaces">
+        {zones.map(z=>(
+          <g key={z.c}>
+            <polygon className={`dc-surf-zone${has(z.c)?" on":""}`} points={z.pts}
+              fill="#f1f5f9" stroke="#94a3b8" strokeWidth={1.4} strokeLinejoin="round"
+              role="checkbox" aria-checked={has(z.c)} aria-label={z.name} tabIndex={0}
+              onClick={()=>toggle(z.c)}
+              onKeyDown={e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();toggle(z.c);}}}/>
+            <text className={`dc-surf-letter${has(z.c)?" on":""}`} x={z.lx} y={z.ly}
+              textAnchor="middle" dominantBaseline="middle"
+              style={z.letter==="O/I"?{fontSize:10}:undefined}>{z.letter||z.c}</text>
+          </g>
+        ))}
+      </svg>
+      <div className="dc-surf-list">
+        {value.length===0
+          ? <span style={{color:"var(--dc-text3)"}}>Click the picture to mark surfaces.<br/>Leave empty for the whole tooth.</span>
+          : zones.filter(z=>has(z.c)).map(z=><div key={z.c}><b>{z.letter||z.c}</b> — {z.name}</div>)}
+      </div>
+    </div>
+  );
+}
 
-          <hr className="dc-divider"/>
+/* Pop-up windows are attached to <body>. Inside the page they sit under an
+   animated card, and an animated/transformed parent makes "position: fixed"
+   centre on that card instead of on the screen. */
+const inBody = (node) => (typeof document !== "undefined" ? createPortal(node, document.body) : node);
 
-          {/* Severity */}
-          <div className="dc-field-group">
-            <label className="dc-field-label">Severity Level</label>
-            <div className="dc-severity-row">
-              {SEVERITY_LEVELS.map(sv=>(
-                <button key={sv.key}
-                  className={`dc-sev-btn ${sv.cls}${severity===sv.key?" active":""}`}
-                  disabled={disabled}
-                  onClick={()=>setSeverity(p=>p===sv.key?"":sv.key)}>
-                  {sv.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Surfaces */}
-          <div className="dc-field-group">
-            <label className="dc-field-label">Affected Surfaces</label>
-            <div className="dc-surface-map">
-              {SURFACES.map(s=>(
-                <div key={s} className="dc-tooltip-wrap">
-                  <button className={`dc-surf-key${surfaces.includes(s)?" on":""}`}
-                    disabled={disabled} onClick={()=>togSurf(s)}>
-                    {s}
-                  </button>
-                  <span className="dc-tooltip-content">{SURF_FULL[s]}</span>
-                </div>
-              ))}
-              {surfaces.length>0&&(
-                <span style={{fontSize:11.5,color:"#64748b",fontWeight:500,marginLeft:4}}>
-                  {surfaces.map(s=>SURF_FULL[s]).join(", ")}
-                </span>
-              )}
-            </div>
-          </div>
-
-          {/* Notes */}
-          <div className="dc-field-group">
-            <label className="dc-field-label">Clinical Notes</label>
-            <textarea className="dc-notes-ta"
-              placeholder="Observations, treatment plan, follow-up instructions, referrals…"
-              value={notes} disabled={disabled}
-              onChange={e=>setNotes(e.target.value)}/>
-          </div>
-
-          {/* Actions */}
-          {!disabled?(
-            <div className="dc-actions">
-              <button className="dc-btn-ghost" onClick={onClose}>Cancel</button>
-              {existing&&(
-                <button className="dc-btn-danger" onClick={onDelete} disabled={deleting}>
-                  {deleting?"…":"🗑 Delete"}
-                </button>
-              )}
-              <button className="dc-btn-primary"
-                disabled={!canSave||saving}
-                onClick={()=>onSave({
-                  condition,severity,surface:surfaces.join(","),notes,
-                  other_text:isOther?otherText:"",
-                  custom_color:isOther?otherColor:"",
-                })}>
-                {saving?"Saving…":existing?"✔ Update Record":"✔ Save Record"}
-              </button>
-            </div>
-          ):(
-            <div className="dc-actions">
-              <button className="dc-btn-ghost" onClick={onClose} style={{flex:1}}>Close</button>
-            </div>
-          )}
+function ConfirmDialog({title,body,confirmLabel="Delete",busy,onCancel,onConfirm}){
+  const cancelRef=useRef(null);
+  useEffect(()=>{cancelRef.current?.focus();},[]);
+  useEffect(()=>{
+    const onKey=e=>{if(e.key==="Escape"&&!busy)onCancel();};
+    document.addEventListener("keydown",onKey);
+    return()=>document.removeEventListener("keydown",onKey);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[busy]);
+  return inBody(
+    <div className="dc-overlay" style={{zIndex:9100}} onClick={()=>!busy&&onCancel()}>
+      <div className="dc-modal dc-confirm" role="alertdialog" aria-modal="true" aria-labelledby="dc-confirm-title"
+        onClick={e=>e.stopPropagation()}>
+        <h4 id="dc-confirm-title">{title}</h4>
+        <p>{body}</p>
+        <div className="dc-actions">
+          <button ref={cancelRef} type="button" className="dc-btn dc-btn-ghost" disabled={busy} onClick={onCancel}>Cancel</button>
+          <button type="button" className="dc-btn dc-btn-danger" disabled={busy} onClick={onConfirm}>
+            {busy?"Deleting…":confirmLabel}
+          </button>
         </div>
       </div>
     </div>
   );
 }
 
-/* ═══════════════════════════════════════════════════════
-   SELECTED TOOTH INFO PANEL
-═══════════════════════════════════════════════════════ */
-function SelectedToothPanel({tooth,record,onEdit,onDeselect,disabled}){
-  if(!tooth) return(
-    <div className="dc-info-panel" style={{padding:"22px 20px",textAlign:"center"}}>
-      <div style={{fontSize:28,marginBottom:8,opacity:.35}}>🦷</div>
-      <div style={{fontSize:13,color:"var(--dc-text3)",fontWeight:500}}>
-        Select any tooth on the chart to view or record its condition
-      </div>
-    </div>
-  );
-
-  const cm=record?resolveColor(record.condition,record.custom_color):null;
-  const condLabel=record?(record.condition==="Other"&&record.other_text?record.other_text:record.condition):null;
-
+/* One finding, as shown in the tooth window and in the log. */
+function FindingRow({f,showTooth,disabled,busy,onEdit,onDelete,onOpenTooth}){
+  const cm=f._cm;
   return(
-    <div className="dc-info-panel">
-      <div className="dc-info-panel-head" style={cm?{borderLeft:`4px solid ${cm.a}`}:{}}>
-        <div style={{
-          width:40,height:40,borderRadius:11,flexShrink:0,
-          background:cm?cm.a:"#e2e8f0",
-          border:`2px solid ${cm?cm.dark:"#cbd5e1"}`,
-          display:"flex",alignItems:"center",justifyContent:"center",
-          fontFamily:"'DM Mono',monospace",fontWeight:700,fontSize:14,
-          color:cm?"#fff":"#64748b",
-          boxShadow:cm?`0 3px 12px ${cm.a}44`:"none",
-        }}>{tooth}</div>
-
-        <div style={{flex:1,minWidth:0}}>
-          <div style={{fontSize:11,fontWeight:700,color:"var(--dc-text3)",textTransform:"uppercase",letterSpacing:".7px",marginBottom:2}}>
-            Selected Tooth
-          </div>
-          <div style={{fontSize:15,fontWeight:700,color:"var(--dc-text)",display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
-            Tooth #{tooth}
-            {condLabel&&cm&&(
-              <span style={{display:"inline-flex",alignItems:"center",gap:5,padding:"3px 11px",
-                borderRadius:20,background:cm.a,color:"#fff",fontSize:12,fontWeight:700,
-                boxShadow:`0 2px 8px ${cm.a}44`}}>
-                {CMAP[record.condition]?.emoji||"📋"} {condLabel}
-              </span>
-            )}
-            {!condLabel&&<span style={{fontSize:12,fontWeight:500,color:"var(--dc-text3)",fontStyle:"italic"}}>No condition recorded</span>}
-          </div>
-          {record?.surface&&(
-            <div style={{fontSize:11,color:"var(--dc-text3)",marginTop:3,fontFamily:"'DM Mono',monospace"}}>
-              Surfaces: {record.surface}
-            </div>
+    <div className="dc-frow">
+      {showTooth&&(
+        <button type="button" className="dc-tooth-badge" title={`Open tooth ${f.tooth_number}`}
+          style={{borderColor:hexToRgbaSafe(cm.a,.45),color:cm.dark,background:cm.hi}}
+          onClick={()=>onOpenTooth(f.tooth_number)}>{f.tooth_number}</button>
+      )}
+      <div className="dc-frow-main">
+        <div className="dc-frow-line">
+          {!showTooth&&<ConditionPill cm={cm} label={f._label} small/>}
+          {f._surf.length>0&&<span className="dc-surf-tag" title={f._surf.map(s=>SURF_FULL[s]).join(", ")}>{f._surf.join("")}</span>}
+          {f._surf.length===0&&f.surface&&<span className="dc-surf-tag">{f.surface}</span>}
+          <SeverityTag value={f.severity}/>
+          {showTooth&&f._surf.length===0&&!f.surface&&!f.severity&&!f.notes&&(
+            <span style={{fontSize:11.5,color:"var(--dc-text3)"}}>Whole tooth</span>
           )}
+          <span className="dc-date" style={{marginLeft:"auto"}}>{formatDate(f.created_at||f.updated_at)}</span>
         </div>
-
-        <div style={{display:"flex",gap:6,flexShrink:0}}>
-          {!disabled&&(
-            <button onClick={()=>onEdit(tooth)}
-              style={{padding:"6px 14px",borderRadius:8,background:"var(--dc-accent-soft)",
-                color:"var(--dc-accent)",border:"1.5px solid #93c5fd",fontFamily:"var(--dc-font)",
-                fontSize:12,fontWeight:700,cursor:"pointer",transition:"all .12s"}}>
-              ✏️ Edit
-            </button>
-          )}
-          <button onClick={onDeselect}
-            style={{width:32,height:32,borderRadius:8,border:"1px solid var(--dc-border)",
-              background:"var(--dc-surface)",color:"var(--dc-text3)",fontSize:15,cursor:"pointer",
-              display:"flex",alignItems:"center",justifyContent:"center",transition:"all .12s"}}>✕</button>
-        </div>
+        {f.notes&&<div className="dc-frow-notes">“{f.notes}”</div>}
       </div>
-
-      {record&&(
-        <div className="dc-info-panel-body">
-          <div style={{display:"flex",gap:16,flexWrap:"wrap"}}>
-            {record.severity&&(
-              <div>
-                <div style={{fontSize:10,fontWeight:700,color:"var(--dc-text3)",textTransform:"uppercase",letterSpacing:".7px",marginBottom:4}}>Severity</div>
-                <span style={{padding:"3px 10px",borderRadius:6,fontSize:11.5,fontWeight:700,
-                  background:record.severity==="critical"?"#fee2e2":record.severity==="severe"?"#ffedd5":record.severity==="moderate"?"#fef9c3":"#dcfce7",
-                  color:record.severity==="critical"?"#b91c1c":record.severity==="severe"?"#c2410c":record.severity==="moderate"?"#a16207":"#15803d",
-                  border:`1px solid ${record.severity==="critical"?"#fca5a5":record.severity==="severe"?"#fdba74":record.severity==="moderate"?"#fde047":"#86efac"}`,
-                }}>
-                  {record.severity.charAt(0).toUpperCase()+record.severity.slice(1)}
-                </span>
-              </div>
-            )}
-            {record.notes&&(
-              <div style={{flex:1,minWidth:160}}>
-                <div style={{fontSize:10,fontWeight:700,color:"var(--dc-text3)",textTransform:"uppercase",letterSpacing:".7px",marginBottom:4}}>Clinical Notes</div>
-                <div style={{fontSize:12.5,color:"var(--dc-text2)",lineHeight:1.5,fontStyle:"italic"}}>
-                  "{record.notes}"
-                </div>
-              </div>
-            )}
-          </div>
+      {!disabled&&(
+        <div className="dc-frow-actions">
+          <button type="button" className="dc-btn dc-btn-soft dc-btn-sm" disabled={busy}
+            aria-label={`Edit ${f._label} on tooth ${f.tooth_number}`} onClick={()=>onEdit(f)}>Edit</button>
+          <button type="button" className="dc-btn dc-btn-danger-soft dc-btn-sm" disabled={busy}
+            aria-label={`Delete ${f._label} on tooth ${f.tooth_number}`} onClick={()=>onDelete(f)}>Delete</button>
         </div>
       )}
     </div>
@@ -1242,145 +927,329 @@ function SelectedToothPanel({tooth,record,onEdit,onDeselect,disabled}){
 }
 
 /* ═══════════════════════════════════════════════════════
-   CONDITIONS LOG
+   FINDING FORM — "Add finding" or "Edit finding" for ONE tooth
 ═══════════════════════════════════════════════════════ */
-function ConditionsLog({records,chartType,disabled,onEdit,onDelete,deleting}){
-  const[filter,setFilter]=useState("all");
+function FindingForm({tooth,initial,othersOnTooth,saving,error,onSubmit,onCancel}){
+  const isEdit=Boolean(initial);
+  const centre=centerCode(tooth);
+  // A stored name that is not on today's list (older data) opens as its
+  // current equivalent, or as "Other" with the stored name as the text.
+  const initCond=initial?(CMAP[initial.condition]?initial.condition:(knownCondition(initial.condition)||"Other")):"";
+  const[condition,setCondition]=useState(initCond);
+  const[otherText,setOtherText]=useState(
+    !initial?"":initial.condition==="Other"?(initial.other_text||""):(initCond==="Other"?initial.condition:""));
+  const[otherColor,setOtherColor]=useState(isHex(initial?.custom_color)?initial.custom_color:OTHER_PALETTE[8]);
+  const[severity,setSeverity]=useState(initial?.severity||"");
+  const[surfaces,setSurfaces]=useState(()=>
+    (initial?._surf||[]).map(s=>(s==="O"||s==="I")?centre:s).filter((s,i,a)=>a.indexOf(s)===i));
+  const[notes,setNotes]=useState(initial?.notes||"");
+  const[localError,setLocalError]=useState("");
 
-  const affected=records.filter(r=>{
-    const n=r.tooth_number;
-    return chartType==="permanent"?(n>=11&&n<=48):(n>=51&&n<=85);
-  }).slice().sort((a,b)=>a.tooth_number-b.tooth_number);
+  const isOther=condition==="Other";
+  const taken=useMemo(()=>new Set(othersOnTooth.map(f=>f._label.toLowerCase())),[othersOnTooth]);
 
-  const conditionTypes=[...new Set(affected.map(r=>r.condition))];
-
-  const filtered=filter==="all"?affected:affected.filter(r=>r.condition===filter);
-
-  const formatDate=d=>{
-    const dt = d ? new Date(d) : new Date();
-    try{return dt.toLocaleDateString("en-GB",{day:"2-digit",month:"short",year:"numeric"});}
-    catch{return d||"Today";}
+  const pick=c=>{
+    setCondition(c);setLocalError("");
+    // Sensible starting surface, only when none has been chosen yet.
+    const def=CMAP[c]?.surf;
+    if(def&&surfaces.length===0&&!isEdit) setSurfaces(def.map(s=>(s==="O"||s==="I")?centre:s));
   };
 
-  const sevStyle=s=>({
-    critical:{bg:"#fee2e2",col:"#b91c1c",bdr:"#fca5a5"},
-    severe:  {bg:"#ffedd5",col:"#c2410c",bdr:"#fdba74"},
-    moderate:{bg:"#fef9c3",col:"#a16207",bdr:"#fde047"},
-    mild:    {bg:"#dcfce7",col:"#15803d",bdr:"#86efac"},
-  }[s]||null);
+  const submit=()=>{
+    if(!condition){setLocalError("Choose a condition first.");return;}
+    if(isOther&&!otherText.trim()){setLocalError("Type a description for “Other”.");return;}
+    const label=(isOther?otherText.trim():condition).toLowerCase();
+    if(taken.has(label)){
+      setLocalError(`Tooth ${tooth} already has “${isOther?otherText.trim():condition}”. Edit that entry instead of adding it twice.`);
+      return;
+    }
+    onSubmit({
+      condition,severity,
+      surface:SURF_ORDER.filter(s=>surfaces.includes(s)).join(","),
+      notes:notes.trim(),
+      other_text:isOther?otherText.trim():"",
+      custom_color:isOther?otherColor:"",
+    });
+  };
 
+  const shown=localError||error;
   return(
-    <div className="dc-log-panel">
-      <div className="dc-log-head">
-        <span style={{fontSize:14,marginRight:2}}>📋</span>
-        <span className="dc-log-title">Conditions Log</span>
-        <span className="dc-count-badge"
-          style={{background:"#fee2e2",color:"#b91c1c",border:"1px solid #fecaca"}}>
-          {affected.length}
-        </span>
-        <div style={{marginLeft:"auto",fontSize:11,color:"var(--dc-text3)",fontWeight:500}}>
-          {affected.length} tooth{affected.length!==1?"s":""} marked
+    <div className={`dc-form ${isEdit?"dc-form-edit":"dc-form-add"}`} role="group"
+      aria-label={isEdit?"Edit finding":"Add finding"}>
+      <p className="dc-form-title">{isEdit?`Edit finding — ${initial._label}`:"Add finding"}</p>
+      <p className="dc-form-hint">
+        {isEdit
+          ? "Only this finding is changed. The tooth's other findings stay as they are."
+          : `Adds a new finding to tooth ${tooth}. Findings already on the tooth are kept.`}
+      </p>
+
+      <div className="dc-field-group">
+        <span className="dc-field-label">Condition</span>
+        <ConditionPicker value={condition} onPick={pick} taken={taken}/>
+        {isOther&&<OtherFields text={otherText} color={otherColor} onText={v=>{setOtherText(v);setLocalError("");}} onColor={setOtherColor} autoFocus={!isEdit}/>}
+      </div>
+
+      <div className="dc-opt-grid" style={{marginTop:0,paddingTop:0,borderTop:"none"}}>
+        <div>
+          <span className="dc-field-label">Surfaces (optional)</span>
+          <SurfacePicker value={surfaces} onChange={setSurfaces} centre={centre}/>
+        </div>
+        <div>
+          <div className="dc-field-group">
+            <span className="dc-field-label">Severity (optional)</span>
+            <SeverityPicker value={severity} onChange={setSeverity}/>
+          </div>
+          <label className="dc-field-label" htmlFor="dc-notes">Clinical notes (optional)</label>
+          <textarea id="dc-notes" className="dc-notes-ta" placeholder="Observations, plan, follow-up…"
+            value={notes} onChange={e=>setNotes(e.target.value)}/>
         </div>
       </div>
 
-      {/* Filters */}
-      {conditionTypes.length>1&&(
-        <div className="dc-filter-row">
-          <span style={{fontSize:10,fontWeight:700,color:"var(--dc-text3)",textTransform:"uppercase",
-            letterSpacing:".7px",alignSelf:"center",marginRight:4}}>Filter:</span>
-          <button className={`dc-filter-btn${filter==="all"?" active":""}`} onClick={()=>setFilter("all")}>
-            All ({affected.length})
-          </button>
-          {conditionTypes.map(c=>(
-            <button key={c} className={`dc-filter-btn${filter===c?" active":""}`} onClick={()=>setFilter(c)}>
-              {CMAP[c]?.emoji} {c} ({affected.filter(r=>r.condition===c).length})
-            </button>
+      {shown&&<div className="dc-notice dc-notice-error" role="alert">{shown}</div>}
+
+      <div className="dc-actions" style={{marginTop:14}}>
+        <button type="button" className="dc-btn dc-btn-ghost" disabled={saving} onClick={onCancel}>Cancel</button>
+        <button type="button" className={`dc-btn ${isEdit?"dc-btn-update":"dc-btn-primary"}`} disabled={saving} onClick={submit}>
+          {saving?"Saving…":isEdit?"Update finding":"Add finding"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════
+   TOOTH WINDOW — everything recorded on one tooth
+═══════════════════════════════════════════════════════ */
+function ToothModal({tooth,findings,disabled,startEditId,saving,error,escEnabled,onSave,onAskDelete,onClearError,onClose}){
+  // form = null (closed) | "new" | <finding id being edited>
+  const[form,setForm]=useState(()=>startEditId||(findings.length===0&&!disabled?"new":null));
+  const editing=form&&form!=="new"?findings.find(f=>f.id===form):null;
+
+  useEffect(()=>{
+    if(!escEnabled)return undefined;
+    const onKey=e=>{if(e.key==="Escape")onClose();};
+    document.addEventListener("keydown",onKey);
+    return()=>document.removeEventListener("keydown",onKey);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[escEnabled]);
+  // The finding being edited was deleted (here or on another screen): close its form.
+  useEffect(()=>{if(form&&form!=="new"&&!editing)setForm(null);},[form,editing]);
+
+  const open=v=>{onClearError();setForm(v);};
+
+  return inBody(
+    <div className="dc-overlay" onClick={onClose}>
+      <div className="dc-modal" role="dialog" aria-modal="true" aria-labelledby="dc-tooth-title" onClick={e=>e.stopPropagation()}>
+        <div className="dc-modal-top">
+          <div className="dc-modal-badge">{tooth}</div>
+          <div>
+            <div className="dc-modal-title" id="dc-tooth-title">Tooth {tooth}</div>
+            <div className="dc-modal-sub">{toothName(tooth)} · {findings.length===0?"no findings":plural(findings.length,"finding","findings")}</div>
+          </div>
+          <button type="button" className="dc-close-btn" aria-label="Close" onClick={onClose}>✕</button>
+        </div>
+
+        <div className="dc-modal-scroll">
+          <div className="dc-section-title">
+            Findings on this tooth
+            {!disabled&&form===null&&(
+              <button type="button" className="dc-btn dc-btn-primary dc-btn-sm" style={{marginLeft:"auto"}} onClick={()=>open("new")}>
+                + Add finding
+              </button>
+            )}
+          </div>
+
+          {findings.length===0&&form===null&&(
+            <div className="dc-log-empty" style={{padding:"20px 12px"}}>Nothing recorded on this tooth.</div>
+          )}
+
+          {findings.map(f=>(
+            form===f.id
+              ? <FindingForm key={f.id} tooth={tooth} initial={f}
+                  othersOnTooth={findings.filter(o=>o.id!==f.id)}
+                  saving={saving} error={error}
+                  onSubmit={fields=>onSave(tooth,f,fields,()=>setForm(null))}
+                  onCancel={()=>open(null)}/>
+              : <FindingRow key={f.id} f={f} disabled={disabled} busy={saving||form!==null}
+                  onEdit={()=>open(f.id)} onDelete={onAskDelete}/>
+          ))}
+
+          {form==="new"&&(
+            <FindingForm tooth={tooth} initial={null} othersOnTooth={findings}
+              saving={saving} error={error}
+              onSubmit={fields=>onSave(tooth,null,fields,()=>setForm(null))}
+              onCancel={()=>findings.length===0?onClose():open(null)}/>
+          )}
+
+          {form===null&&(
+            <div className="dc-actions" style={{marginTop:16}}>
+              <button type="button" className="dc-btn dc-btn-ghost" onClick={onClose}>Close</button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════
+   QUICK MARK — one condition, many teeth
+═══════════════════════════════════════════════════════ */
+function QuickMarkBar({quick,setQuick,marked,notice,onUndo,onDone}){
+  if(!quick) return null;
+
+  // Step 1: choose the condition
+  if(!quick.condition){
+    return(
+      <div className="dc-panel dc-mode">
+        <div className="dc-mode-row" style={{marginBottom:12}}>
+          <span className="dc-mode-hint"><b>Quick mark</b> — choose a condition, then click every tooth that has it.</span>
+          <button type="button" className="dc-btn dc-btn-ghost dc-btn-sm" style={{marginLeft:"auto"}} onClick={onDone}>Cancel</button>
+        </div>
+        <ConditionPicker value="" autoFocus
+          onPick={c=>setQuick(q=>({...q,condition:c,surfaces:CMAP[c]?.surf?[...CMAP[c].surf]:[]}))}/>
+      </div>
+    );
+  }
+
+  // Step 2: click teeth
+  const isOther=quick.condition==="Other";
+  const cm=resolveColor(quick.condition,isOther?quick.otherColor:null);
+  const label=isOther?(quick.otherText.trim()||"Other"):quick.condition;
+  const ready=!isOther||quick.otherText.trim().length>0;
+
+  return(
+    <div className="dc-panel dc-mode dc-mode-active" style={{"--dc-qm":cm.a}}>
+      <div className="dc-mode-row">
+        <ConditionPill cm={cm} label={label}/>
+        <span className="dc-mode-hint">
+          {ready
+            ? <><b>Click teeth on the chart</b> to mark them. Each click is saved straight away.</>
+            : <>Type a description below, then click teeth.</>}
+        </span>
+        <div style={{marginLeft:"auto",display:"flex",gap:8}}>
+          <button type="button" className="dc-btn dc-btn-ghost dc-btn-sm"
+            onClick={()=>setQuick(q=>({...q,condition:"",surfaces:[]}))}>Change condition</button>
+          <button type="button" className="dc-btn dc-btn-primary dc-btn-sm" onClick={onDone}>Done</button>
+        </div>
+      </div>
+
+      {isOther&&(
+        <OtherFields text={quick.otherText} color={quick.otherColor} autoFocus
+          onText={v=>setQuick(q=>({...q,otherText:v}))} onColor={v=>setQuick(q=>({...q,otherColor:v}))}/>
+      )}
+
+      <div className="dc-opt-grid">
+        <div>
+          <span className="dc-field-label">Surfaces for every tooth you click (optional)</span>
+          <SurfacePicker value={quick.surfaces} centre="O/I" onChange={v=>setQuick(q=>({...q,surfaces:v}))}/>
+        </div>
+        <div>
+          <div className="dc-field-group">
+            <span className="dc-field-label">Severity (optional)</span>
+            <SeverityPicker value={quick.severity} onChange={v=>setQuick(q=>({...q,severity:v}))}/>
+          </div>
+          <label className="dc-field-label" htmlFor="dc-quick-notes">Notes (optional)</label>
+          <input id="dc-quick-notes" className="dc-input" placeholder="Same note for every tooth you click"
+            value={quick.notes} onChange={e=>setQuick(q=>({...q,notes:e.target.value}))}/>
+        </div>
+      </div>
+
+      {marked.length>0&&(
+        <div className="dc-marked" aria-label="Teeth marked just now">
+          <span className="dc-field-label" style={{margin:0}}>Marked just now:</span>
+          {marked.map(m=>(
+            <span key={m.tooth} className="dc-marked-chip">
+              {m.tooth}
+              {m.created&&m.id
+                ? <button type="button" aria-label={`Undo tooth ${m.tooth}`} title="Undo" onClick={()=>onUndo(m)}>✕</button>
+                : <span style={{width:6}}/>}
+            </span>
           ))}
         </div>
       )}
+      {notice&&<div className={`dc-notice dc-notice-${notice.kind}`} role="status">{notice.text}</div>}
+    </div>
+  );
+}
 
-      {filtered.length===0?(
+/* ═══════════════════════════════════════════════════════
+   FINDINGS LOG — by condition or by tooth
+═══════════════════════════════════════════════════════ */
+function FindingsLog({findings,disabled,busy,onEdit,onDelete,onOpenTooth,onQuick}){
+  const[view,setView]=useState("condition");
+  const teethCount=new Set(findings.map(f=>f.tooth_number)).size;
+
+  const groups=[];
+  const index={};
+  findings.forEach(f=>{
+    const key=view==="condition"?f._label.toLowerCase():String(f.tooth_number);
+    if(index[key]===undefined){index[key]=groups.length;groups.push({key,rows:[]});}
+    groups[index[key]].rows.push(f);
+  });
+  if(view==="tooth") groups.sort((a,b)=>Number(a.key)-Number(b.key));
+  else groups.sort((a,b)=>byName(a.rows[0]._label,b.rows[0]._label));   // conditions A–Z
+  groups.forEach(g=>g.rows.sort((a,b)=>view==="condition"?a.tooth_number-b.tooth_number:a._rank-b._rank));
+
+  return(
+    <div className="dc-panel" style={{marginBottom:0}}>
+      <div className="dc-log-head">
+        <span aria-hidden="true">📋</span>
+        <span className="dc-log-title">Findings Log</span>
+        <span className="dc-count-badge">{findings.length}</span>
+        <span style={{fontSize:11.5,color:"var(--dc-text3)",fontWeight:500}}>
+          {findings.length===0?"":`${plural(findings.length,"finding","findings")} on ${plural(teethCount,"tooth","teeth")}`}
+        </span>
+        <div className="dc-tab-group" style={{marginLeft:"auto"}} role="group" aria-label="Group the log">
+          {[["condition","By condition"],["tooth","By tooth"]].map(([k,l])=>(
+            <button key={k} type="button" className={`dc-tab${view===k?" active":""}`} aria-pressed={view===k}
+              style={{padding:"5px 12px",fontSize:11.5}} onClick={()=>setView(k)}>{l}</button>
+          ))}
+        </div>
+      </div>
+
+      {groups.length===0?(
         <div className="dc-log-empty">
-          <div style={{fontSize:24,marginBottom:8}}>🦷</div>
-          No conditions recorded yet.<br/>Click on any tooth to start.
+          <div style={{fontSize:24,marginBottom:6}} aria-hidden="true">🦷</div>
+          No findings recorded yet.{!disabled&&<><br/>Click a tooth on the chart to start.</>}
         </div>
       ):(
-        <div>
-          {/* Column headers */}
-          <div className="dc-log-table-head">
-            <span className="dc-log-th">Tooth</span>
-            <span className="dc-log-th">Condition</span>
-            <span className="dc-log-th">Notes</span>
-            <span className="dc-log-th">Surfaces</span>
-            <span className="dc-log-th">Date</span>
-            {!disabled&&<span className="dc-log-th" style={{textAlign:"right"}}>Actions</span>}
-          </div>
-
-          {filtered.map((r,idx)=>{
-            const cm=r.custom_color?colorEntryFromHex(r.custom_color):(CMAP[r.condition]||CMAP["Other"]);
-            const isOther=r.condition==="Other";
-            // For "Other": show the custom text as the label; pill still uses condition color
-            const condLabel=isOther&&r.other_text?r.other_text:r.condition;
-            const emoji=isOther?"📋":(CMAP[r.condition]?.emoji||"");
-            const sv=sevStyle(r.severity);
-            return(
-              <div key={r.id||r.tooth_number} className="dc-log-row">
-
-                {/* ── Col 1: Tooth badge ── */}
-                <div className="dc-log-num"
-                  style={{background:cm.hi,border:`1.5px solid ${cm.a}55`,color:cm.dark}}>
-                  {r.tooth_number}
+        <div className="dc-log-body">
+          {groups.map(g=>{
+            const first=g.rows[0];
+            if(view==="condition"){
+              const cm=first._cm;
+              return(
+                <div key={g.key} className="dc-gcard" style={{borderColor:hexToRgbaSafe(cm.a,.28)}}>
+                  <div className="dc-gcard-head">
+                    <ConditionPill cm={cm} label={first._label}/>
+                    <span className="dc-gcard-teeth">Teeth: <b style={{color:cm.dark}}>{g.rows.map(r=>r.tooth_number).join(", ")}</b></span>
+                    {!disabled&&first.condition!=="Other"&&CMAP[first.condition]&&(
+                      <button type="button" className="dc-btn dc-btn-ghost dc-btn-sm" style={{marginLeft:"auto"}}
+                        onClick={()=>onQuick(first.condition)}>+ Mark more teeth</button>
+                    )}
+                  </div>
+                  {g.rows.map(f=>(
+                    <FindingRow key={f.id} f={f} showTooth disabled={disabled} busy={busy}
+                      onEdit={onEdit} onDelete={onDelete} onOpenTooth={onOpenTooth}/>
+                  ))}
                 </div>
-
-                {/* ── Col 2: Condition pill + severity tag ── */}
-                <div style={{display:"flex",flexDirection:"column",gap:3,minWidth:0}}>
-                  <span className="dc-log-cond-pill"
-                    style={{background:cm.a,color:"#fff",boxShadow:`0 2px 8px ${cm.a}44`}}
-                    onClick={()=>!disabled&&onEdit(r.tooth_number)}
-                    title={isOther&&r.other_text?`Other: ${r.other_text}`:r.condition}>
-                    {emoji} {condLabel}
-                  </span>
-                  {sv&&(
-                    <span className="dc-sev-tag"
-                      style={{background:sv.bg,color:sv.col,border:`1px solid ${sv.bdr}`,
-                        alignSelf:"flex-start"}}>
-                      {r.severity.toUpperCase()}
-                    </span>
+              );
+            }
+            return(
+              <div key={g.key} className="dc-gcard">
+                <div className="dc-gcard-head">
+                  <button type="button" className="dc-tooth-badge" style={{borderColor:"#bcd0fb",color:"var(--dc-accent)",background:"var(--dc-accent-soft)"}}
+                    onClick={()=>onOpenTooth(first.tooth_number)}>{first.tooth_number}</button>
+                  <span className="dc-gcard-teeth">{toothName(first.tooth_number)}</span>
+                  {!disabled&&(
+                    <button type="button" className="dc-btn dc-btn-ghost dc-btn-sm" style={{marginLeft:"auto"}}
+                      onClick={()=>onOpenTooth(first.tooth_number,"new")}>+ Add finding</button>
                   )}
                 </div>
-
-                {/* ── Col 3: Notes (italic, truncated) ── */}
-                <div className="dc-log-notes-cell">
-                  {r.notes
-                    ? <span title={r.notes}>{r.notes}</span>
-                    : <span style={{color:"var(--dc-text3)",fontStyle:"normal",fontSize:11}}>—</span>
-                  }
-                </div>
-
-                {/* ── Col 4: Surfaces ── */}
-                <div>
-                  {r.surface
-                    ? <span className="dc-log-surf">{r.surface}</span>
-                    : <span style={{color:"var(--dc-text3)",fontSize:11}}>—</span>
-                  }
-                </div>
-
-                {/* ── Col 5: Date ── */}
-                <span className="dc-log-date">{formatDate(r.created_at||r.updated_at)}</span>
-
-                {/* ── Col 6: Actions ── */}
-                {!disabled&&(
-                  <div className="dc-log-actions">
-                    <button className="dc-edit-btn" title="Edit condition"
-                      onClick={()=>onEdit(r.tooth_number)}>✏️</button>
-                    <button className="dc-del-btn" title={`Delete tooth #${r.tooth_number}`}
-                      disabled={deleting}
-                      onClick={()=>{
-                        if(window.confirm(`Remove condition from Tooth #${r.tooth_number}?`))
-                          onDelete(r.id,r.tooth_number);
-                      }}>🗑</button>
-                  </div>
-                )}
+                {g.rows.map(f=>(
+                  <FindingRow key={f.id} f={f} disabled={disabled} busy={busy} onEdit={onEdit} onDelete={onDelete}/>
+                ))}
               </div>
             );
           })}
@@ -1390,835 +1259,334 @@ function ConditionsLog({records,chartType,disabled,onEdit,onDelete,deleting}){
   );
 }
 
-
-/* ═══════════════════════════════════════════════════════
-   ADD CONDITION MODAL — pick tooth + condition directly
-═══════════════════════════════════════════════════════ */
-function AddConditionModal({ chartType, onSave, onClose, saving }) {
-  const PERM_NUMS = [
-    11,12,13,14,15,16,17,18,
-    21,22,23,24,25,26,27,28,
-    31,32,33,34,35,36,37,38,
-    41,42,43,44,45,46,47,48,
-  ];
-  const DEC_NUMS = [51,52,53,54,55,61,62,63,64,65,71,72,73,74,75,81,82,83,84,85];
-  const nums = chartType === "deciduous" ? DEC_NUMS : PERM_NUMS;
-
-  const [selectedTeeth, setSelectedTeeth] = useState(new Set());
-  const [condition,     setCondition]     = useState("");
-  const [severity,      setSeverity]      = useState("");
-  const [surfaces,      setSurfaces]      = useState([]);
-  const [notes,         setNotes]         = useState("");
-  const [otherText,     setOtherText]     = useState("");
-  const [otherColor,    setOtherColor]    = useState(OTHER_PALETTE[8]);
-
-  const toggle = n => setSelectedTeeth(p => {
-    const s = new Set(p); s.has(n) ? s.delete(n) : s.add(n); return s;
-  });
-  const isOther = condition === "Other";
-  const cm = condition ? resolveColor(condition, isOther ? otherColor : null) : null;
-  const canSave = condition && selectedTeeth.size > 0 && (!isOther || otherText.trim());
-
-  // Group teeth by row of 8 for display
-  const rows = [];
-  for (let i = 0; i < nums.length; i += 8) rows.push(nums.slice(i, i + 8));
-
-  return (
-    <div className="dc-overlay" onClick={onClose}>
-      <div className="dc-modal" style={{ maxWidth: 560 }} onClick={e => e.stopPropagation()}>
-
-        {/* Header */}
-        <div className="dc-modal-top">
-          <div className="dc-modal-head-row">
-            <div className="dc-modal-badge"
-              style={{ background: cm ? cm.a : "#e2e8f0", border: `2px solid ${cm ? cm.dark : "#cbd5e1"}`, color: "#fff" }}>
-              🦷
-            </div>
-            <div>
-              <div className="dc-modal-title">Add Condition</div>
-              <div className="dc-modal-sub">Select teeth, then pick a condition</div>
-            </div>
-            <button className="dc-close-btn" onClick={onClose}>✕</button>
-          </div>
-        </div>
-
-        <div className="dc-modal-scroll">
-
-          {/* Step 1 — Teeth picker */}
-          <div className="dc-field-group">
-            <label className="dc-field-label">Step 1 — Select Teeth</label>
-            <div style={{ background: "var(--dc-surface2)", border: "1.5px solid var(--dc-border)", borderRadius: 10, padding: "10px 12px", marginBottom: 8 }}>
-              {rows.map((row, ri) => (
-                <div key={ri} style={{ display: "flex", gap: 5, marginBottom: ri < rows.length - 1 ? 6 : 0, flexWrap: "wrap" }}>
-                  {row.map(n => (
-                    <button key={n}
-                      onClick={() => toggle(n)}
-                      style={{
-                        width: 36, height: 36, borderRadius: 8,
-                        border: selectedTeeth.has(n) ? `2px solid ${cm ? cm.dark : "#1a56db"}` : "1.5px solid var(--dc-border)",
-                        background: selectedTeeth.has(n) ? (cm ? cm.a : "#1a56db") : "var(--dc-surface)",
-                        color: selectedTeeth.has(n) ? "#fff" : "var(--dc-text2)",
-                        fontSize: 11, fontWeight: 700, cursor: "pointer",
-                        fontFamily: "'DM Mono',monospace",
-                        transition: "all .12s",
-                        transform: selectedTeeth.has(n) ? "scale(1.12)" : "scale(1)",
-                      }}>
-                      {n}
-                    </button>
-                  ))}
-                </div>
-              ))}
-            </div>
-            {selectedTeeth.size > 0 && (
-              <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 10px", background: cm ? `${cm.a}12` : "var(--dc-accent-soft)", border: `1px solid ${cm ? cm.a + "44" : "#93c5fd"}`, borderRadius: 7 }}>
-                <span style={{ fontSize: 11, fontWeight: 700, color: cm ? cm.dark : "var(--dc-accent)" }}>Selected IRT:</span>
-                <span style={{ fontFamily: "'DM Mono',monospace", fontWeight: 700, color: cm ? cm.dark : "var(--dc-accent)", fontSize: 12 }}>
-                  {[...selectedTeeth].sort((a, b) => a - b).join(", ")}
-                </span>
-                <button onClick={() => setSelectedTeeth(new Set())} style={{ marginLeft: "auto", border: "none", background: "none", color: "#ef4444", cursor: "pointer", fontSize: 11, fontWeight: 600 }}>✕ Clear</button>
-              </div>
-            )}
-          </div>
-
-          <hr className="dc-divider" />
-
-          {/* Step 2 — Condition */}
-          <div className="dc-field-group">
-            <label className="dc-field-label">Step 2 — Choose Condition</label>
-            <div className="dc-cond-grid">
-              {CONDITIONS.map(c => {
-                const cm2 = CMAP[c];
-                const sel = condition === c;
-                return (
-                  <button key={c} className={`dc-cond-btn${sel ? " active" : ""}`}
-                    style={sel ? { background: cm2.a, color: "#fff", borderColor: cm2.dark } : { borderColor: `${cm2.a}33`, color: cm2.dark }}
-                    onClick={() => setCondition(c === condition ? "" : c)}>
-                    <span className="dc-cond-dot" style={{ background: cm2.a, boxShadow: sel ? "0 0 0 2px rgba(255,255,255,.4)" : "" }} />
-                    <span style={{ fontSize: 11.5 }}>{cm2.emoji}</span>
-                    {c}
-                  </button>
-                );
-              })}
-            </div>
-            {isOther && (
-              <div className="dc-other-panel">
-                <label className="dc-field-label" style={{ color: "#6366f1" }}>Custom description</label>
-                <textarea className="dc-other-ta" placeholder="e.g. Erosion, Fluorosis…"
-                  value={otherText} onChange={e => setOtherText(e.target.value)} />
-                <div className="dc-palette">
-                  {OTHER_PALETTE.map(hex => (
-                    <div key={hex} className={`dc-pdot${otherColor === hex ? " sel" : ""}`}
-                      style={{ background: hex, borderColor: otherColor === hex ? "#0f172a" : "transparent" }}
-                      onClick={() => setOtherColor(hex)} />
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-
-          {condition && (
-            <>
-              <hr className="dc-divider" />
-              {/* Severity */}
-              <div className="dc-field-group">
-                <label className="dc-field-label">Severity (optional)</label>
-                <div className="dc-severity-row">
-                  {SEVERITY_LEVELS.map(sv => (
-                    <button key={sv.key} className={`dc-sev-btn ${sv.cls}${severity === sv.key ? " active" : ""}`}
-                      onClick={() => setSeverity(p => p === sv.key ? "" : sv.key)}>
-                      {sv.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Surfaces */}
-              <div className="dc-field-group">
-                <label className="dc-field-label">Surfaces (optional)</label>
-                <div className="dc-surface-map">
-                  {SURFACES.map(s => (
-                    <div key={s} className="dc-tooltip-wrap">
-                      <button className={`dc-surf-key${surfaces.includes(s) ? " on" : ""}`}
-                        onClick={() => setSurfaces(p => p.includes(s) ? p.filter(x => x !== s) : [...p, s])}>
-                        {s}
-                      </button>
-                      <span className="dc-tooltip-content">{SURF_FULL[s]}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Notes */}
-              <div className="dc-field-group">
-                <label className="dc-field-label">Clinical Notes (optional)</label>
-                <textarea className="dc-notes-ta" placeholder="Observations…"
-                  value={notes} onChange={e => setNotes(e.target.value)} />
-              </div>
-            </>
-          )}
-
-          {/* Actions */}
-          <div className="dc-actions">
-            <button className="dc-btn-ghost" onClick={onClose}>Cancel</button>
-            <button className="dc-btn-primary" disabled={!canSave || saving}
-              onClick={() => onSave({
-                teeth: [...selectedTeeth].sort((a, b) => a - b),
-                condition, severity,
-                surface: surfaces.join(","),
-                notes,
-                other_text: isOther ? otherText : "",
-                custom_color: isOther ? otherColor : "",
-              })}>
-              {saving ? "Saving…" : `✔ Add ${selectedTeeth.size > 1 ? selectedTeeth.size + " teeth" : "condition"}`}
-            </button>
-          </div>
-
-        </div>
-      </div>
-    </div>
-  );
-}
-
 /* ═══════════════════════════════════════════════════════
    MAIN EXPORT
 ═══════════════════════════════════════════════════════ */
-/* ═══════════════════════════════════════════════════════
-   GROUPED CONDITIONS LOG (new format)
-═══════════════════════════════════════════════════════ */
-function GroupedConditionsLog({records,chartType,disabled,onEditGroup,onDeleteTooth,deleting,onAdd}){
-  const affected=records.filter(r=>{
-    const n=r.tooth_number;
-    return chartType==="permanent"?(n>=11&&n<=48):(n>=51&&n<=85);
-  });
+const EMPTY_QUICK = () => ({ condition:"", severity:"", surfaces:[], notes:"", otherText:"", otherColor:OTHER_PALETTE[8] });
 
-  // Group by condition
-  const groups={};
-  affected.forEach(r=>{
-    const key=r.condition==="Other"&&r.other_text?r.other_text:r.condition;
-    if(!groups[key])groups[key]={condition:r.condition,label:key,rows:[]};
-    groups[key].rows.push(r);
-  });
-
-  const formatDate=d=>{
-    try{return new Date(d||Date.now()).toLocaleDateString("en-GB",{day:"2-digit",month:"short",year:"numeric"});}
-    catch{return "Today";}
-  };
-
-  if(!Object.keys(groups).length) return(
-    <div className="dc-log-panel">
-      <div className="dc-log-head">
-        <span style={{fontSize:14,marginRight:2}}>📋</span>
-        <span className="dc-log-title">Conditions Log</span>
-        <span className="dc-count-badge" style={{background:"#fee2e2",color:"#b91c1c",border:"1px solid #fecaca"}}>0</span>
-        {!disabled&&(
-          <button onClick={onAdd}
-            style={{marginLeft:"auto",padding:"5px 13px",borderRadius:8,
-              background:"linear-gradient(135deg,#1a56db,#2e70f0)",color:"#fff",border:"none",
-              fontSize:12,fontWeight:700,cursor:"pointer",display:"flex",alignItems:"center",gap:5,
-              fontFamily:"var(--dc-font)",boxShadow:"0 2px 8px rgba(26,86,219,.28)"}}>
-            + Add Condition
-          </button>
-        )}
-      </div>
-      <div className="dc-log-empty"><div style={{fontSize:24,marginBottom:8}}>🦷</div>No conditions recorded yet. Click "+ Add Condition" to start.</div>
-    </div>
-  );
-
-  return(
-    <div className="dc-log-panel">
-      <div className="dc-log-head">
-        <span style={{fontSize:14,marginRight:2}}>📋</span>
-        <span className="dc-log-title">Conditions Log</span>
-        <span className="dc-count-badge" style={{background:"#fee2e2",color:"#b91c1c",border:"1px solid #fecaca"}}>
-          {affected.length}
-        </span>
-        <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:10}}>
-          <span style={{fontSize:11,color:"var(--dc-text3)",fontWeight:500}}>
-            {affected.length} tooth{affected.length!==1?"s":""} marked
-          </span>
-          {!disabled&&(
-            <button
-              onClick={onAdd}
-              style={{
-                padding:"5px 13px",borderRadius:8,
-                background:"linear-gradient(135deg,#1a56db,#2e70f0)",
-                color:"#fff",border:"none",fontSize:12,fontWeight:700,
-                cursor:"pointer",display:"flex",alignItems:"center",gap:5,
-                fontFamily:"var(--dc-font)",
-                boxShadow:"0 2px 8px rgba(26,86,219,.28)",
-                transition:"all .14s",
-              }}>
-              + Add Condition
-            </button>
-          )}
-        </div>
-      </div>
-
-      <div style={{display:"flex",flexDirection:"column",gap:10,padding:"4px 0"}}>
-        {Object.values(groups).map(({condition,label,rows})=>{
-          const cm=CMAP[condition]||CMAP["Other"];
-          const emoji=cm.emoji||"📋";
-          const sortedRows=[...rows].sort((a,b)=>a.tooth_number-b.tooth_number);
-          return(
-            <div key={label} style={{
-              background:"#fff",border:`1.5px solid ${cm.a}33`,borderRadius:12,
-              padding:"12px 14px",boxShadow:`0 1px 4px ${cm.a}14`}}>
-              {/* Group header */}
-              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
-                <span style={{
-                  display:"inline-flex",alignItems:"center",gap:5,
-                  padding:"4px 12px",borderRadius:20,background:cm.a,color:"#fff",
-                  fontSize:12,fontWeight:700,boxShadow:`0 2px 8px ${cm.a}44`}}>
-                  {emoji} {label}
-                </span>
-                <span style={{fontSize:11,color:"var(--dc-text3)"}}>
-                  IRT:&nbsp;
-                  <span style={{fontFamily:"'DM Mono',monospace",fontWeight:600,color:cm.dark}}>
-                    {sortedRows.map(r=>r.tooth_number).join(", ")}
-                  </span>
-                </span>
-                {!disabled&&(
-                  <button
-                    title={`Edit all ${label} teeth`}
-                    onClick={()=>onEditGroup(condition,sortedRows)}
-                    style={{marginLeft:"auto",padding:"4px 10px",borderRadius:7,border:`1.5px solid ${cm.a}55`,
-                      background:cm.hi,color:cm.dark,fontSize:11,fontWeight:600,cursor:"pointer",
-                      fontFamily:"var(--dc-font)",transition:"all .12s"}}>
-                    ✏️ Edit
-                  </button>
-                )}
-              </div>
-
-              {/* Each tooth row */}
-              <div style={{display:"flex",flexDirection:"column",gap:6}}>
-                {sortedRows.map(r=>(
-                  <div key={r.id||r.tooth_number} style={{
-                    display:"flex",alignItems:"center",gap:8,
-                    padding:"6px 10px",borderRadius:8,
-                    background:"var(--dc-surface2)",border:"1px solid var(--dc-border)"}}>
-                    {/* Tooth badge */}
-                    <div style={{
-                      width:32,height:32,borderRadius:8,flexShrink:0,
-                      background:cm.hi,border:`1.5px solid ${cm.a}55`,
-                      display:"flex",alignItems:"center",justifyContent:"center",
-                      fontFamily:"'DM Mono',monospace",fontWeight:700,fontSize:12,color:cm.dark}}>
-                      {r.tooth_number}
-                    </div>
-                    {/* Notes / surfaces */}
-                    <div style={{flex:1,minWidth:0}}>
-                      {r.notes&&<div style={{fontSize:11.5,color:"var(--dc-text2)",fontStyle:"italic",lineHeight:1.4}}>"{r.notes}"</div>}
-                      {r.surface&&<div style={{fontSize:10,color:"var(--dc-text3)",marginTop:2,fontFamily:"'DM Mono',monospace"}}>Surfaces: {r.surface}</div>}
-                      {!r.notes&&!r.surface&&<div style={{fontSize:11,color:"var(--dc-text3)"}}>—</div>}
-                    </div>
-                    {/* Date */}
-                    <span style={{fontSize:11,color:"var(--dc-text3)",fontFamily:"'DM Mono',monospace",whiteSpace:"nowrap"}}>
-                      {formatDate(r.created_at||r.updated_at)}
-                    </span>
-                    {/* Per-tooth edit & delete */}
-                    {!disabled&&(
-                      <div style={{display:"flex",gap:4,flexShrink:0}}>
-                        <button className="dc-edit-btn" title={`Edit tooth #${r.tooth_number}`}
-                          onClick={()=>onEditGroup(condition,[r])}>✏️</button>
-                        <button className="dc-del-btn" title={`Delete tooth #${r.tooth_number}`}
-                          disabled={deleting}
-                          onClick={()=>onDeleteTooth(r.id,r.tooth_number,label)}>🗑</button>
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-/* ═══════════════════════════════════════════════════════
-   CONDITION SELECTOR PANEL (select condition first)
-═══════════════════════════════════════════════════════ */
-function ConditionSelectorPanel({activeCondition,onSelect,onClear,selectedTeeth,onClearTeeth}){
-  const [otherText,setOtherText]=useState("");
-  const [otherColor,setOtherColor]=useState(OTHER_PALETTE[8]);
-  const [severity,setSeverity]=useState("");
-  const [surfaces,setSurfaces]=useState([]);
-  const [notes,setNotes]=useState("");
-
-  // Reset extras when condition changes
-  useEffect(()=>{setSeverity("");setSurfaces([]);setNotes("");},[activeCondition]);
-
-  const togSurf=s=>setSurfaces(p=>p.includes(s)?p.filter(x=>x!==s):[...p,s]);
-  const isOther=activeCondition==="Other";
-  const cm=activeCondition?resolveColor(activeCondition,isOther?otherColor:null):null;
-
-  return(
-    <div style={{
-      background:"#fff",border:"1.5px solid var(--dc-border)",borderRadius:14,
-      padding:"16px 18px",marginBottom:14,boxShadow:"var(--dc-shadow)"}}>
-
-      <div style={{fontSize:12,fontWeight:700,color:"var(--dc-text3)",textTransform:"uppercase",
-        letterSpacing:".7px",marginBottom:12}}>
-        Step 1 — Select Condition
-      </div>
-
-      {/* Condition grid */}
-      <div className="dc-cond-grid" style={{marginBottom:12}}>
-        {CONDITIONS.map(c=>{
-          const cm2=CMAP[c];
-          const sel=activeCondition===c;
-          return(
-            <button key={c} className={`dc-cond-btn${sel?" active":""}`}
-              style={sel?{background:cm2.a,color:"#fff",borderColor:cm2.dark}:
-                {borderColor:`${cm2.a}33`,color:cm2.dark}}
-              onClick={()=>onSelect(c===activeCondition?null:c,{otherText,otherColor,severity,surfaces,notes})}>
-              <span className="dc-cond-dot" style={{background:cm2.a,boxShadow:sel?"0 0 0 2px rgba(255,255,255,.4)":""}}/>
-              <span style={{fontSize:11.5}}>{cm2.emoji}</span>
-              {c}
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Other custom */}
-      {isOther&&(
-        <div className="dc-other-panel" style={{marginBottom:10}}>
-          <label className="dc-field-label" style={{color:"#6366f1"}}>Custom description</label>
-          <textarea className="dc-other-ta" placeholder="e.g. Fracture, Erosion…"
-            value={otherText} onChange={e=>{setOtherText(e.target.value);onSelect("Other",{otherText:e.target.value,otherColor,severity,surfaces,notes});}}/>
-          <div className="dc-palette">
-            {OTHER_PALETTE.map(hex=>(
-              <div key={hex} className={`dc-pdot${otherColor===hex?" sel":""}`}
-                style={{background:hex,borderColor:otherColor===hex?"#0f172a":"transparent"}}
-                onClick={()=>{setOtherColor(hex);onSelect("Other",{otherText,otherColor:hex,severity,surfaces,notes});}}/>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {activeCondition&&(
-        <>
-          {/* Severity */}
-          <div style={{marginBottom:10}}>
-            <div className="dc-field-label">Severity (optional)</div>
-            <div className="dc-severity-row">
-              {SEVERITY_LEVELS.map(sv=>(
-                <button key={sv.key} className={`dc-sev-btn ${sv.cls}${severity===sv.key?" active":""}`}
-                  onClick={()=>setSeverity(p=>p===sv.key?"":sv.key)}>
-                  {sv.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Surfaces */}
-          <div style={{marginBottom:10}}>
-            <div className="dc-field-label">Surfaces (optional)</div>
-            <div className="dc-surface-map">
-              {SURFACES.map(s=>(
-                <div key={s} className="dc-tooltip-wrap">
-                  <button className={`dc-surf-key${surfaces.includes(s)?" on":""}`} onClick={()=>togSurf(s)}>{s}</button>
-                  <span className="dc-tooltip-content">{SURF_FULL[s]}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Notes */}
-          <div style={{marginBottom:10}}>
-            <div className="dc-field-label">Notes (optional)</div>
-            <textarea className="dc-notes-ta" placeholder="Clinical observations…"
-              value={notes} onChange={e=>setNotes(e.target.value)}/>
-          </div>
-        </>
-      )}
-
-      {/* Step 2 instruction */}
-      <div style={{
-        marginTop:8,padding:"10px 14px",borderRadius:9,
-        background:activeCondition?(cm?`${cm.a}10`:"#f0fdf4"):"#f8fafc",
-        border:`1.5px dashed ${activeCondition&&cm?cm.a:"#cbd5e1"}`,
-        fontSize:12,color:activeCondition&&cm?cm.dark:"#94a3b8",fontWeight:500}}>
-        {activeCondition?(
-          <>
-            <span style={{fontWeight:700}}>Step 2 — Click teeth on the chart</span> to mark as{" "}
-            <span style={{fontWeight:700}}>{activeCondition}</span>
-            {selectedTeeth.length>0&&(
-              <span style={{marginLeft:8}}>
-                ·{" "}
-                <span style={{fontFamily:"'DM Mono',monospace",fontWeight:700,color:cm?.dark}}>
-                  {selectedTeeth.sort((a,b)=>a-b).join(", ")}
-                </span>
-                {" "}selected
-                <button onClick={onClearTeeth} style={{marginLeft:6,border:"none",background:"none",
-                  color:"#ef4444",cursor:"pointer",fontSize:11,fontWeight:600}}>✕ Clear</button>
-              </span>
-            )}
-          </>
-        ):"Select a condition above, then click teeth on the chart"}
-      </div>
-
-      {/* Extras state exposed via ref-style callback */}
-      <input type="hidden" id="dc-extras"
-        value={JSON.stringify({severity,surfaces,notes,otherText,otherColor})}/>
-    </div>
-  );
-}
-
-/* ═══════════════════════════════════════════════════════
-   EDIT MODE OVERLAY (highlight teeth of a condition)
-═══════════════════════════════════════════════════════ */
-function EditModeBar({condition,rows,onClose}){
-  const cm=CMAP[condition]||CMAP["Other"];
-  const nums=rows.map(r=>r.tooth_number).sort((a,b)=>a-b);
-  return(
-    <div style={{
-      background:`${cm.a}14`,border:`2px solid ${cm.a}55`,borderRadius:12,
-      padding:"10px 16px",marginBottom:12,display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
-      <span style={{
-        padding:"3px 12px",borderRadius:20,background:cm.a,color:"#fff",
-        fontSize:12,fontWeight:700}}>
-        {cm.emoji} {condition}
-      </span>
-      <span style={{fontSize:12,color:cm.dark,fontWeight:600}}>
-        Click a highlighted tooth to change its condition
-      </span>
-      <span style={{fontSize:11,color:"var(--dc-text3)",fontFamily:"'DM Mono',monospace"}}>
-        Teeth: {nums.join(", ")}
-      </span>
-      <button onClick={onClose} style={{marginLeft:"auto",padding:"4px 12px",borderRadius:7,
-        border:"1.5px solid var(--dc-border)",background:"#fff",fontSize:11,fontWeight:600,
-        cursor:"pointer",color:"var(--dc-text2)"}}>
-        ✕ Exit edit mode
-      </button>
-    </div>
-  );
-}
-
-/* ═══════════════════════════════════════════════════════
-   MAIN EXPORT
-═══════════════════════════════════════════════════════ */
 export default function DentalChart({visitId,disabled=false,onRecordsChange,externalRecords}){
-  const[records,setRecords]=useState([]);
+  const[records,setRecords]=useState([]);            // rows exactly as the server sent them
   const[chartType,setChartType]=useState("permanent");
   const[saving,setSaving]=useState(false);
   const[deleting,setDeleting]=useState(false);
+  const[loadError,setLoadError]=useState("");
 
-  // Condition-first selection state
-  const[activeCondition,setActiveCondition]=useState(null);
-  const[condExtras,setCondExtras]=useState({severity:"",surfaces:[],notes:"",otherText:"",otherColor:OTHER_PALETTE[8]});
-  const[pendingTeeth,setPendingTeeth]=useState(new Set());
+  // Tooth window
+  const[modal,setModal]=useState(null);              // { tooth, startEditId? }
+  const[modalError,setModalError]=useState("");
 
-  // Edit mode: highlight a condition's teeth
-  const[editMode,setEditMode]=useState(null); // {condition, rows:[]}
-  const[editModalTooth,setEditModalTooth]=useState(null);
+  // Quick mark
+  const[quick,setQuick]=useState(null);              // null = off
+  const[marked,setMarked]=useState([]);              // [{ tooth, id, created }]
+  const[notice,setNotice]=useState(null);            // { kind, text }
 
-  // Add modal (direct add from conditions log)
-  const[showAddModal,setShowAddModal]=useState(false);
+  const[confirm,setConfirm]=useState(null);          // finding waiting for delete confirmation
+  const[focus,setFocus]=useState("");                // legend filter (lower-case label)
+  const[oldServer,setOldServer]=useState(false);     // backend still replaces instead of adding
 
-  // When the doctor moves to a different visit (e.g. a brand-new visit was
-  // just created for the patient), reset every piece of visual chart state
-  // right away instead of waiting for the fetch to resolve. Without this,
-  // the previous visit's colored teeth can stay on screen for a moment
-  // (or, on a slow network, persist while the doctor starts clicking teeth)
-  // even though they belong to a different visit_id.
-  //
-  // This never deletes or touches anything in the database — DentalChart
-  // rows are already stored per visit_id, so a new visit's records were
-  // always empty on the server. This fix only makes sure the UI reflects
-  // that immediately, while every past visit's treatment data stays intact
-  // and fully visible from its own visit / the patient's complete history.
+  const loadSeq=useRef(0);
+  const noticeTimer=useRef(null);
+  const onRecordsChangeRef=useRef(onRecordsChange);
+  onRecordsChangeRef.current=onRecordsChange;
+
+  const publish=data=>{setRecords(data);if(onRecordsChangeRef.current)onRecordsChangeRef.current(data);};
+
+  // When the doctor moves to a different visit, reset every piece of chart
+  // state right away instead of waiting for the fetch, so the previous
+  // visit's teeth never stay on screen. Nothing is deleted in the database:
+  // chart rows are stored per visit.
   useEffect(()=>{
     setRecords([]);
-    setActiveCondition(null);
-    setCondExtras({severity:"",surfaces:[],notes:"",otherText:"",otherColor:OTHER_PALETTE[8]});
-    setPendingTeeth(new Set());
-    setEditMode(null);
-    setEditModalTooth(null);
-    setShowAddModal(false);
-    if(onRecordsChange)onRecordsChange([]);
+    setModal(null);setModalError("");
+    setQuick(null);setMarked([]);setNotice(null);
+    setConfirm(null);setFocus("");setLoadError("");
+    if(onRecordsChangeRef.current)onRecordsChangeRef.current([]);
 
     injectStyles();
     if(visitId)load();
+    return()=>{clearTimeout(noticeTimer.current);};
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[visitId]);
 
   const load=async()=>{
+    const seq=++loadSeq.current;
     try{
       const r=await api.get(`/visits/${visitId}/dental-chart`);
-      const data=r.data||[];
-      setRecords(data);
-      if(onRecordsChange)onRecordsChange(data);
-    }catch(e){console.error(e);}
+      const data=Array.isArray(r.data)?r.data:[];
+      if(seq===loadSeq.current){publish(data);setLoadError("");}   // ignore answers that arrive out of order
+      return data;
+    }catch(e){
+      console.error(e);
+      if(seq===loadSeq.current)setLoadError("Could not load the dental chart. Check the connection and reopen the visit.");
+      return null;
+    }
   };
 
-  // Keep this chart in sync with records that were added/edited/deleted from
-  // *outside* it — most importantly, the Diagnosis panel's "+ Add" flow, which
-  // writes real records via VisitPage rather than through this component's own
-  // handlers. Compares content (not reference) so this component's own writes —
-  // which already set both `records` and the lifted state to the same array —
-  // don't bounce back and cause an extra render.
+  // Keep this chart in step with records that were added/edited/deleted from
+  // outside it — most importantly the Diagnosis panel's "+ Add", which writes
+  // records through VisitPage. Compares content, not reference.
   useEffect(()=>{
     if(externalRecords===undefined)return;
-    setRecords(prev=>{
-      const prevJSON=JSON.stringify(prev);
-      const extJSON=JSON.stringify(externalRecords);
-      return prevJSON===extJSON?prev:externalRecords;
-    });
+    setRecords(prev=>JSON.stringify(prev)===JSON.stringify(externalRecords)?prev:externalRecords);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[JSON.stringify(externalRecords)]);
 
-  const getRecord=n=>records.find(r=>r.tooth_number===n)||null;
+  const all=useMemo(()=>normalize(records),[records]);
+  const findings=useMemo(()=>all.filter(f=>inChart(f.tooth_number,chartType)),[all,chartType]);
+  const findingsOf=n=>all.filter(f=>f.tooth_number===n);
 
-  // When a condition is selected in the panel
-  const handleConditionSelect=(cond,extras)=>{
-    setActiveCondition(cond);
-    setCondExtras(extras||{severity:"",surfaces:[],notes:"",otherText:"",otherColor:OTHER_PALETTE[8]});
-    setPendingTeeth(new Set());
-    setEditMode(null);
+  const say=(kind,text)=>{
+    setNotice({kind,text});
+    clearTimeout(noticeTimer.current);
+    noticeTimer.current=setTimeout(()=>setNotice(null),4500);
+  };
+  const errorText=(e,fallback)=>e?.response?.data?.error||fallback;
+
+  /* After adding a finding: if the tooth's earlier findings vanished, the
+     backend is still the old one that keeps a single entry per tooth. */
+  const checkServerKeptOthers=(before,fresh,tooth)=>{
+    if(!fresh||before.length===0)return;
+    const now=normalize(fresh).filter(f=>f.tooth_number===tooth);
+    if(before.some(b=>!now.some(n=>n.id===b.id&&sameFinding(n,b.condition,b.other_text))))setOldServer(true);
   };
 
-  // Clicking a tooth on the chart
-  const handleToothClick=async n=>{
-    if(disabled)return;
+  /* ── Tooth window: add / update ── */
+  const handleModalSave=async(tooth,existing,fields,done)=>{
+    setSaving(true);setModalError("");
+    const before=findingsOf(tooth);
+    try{
+      if(existing){
+        await api.put(`/visits/${visitId}/dental-chart/${existing.id}`,fields);          // UPDATE: this finding only
+      }else{
+        await api.post(`/visits/${visitId}/dental-chart`,{tooth_number:tooth,...fields}); // ADD: a new finding
+      }
+      const fresh=await load();
+      if(!existing)checkServerKeptOthers(before,fresh,tooth);
+      done();
+    }catch(e){
+      console.error(e);
+      setModalError(errorText(e,"Could not save. Please try again."));
+    }finally{setSaving(false);}
+  };
 
-    // ── Edit mode: open modal for that tooth ──
-    if(editMode){
-      const isInGroup=editMode.rows.some(r=>r.tooth_number===n);
-      if(isInGroup) setEditModalTooth(n);
+  /* ── Quick mark: click a tooth ── */
+  const markTooth=async n=>{
+    const q=quick;
+    const isOther=q.condition==="Other";
+    if(isOther&&!q.otherText.trim()){say("warn","Type a description for “Other” before clicking teeth.");return;}
+    const label=isOther?q.otherText.trim():q.condition;
+    const before=findingsOf(n);
+    const existing=before.find(f=>sameFinding(f,q.condition,q.otherText));
+    const centre=centerCode(n);
+    const surface=SURF_ORDER.filter(s=>q.surfaces.map(x=>(x==="O"||x==="I")?centre:x).includes(s)).join(",");
+    const extras={};
+    if(q.severity)extras.severity=q.severity;
+    if(surface)extras.surface=surface;
+    if(q.notes.trim())extras.notes=q.notes.trim();
+
+    if(existing&&Object.keys(extras).length===0){
+      say("info",`Tooth ${n} already has ${label}. Nothing was changed.`);
       return;
     }
-
-    // ── Condition-first mode ──
-    if(!activeCondition)return;
-
-    const existing=getRecord(n);
     setSaving(true);
     try{
-      const fd={
-        condition:activeCondition,
-        severity:condExtras.severity||"",
-        surface:(condExtras.surfaces||[]).join(","),
-        notes:condExtras.notes||"",
-        other_text:activeCondition==="Other"?(condExtras.otherText||""):"",
-        custom_color:activeCondition==="Other"?(condExtras.otherColor||""):"",
-      };
       if(existing){
-        await api.put(`/visits/${visitId}/dental-chart/${existing.id}`,fd);
-      } else {
-        await api.post(`/visits/${visitId}/dental-chart`,{tooth_number:n,...fd});
+        // Already marked: only the options chosen above are updated.
+        await api.put(`/visits/${visitId}/dental-chart/${existing.id}`,extras);
+        setMarked(m=>m.some(x=>x.tooth===n)?m:[...m,{tooth:n,id:existing.id,created:false}]);
+        say("info",`Tooth ${n} already had ${label} — its details were updated.`);
+      }else{
+        const res=await api.post(`/visits/${visitId}/dental-chart`,{
+          tooth_number:n,condition:q.condition,
+          severity:q.severity||"",surface,notes:q.notes.trim(),
+          other_text:isOther?q.otherText.trim():"",
+          custom_color:isOther?q.otherColor:"",
+        });
+        setMarked(m=>[...m.filter(x=>x.tooth!==n),{tooth:n,id:res?.data?.id,created:true}]);
+        setNotice(null);
       }
-      // Optimistic update
-      setPendingTeeth(p=>{const s=new Set(p);s.add(n);return s;});
-      await load();
-    }catch(e){console.error(e);alert("Failed to save.");}
-    finally{setSaving(false);}
+      const fresh=await load();
+      if(!existing)checkServerKeptOthers(before,fresh,n);
+    }catch(e){
+      console.error(e);
+      say("error",errorText(e,`Could not save tooth ${n}. Please try again.`));
+    }finally{setSaving(false);}
   };
 
-  // Edit modal save
-  const handleEditSave=async fd=>{
-    if(!editModalTooth)return;
-    setSaving(true);
-    const ex=getRecord(editModalTooth);
-    try{
-      if(ex)await api.put(`/visits/${visitId}/dental-chart/${ex.id}`,fd);
-      else  await api.post(`/visits/${visitId}/dental-chart`,{tooth_number:editModalTooth,...fd});
-      setEditModalTooth(null);
-      await load();
-      // Refresh edit mode rows
-      setEditMode(null);
-    }catch(e){console.error(e);alert("Failed to save.");}
-    finally{setSaving(false);}
-  };
-
-  // Save from AddConditionModal (multiple teeth at once)
-  const handleAddModalSave=async(data)=>{
-    setSaving(true);
-    try{
-      for(const toothNum of data.teeth){
-        const fd={
-          condition:data.condition,
-          severity:data.severity||"",
-          surface:data.surface||"",
-          notes:data.notes||"",
-          other_text:data.condition==="Other"?(data.other_text||""):"",
-          custom_color:data.condition==="Other"?(data.custom_color||""):"",
-        };
-        const existing=getRecord(toothNum);
-        if(existing){
-          await api.put(`/visits/${visitId}/dental-chart/${existing.id}`,fd);
-        } else {
-          await api.post(`/visits/${visitId}/dental-chart`,{tooth_number:toothNum,...fd});
-        }
-      }
-      setShowAddModal(false);
-      await load();
-    }catch(e){console.error(e);alert("Failed to save conditions.");}
-    finally{setSaving(false);}
-  };
-
-  // Delete from conditions log
-  const handleDeleteTooth=async(id,num,label)=>{
-    if(!window.confirm(`Remove ${label} from Tooth #${num}?`))return;
+  const undoMark=async m=>{
     setDeleting(true);
     try{
-      await api.delete(`/visits/${visitId}/dental-chart/${id}`);
-      const updated=records.filter(r=>r.id!==id);
-      setRecords(updated);
-      if(onRecordsChange)onRecordsChange(updated);
-    }catch(e){console.error(e);alert("Failed to delete.");}
-    finally{setDeleting(false);}
+      await api.delete(`/visits/${visitId}/dental-chart/${m.id}`);
+      setMarked(list=>list.filter(x=>x.tooth!==m.tooth));
+      await load();
+    }catch(e){
+      console.error(e);
+      say("error",errorText(e,`Could not undo tooth ${m.tooth}.`));
+    }finally{setDeleting(false);}
   };
 
-  // Enter edit group mode from log
-  const handleEditGroup=(condition,rows)=>{
-    setActiveCondition(null);
-    setPendingTeeth(new Set());
-    setEditMode({condition,rows});
+  const handleToothClick=n=>{
+    if(quick&&quick.condition&&!disabled){markTooth(n);return;}
+    setModalError("");
+    setModal({tooth:n});
   };
 
-  const affected=records.filter(r=>{
-    const n=r.tooth_number;
-    return chartType==="permanent"?(n>=11&&n<=48):(n>=51&&n<=85);
+  const startQuick=condition=>{
+    setModal(null);setMarked([]);setNotice(null);setFocus("");
+    setQuick({...EMPTY_QUICK(),condition:condition||"",surfaces:condition&&CMAP[condition]?.surf?[...CMAP[condition].surf]:[]});
+  };
+  const endQuick=()=>{setQuick(null);setMarked([]);setNotice(null);};
+
+  /* ── Delete (always asks first) ── */
+  const confirmDelete=async()=>{
+    const f=confirm;
+    if(!f)return;
+    setDeleting(true);
+    try{
+      await api.delete(`/visits/${visitId}/dental-chart/${f.id}`);
+      setConfirm(null);
+      setMarked(list=>list.filter(x=>x.id!==f.id));
+      await load();
+    }catch(e){
+      console.error(e);
+      if(e?.response?.status===404){setConfirm(null);await load();}   // already deleted elsewhere
+      else alert(errorText(e,"Failed to delete."));
+    }finally{setDeleting(false);}
+  };
+
+  /* ── Header numbers + legend ── */
+  const teethCount=new Set(findings.map(f=>f.tooth_number)).size;
+  const usedMap=new Map();
+  findings.forEach(f=>{
+    const key=f._label.toLowerCase();
+    if(!usedMap.has(key))usedMap.set(key,{key,label:f._label,cm:f._cm,count:0});
+    usedMap.get(key).count+=1;
   });
-  const condCounts={};
-  affected.forEach(r=>{condCounts[r.condition]=(condCounts[r.condition]||0)+1;});
-  const topConds=Object.entries(condCounts).sort((a,b)=>b[1]-a[1]).slice(0,3);
+  const used=[...usedMap.values()].sort((a,b)=>byName(a.label,b.label));   // legend A–Z
+  const topConds=[...used].sort((a,b)=>b.count-a.count).slice(0,3);
+  const focusActive=focus&&usedMap.has(focus)?focus:"";
 
-  // Highlighted teeth: pending (just clicked) + edit mode group
-  const highlightSet=new Set([
-    ...pendingTeeth,
-    ...(editMode?editMode.rows.map(r=>r.tooth_number):[]),
-  ]);
+  const modalFindings=modal?findingsOf(modal.tooth):[];
+  const busy=saving||deleting;
 
   return(
     <div className="dc-root">
 
       {/* ── HEADER ── */}
-      <div className="dc-header">
+      <div className="dc-panel dc-header">
         <div className="dc-header-title">
-          <div className="dc-header-title-icon">🦷</div>
+          <div className="dc-header-title-icon" aria-hidden="true">🦷</div>
           Dental Chart
         </div>
-        <div className="dc-tab-group">
+        <div className="dc-tab-group" role="group" aria-label="Chart type">
           {[{key:"permanent",label:"Permanent (FDI)"},{key:"deciduous",label:"Deciduous"}].map(o=>(
-            <button key={o.key} className={`dc-tab${chartType===o.key?" active":""}`}
-              onClick={()=>{setChartType(o.key);setActiveCondition(null);setPendingTeeth(new Set());setEditMode(null);}}>
+            <button key={o.key} type="button" className={`dc-tab${chartType===o.key?" active":""}`} aria-pressed={chartType===o.key}
+              onClick={()=>{setChartType(o.key);setMarked([]);setFocus("");}}>
               {o.label}
             </button>
           ))}
         </div>
         <div className="dc-stats-row">
           <div className="dc-stat-chip"
-            style={{background:affected.length>0?"#fef2f2":"var(--dc-surface2)",
-              borderColor:affected.length>0?"#fecaca":"var(--dc-border)",
-              color:affected.length>0?"#991b1b":"var(--dc-text3)"}}>
-            <span className="dc-stat-dot" style={{background:affected.length>0?"#ef4444":"#cbd5e1"}}/>
-            {affected.length} marked
+            style={{background:findings.length>0?"#fef2f2":"var(--dc-surface2)",
+              borderColor:findings.length>0?"#fecaca":"var(--dc-border)",
+              color:findings.length>0?"#991b1b":"var(--dc-text3)"}}>
+            <span className="dc-stat-dot" style={{background:findings.length>0?"#ef4444":"#cbd5e1"}}/>
+            {findings.length===0?"No findings":`${plural(findings.length,"finding","findings")} · ${plural(teethCount,"tooth","teeth")}`}
           </div>
-          {topConds.map(([c,n])=>{
-            const cm=CMAP[c]||CMAP["Other"];
-            return(
-              <div key={c} className="dc-stat-chip"
-                style={{background:`${cm.a}14`,borderColor:`${cm.a}44`,color:cm.dark}}>
-                <span className="dc-stat-dot" style={{background:cm.a}}/>
-                {cm.emoji} {c}: {n}
-              </div>
-            );
-          })}
-          {saving&&<div className="dc-stat-chip" style={{color:"#3b82f6",borderColor:"#bfdbfe",background:"#eff6ff"}}>⏳ Saving…</div>}
+          {topConds.map(c=>(
+            <div key={c.key} className="dc-stat-chip"
+              style={{background:hexToRgbaSafe(c.cm.a,.08),borderColor:hexToRgbaSafe(c.cm.a,.27),color:c.cm.dark}}>
+              <span className="dc-stat-dot" style={{background:c.cm.a}}/>
+              {c.label}: {c.count}
+            </div>
+          ))}
+          {saving&&<div className="dc-stat-chip" style={{color:"#1d4ed8",borderColor:"#bfdbfe",background:"#eff6ff"}} role="status">Saving…</div>}
         </div>
       </div>
 
-      {/* ── CONDITION SELECTOR (Step 1) ── */}
-      {!disabled&&(
-        <ConditionSelectorPanel
-          activeCondition={activeCondition}
-          onSelect={handleConditionSelect}
-          onClear={()=>{setActiveCondition(null);setPendingTeeth(new Set());}}
-          selectedTeeth={[...pendingTeeth]}
-          onClearTeeth={()=>setPendingTeeth(new Set())}
-        />
+      {loadError&&<div className="dc-notice dc-notice-error" role="alert" style={{margin:"0 0 14px"}}>{loadError}</div>}
+      {oldServer&&(
+        <div className="dc-notice dc-notice-warn" role="alert" style={{margin:"0 0 14px"}}>
+          The server replaced the earlier finding on that tooth instead of adding to it. To record several findings on one
+          tooth, replace <b>dental_chart.py</b> on the backend with the new version and restart the server.
+        </div>
       )}
 
-      {/* ── EDIT MODE BAR ── */}
-      {editMode&&(
-        <EditModeBar
-          condition={editMode.condition}
-          rows={editMode.rows}
-          onClose={()=>{setEditMode(null);setEditModalTooth(null);}}/>
+      {/* ── MODE BAR ── */}
+      {!disabled&&!quick&&(
+        <div className="dc-panel dc-mode">
+          <div className="dc-mode-row">
+            <span className="dc-mode-hint"><b>Click a tooth</b> to see, add or edit its findings.</span>
+            <button type="button" className="dc-btn dc-btn-soft" style={{marginLeft:"auto"}} onClick={()=>startQuick("")}>
+              ⚡ Quick mark several teeth
+            </button>
+          </div>
+        </div>
+      )}
+      {!disabled&&(
+        <QuickMarkBar quick={quick} setQuick={setQuick} marked={marked} notice={notice}
+          onUndo={undoMark} onDone={endQuick}/>
       )}
 
       {/* ── CHART ── */}
-      <div className="dc-chart-panel">
-        <DentalDiagram records={records} chartType={chartType}
-          onToothClick={handleToothClick} disabled={disabled}
-          selectedTooth={highlightSet.size>0?[...highlightSet][highlightSet.size-1]:null}/>
+      <div className="dc-panel">
+        <DentalDiagram findings={findings} chartType={chartType}
+          onToothClick={handleToothClick}
+          selectedTooth={modal?modal.tooth:null}
+          markedTeeth={new Set(marked.map(m=>m.tooth))}
+          focus={focusActive}/>
 
-        {/* Legend */}
         <div className="dc-legend-bar">
-          <span style={{fontSize:10,fontWeight:700,color:"var(--dc-text3)",textTransform:"uppercase",
-            letterSpacing:".8px",marginRight:4}}>Legend:</span>
-          <div className="dc-legend-item">
-            <span className="dc-legend-dot" style={{background:"#cdd2db",border:"1px solid #9aa3b2"}}/>
-            Healthy
-          </div>
-          {CONDITIONS.map(c=>{
-            const cm=CMAP[c];
-            return(
-              <div key={c} className="dc-legend-item">
-                <span className="dc-legend-dot" style={{background:cm.a}}/>
-                {cm.emoji} {c}
-              </div>
-            );
-          })}
+          <span className="dc-legend-cap">On this chart:</span>
+          {used.length===0&&<span className="dc-legend-item static">
+            <span className="dc-legend-dot" style={{background:"#fff",border:"1px solid #9aa6b8"}}/> All teeth healthy / not charted
+          </span>}
+          {used.map(u=>(
+            <button key={u.key} type="button" className={`dc-legend-item${focusActive===u.key?" on":""}`}
+              aria-pressed={focusActive===u.key} title="Show only the teeth with this finding"
+              onClick={()=>setFocus(f=>f===u.key?"":u.key)}>
+              <span className="dc-legend-dot" style={{background:u.cm.a}}/>
+              {u.label} · {u.count}
+            </button>
+          ))}
+          {focusActive&&(
+            <button type="button" className="dc-legend-item" onClick={()=>setFocus("")}>✕ Show all</button>
+          )}
+          {used.length>0&&(
+            <span className="dc-legend-key">
+              Tooth colour = main finding · band = surface · dots = several findings
+            </span>
+          )}
         </div>
       </div>
 
-      {/* ── GROUPED CONDITIONS LOG ── */}
-      <GroupedConditionsLog
-        records={records}
-        chartType={chartType}
-        disabled={disabled}
-        onEditGroup={handleEditGroup}
-        onDeleteTooth={handleDeleteTooth}
-        deleting={deleting}
-        onAdd={()=>setShowAddModal(true)}/>
+      {/* ── FINDINGS LOG ── */}
+      <FindingsLog findings={findings} disabled={disabled} busy={busy}
+        onEdit={f=>{setModalError("");setModal({tooth:f.tooth_number,startEditId:f.id});}}
+        onDelete={setConfirm}
+        onOpenTooth={(n,mode)=>{setModalError("");setModal({tooth:n,startEditId:mode==="new"?"new":undefined});}}
+        onQuick={startQuick}/>
 
-      {/* ── ADD CONDITION MODAL ── */}
-      {showAddModal&&!disabled&&(
-        <AddConditionModal
-          chartType={chartType}
-          onSave={handleAddModalSave}
-          onClose={()=>setShowAddModal(false)}
-          saving={saving}/>
+      {/* ── TOOTH WINDOW ── */}
+      {modal&&(
+        <ToothModal key={`${modal.tooth}-${modal.startEditId||""}`}
+          tooth={modal.tooth} findings={modalFindings} disabled={disabled}
+          startEditId={modal.startEditId}
+          saving={saving} error={modalError}
+          escEnabled={!confirm}
+          onSave={handleModalSave}
+          onAskDelete={setConfirm}
+          onClearError={()=>setModalError("")}
+          onClose={()=>setModal(null)}/>
       )}
 
-      {/* ── EDIT MODAL (shown when tooth clicked in edit mode) ── */}
-      {editModalTooth&&(
-        <ToothModal
-          tooth={editModalTooth}
-          existing={getRecord(editModalTooth)}
-          disabled={false}
-          onSave={handleEditSave}
-          onDelete={async()=>{
-            const ex=getRecord(editModalTooth);
-            if(!ex)return;
-            if(!window.confirm(`Delete condition from Tooth #${editModalTooth}?`))return;
-            setDeleting(true);
-            try{
-              await api.delete(`/visits/${visitId}/dental-chart/${ex.id}`);
-              const updated=records.filter(r=>r.id!==ex.id);
-              setRecords(updated);
-              if(onRecordsChange)onRecordsChange(updated);
-              setEditModalTooth(null);
-              setEditMode(null);
-            }catch(e){console.error(e);}
-            finally{setDeleting(false);}
-          }}
-          onClose={()=>setEditModalTooth(null)}
-          saving={saving}
-          deleting={deleting}/>
+      {/* ── DELETE CONFIRMATION ── */}
+      {confirm&&(
+        <ConfirmDialog busy={deleting}
+          title={`Delete “${confirm._label}” from tooth ${confirm.tooth_number}?`}
+          body={`Only this finding is deleted.${findingsOf(confirm.tooth_number).length>1?" The tooth's other findings stay.":""}`}
+          onCancel={()=>setConfirm(null)} onConfirm={confirmDelete}/>
       )}
     </div>
   );

@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import api from "../api/api";
+// Medical Conditions, Allergy Records, Current Medications, Personal Habits
+// and Women's Health: one shared component — the same one Reception uses,
+// reading and writing the same records.
+import MedicalHistoryManager from "../components/MedicalHistoryManager";
 
-import DoctorMedicalSummary from "../components/doctor/DoctorMedicalSummary";
-import DoctorHabitsSummary from "../components/doctor/DoctorHabitsSummary";
-import DoctorWomenSummary from "../components/doctor/DoctorWomenSummary";
 
 /* Doctor signature image, embedded as a data URI so it always renders
    without needing a server-hosted asset path. */
@@ -256,6 +257,125 @@ const injectStyles = () => {
     @keyframes dpv-badge-breathe { 0%,100%{ transform: scale(1); } 50%{ transform: scale(1.14); } }
     .dpv-badge span { display: inline-block; animation: dpv-badge-breathe 3.2s ease-in-out infinite; }
 
+    /* ══════════ Doctor-editable section controls ══════════ */
+    .dpv-section-hd-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 4px; }
+    .dpv-section-hd-row .dpv-badge { margin-bottom: 0; }
+    .dpv-edit-btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 6px 14px; border-radius: 8px;
+      background: #eff6ff; color: #1d4ed8; border: 1.5px solid #bfdbfe;
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      font-size: 12px; font-weight: 700; cursor: pointer;
+      transition: all 0.15s; flex-shrink: 0;
+    }
+    .dpv-edit-btn:hover { background: #dbeafe; border-color: #93c5fd; }
+    .dpv-edit-actions { display: flex; gap: 8px; flex-shrink: 0; }
+    .dpv-save-btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 6px 14px; border-radius: 8px;
+      background: linear-gradient(135deg, #16a34a, #22c55e);
+      color: #fff; border: none;
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      font-size: 12px; font-weight: 700; cursor: pointer;
+      transition: all 0.15s;
+    }
+    .dpv-save-btn:hover:not(:disabled) { filter: brightness(1.06); }
+    .dpv-save-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+    .dpv-cancel-btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 6px 14px; border-radius: 8px;
+      background: #f1f5f9; color: #475569; border: 1.5px solid #e2e8f0;
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      font-size: 12px; font-weight: 700; cursor: pointer;
+      transition: all 0.15s;
+    }
+    .dpv-cancel-btn:hover:not(:disabled) { background: #e2e8f0; }
+    .dpv-cancel-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+    .dpv-edit-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      gap: 10px;
+    }
+    .dpv-check-cell {
+      display: flex; align-items: center; gap: 9px;
+      background: #f7f9fe; border: 1px solid #edf1fa; border-radius: 10px;
+      padding: 10px 12px;
+    }
+    .dpv-check-cell input[type="checkbox"] { width: 16px; height: 16px; accent-color: #2563eb; cursor: pointer; flex-shrink: 0; }
+    .dpv-check-cell label { font-size: 13px; font-weight: 600; color: #1a2540; cursor: pointer; user-select: none; }
+    .dpv-detail-input {
+      width: 100%; margin-top: 8px;
+      padding: 8px 10px; border: 1.5px solid #dde5f4; border-radius: 7px;
+      font-family: 'Plus Jakarta Sans', sans-serif; font-size: 12.5px; color: #1a2540;
+      box-sizing: border-box; outline: none; transition: border-color 0.15s;
+    }
+    .dpv-detail-input:focus { border-color: #93c5fd; box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+    .dpv-field-block { margin-top: 14px; }
+    .dpv-field-block label {
+      display: block; font-size: 10.5px; font-weight: 700; color: #8899bb;
+      letter-spacing: 0.8px; text-transform: uppercase; margin-bottom: 6px;
+    }
+    .dpv-text-input, .dpv-textarea-input {
+      width: 100%; padding: 10px 12px; border: 1.5px solid #dde5f4; border-radius: 9px;
+      font-family: 'Plus Jakarta Sans', sans-serif; font-size: 13.5px; color: #1a2540;
+      box-sizing: border-box; outline: none; transition: border-color 0.15s;
+    }
+    .dpv-text-input:focus, .dpv-textarea-input:focus { border-color: #93c5fd; box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+    .dpv-textarea-input { resize: vertical; min-height: 70px; }
+    .dpv-yn-toggle { display: flex; gap: 8px; }
+    .dpv-yn-btn {
+      padding: 7px 18px; border-radius: 8px; cursor: pointer;
+      font-family: 'Plus Jakarta Sans', sans-serif; font-size: 12.5px; font-weight: 700;
+      border: 1.5px solid #dde5f4; background: #fff; color: #64748b; transition: all 0.15s;
+    }
+    .dpv-yn-btn.active { background: #2563eb; color: #fff; border-color: #2563eb; }
+    .dpv-allergy-edit-row {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)) auto;
+      gap: 8px; align-items: end;
+      background: #fafbff; border: 1.5px solid #e8edf8; border-radius: 10px;
+      padding: 12px; margin-bottom: 10px;
+    }
+    .dpv-remove-row-btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 34px; height: 34px; border-radius: 8px; flex-shrink: 0;
+      background: #fee2e2; color: #b91c1c; border: 1.5px solid #fca5a5;
+      font-size: 14px; cursor: pointer; transition: all 0.15s;
+    }
+    .dpv-remove-row-btn:hover { background: #fecaca; }
+    .dpv-al-btn {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 7px 14px; border-radius: 8px; cursor: pointer;
+      font-family: 'Plus Jakarta Sans', sans-serif; font-size: 12px; font-weight: 700;
+      border: 1.5px solid transparent; transition: all 0.15s;
+    }
+    .dpv-al-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+    .dpv-al-add    { background: #2563eb; color: #fff; border-color: #2563eb; }
+    .dpv-al-add:hover:not(:disabled)    { background: #1d4ed8; }
+    .dpv-al-edit   { background: #eff6ff; color: #1d4ed8; border-color: #bfdbfe; }
+    .dpv-al-edit:hover:not(:disabled)   { background: #dbeafe; }
+    .dpv-al-update { background: #16a34a; color: #fff; border-color: #16a34a; }
+    .dpv-al-update:hover:not(:disabled) { background: #15803d; }
+    .dpv-al-delete { background: #fee2e2; color: #b91c1c; border-color: #fca5a5; }
+    .dpv-al-delete:hover:not(:disabled) { background: #fecaca; }
+    .dpv-al-cancel { background: #fff; color: #64748b; border-color: #dde5f4; }
+    .dpv-al-cancel:hover:not(:disabled) { background: #f1f5f9; }
+    .dpv-al-card {
+      background: #f8faff; border: 1.5px solid #e8edf8; border-radius: 10px;
+      padding: 12px 14px; display: flex; flex-direction: column; gap: 10px;
+    }
+    .dpv-al-card-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+    .dpv-al-form-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px; }
+    .dpv-add-row-btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 9px 16px; border-radius: 9px;
+      background: #f7f9fe; color: #2563eb; border: 1.5px dashed #93c5fd;
+      font-family: 'Plus Jakarta Sans', sans-serif; font-size: 12.5px; font-weight: 700; cursor: pointer;
+      transition: all 0.15s;
+    }
+    .dpv-add-row-btn:hover { background: #eff6ff; }
+    .dpv-no-flag-row { margin-bottom: 16px; }
+
     /* ══════════ "View Complete Treatment History" button ══════════ */
     .dpv-history-btn {
       display: inline-flex; align-items: center; gap: 8px;
@@ -432,12 +552,15 @@ const InfoCell = ({ label, value, wide, accent }) => (
   </div>
 );
 
-const Section = ({ badge, badgeColor, badgeBg, icon, children, delay = "" }) => (
+const Section = ({ badge, badgeColor, badgeBg, icon, children, delay = "", headerActions }) => (
   <div className={`dpv-card dpv-animate ${delay}`}>
     {badge && (
-      <div className="dpv-badge" style={{ background: badgeBg || "#eff4ff", color: badgeColor || "#1d4ed8", border: `1px solid ${badgeColor || "#1d4ed8"}22` }}>
-        {icon && <span style={{ fontSize: 12 }}>{icon}</span>}
-        {badge}
+      <div className="dpv-section-hd-row">
+        <div className="dpv-badge" style={{ background: badgeBg || "#eff4ff", color: badgeColor || "#1d4ed8", border: `1px solid ${badgeColor || "#1d4ed8"}22` }}>
+          {icon && <span style={{ fontSize: 12 }}>{icon}</span>}
+          {badge}
+        </div>
+        {headerActions}
       </div>
     )}
     {children}
@@ -481,7 +604,7 @@ function BillingInstructionsModal({ visit, patient, onConfirm, onCancel }) {
               display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22,
             }}>💰</div>
             <div>
-              <div style={{ fontSize: 16, fontWeight: 800, color: "#fff" }}>Close Visit & Send to Billing</div>
+              <div style={{ fontSize: 16, fontWeight: 800, color: "#fff" }}>Close Visit & Send to Reception</div>
               <div style={{ fontSize: 12, color: "rgba(255,255,255,0.65)", marginTop: 2 }}>
                 {patient?.name} · {patient?.case_number ? `Case ${patient.case_number}` : ""}
               </div>
@@ -503,14 +626,14 @@ function BillingInstructionsModal({ visit, patient, onConfirm, onCancel }) {
             borderRadius: 10, padding: "10px 14px", marginBottom: 18,
             fontSize: 12.5, color: "#1d4d7a", lineHeight: 1.6,
           }}>
-            📋 The clinical summary below will be sent to the <strong>reception billing queue</strong> automatically. You can add optional billing instructions for reception, then you'll be returned to your <strong>doctor dashboard</strong> for the next patient.
+            📋 The clinical summary below will be sent to <strong>Reception</strong> automatically (their “Doctor's Instructions” list). You can add optional billing instructions for reception, then you'll be returned to your <strong>doctor dashboard</strong> for the next patient.
           </div>
 
           {/* Clinical Summary (auto-sent) */}
           {(visit?.diagnosis || visit?.treatment_done || visit?.treatment_plan || visit?.advice) && (
             <div className="dpv-clinical-summary-block">
               <div style={{ fontSize: 11, fontWeight: 800, color: "#1d4d7a", letterSpacing: 0.5, textTransform: "uppercase", marginBottom: 10 }}>
-                📋 Clinical Summary (auto-sent to billing)
+                📋 Clinical Summary (auto-sent to Reception)
               </div>
               {visit?.diagnosis      && (
                 <div style={{ display: "flex", gap: 8, marginBottom: 6, fontSize: 13 }}>
@@ -890,10 +1013,10 @@ export default function DoctorPatientView() {
 
   const [patient,          setPatient]          = useState(null);
   const [visit,            setVisit]            = useState(null);
+  // Kept only to work out the Medical Alerts banner. The records themselves
+  // are shown and edited by <MedicalHistoryManager> further down.
   const [medical,          setMedical]          = useState({});
   const [allergy,          setAllergy]          = useState({ rows: [] });
-  const [medications,      setMedications]      = useState([]);
-  const [habits, setHabits] = useState({});
   const [women,            setWomen]            = useState({});
   const [familyDoc,        setFamilyDoc]        = useState({});
   const [consent,          setConsent]          = useState({});
@@ -917,42 +1040,8 @@ export default function DoctorPatientView() {
       setVisit(res.data.visit     || null);
       setPatient(res.data.patient || null);
       setMedical(res.data.medical || {});
-      // AllergyRecord is row-based (no drug_allergy/food_allergy/... columns).
-      // GET /visits/<id> returns allergy as { rows: [...] }, same shape as
-      // GET /allergies/<patient_id>.
       const rawAllergy = res.data.allergy || {};
       setAllergy({ rows: Array.isArray(rawAllergy.rows) ? rawAllergy.rows : [] });
-      console.log("Backend Allergy:", res.data.allergy);
-
-      // GET /visits/<id> returns medications as a flat array of
-      // Medication.to_dict() objects — not wrapped in {rows: [...]}
-      // like allergies.
-      setMedications(Array.isArray(res.data.medications) ? res.data.medications : []);
-      console.log("Backend Medications:", res.data.medications);
-
-const rawHabits = res.data.habits || {};
-
-setHabits({
-  smoking: !!rawHabits.smoking,
-  smoking_detail: rawHabits.smoking_detail || "",
-
-  alcohol: !!rawHabits.alcohol,
-  alcohol_detail: rawHabits.alcohol_detail || "",
-
-  tobacco: !!rawHabits.tobacco,
-  tobacco_detail: rawHabits.tobacco_detail || "",
-
-  pan_chewing: !!rawHabits.pan_chewing,
-  pan_chewing_detail: rawHabits.pan_chewing_detail || "",
-
-  spicy_foods: !!rawHabits.spicy_foods,
-  spicy_foods_detail: rawHabits.spicy_foods_detail || "",
-
-  no_habits:
-    rawHabits.no_habits ??
-    rawHabits.no_known_habits ??
-    false,
-});
       setWomen(res.data.women         || {});
       setFamilyDoc(res.data.family_doctor || {});
       setConsent(res.data.consent     || {});
@@ -971,13 +1060,22 @@ setHabits({
       await api.put(`/visits/${id}/close`, { billing_note: billingNote });
       setShowBillingDlg(false);
       // Return doctor to their dashboard for the next patient.
-      // The closed visit automatically appears in the reception billing queue.
+      // The closed visit automatically appears in Reception's "Doctor's Instructions" list.
       navigate(-1);
     } catch (err) {
       console.error(err);
       alert("Failed to close visit. Please try again.");
       setClosing(false);
     }
+  };
+
+  // Called by <MedicalHistoryManager> after every load and every change
+  // (including changes made at Reception), so the alert banner stays current.
+  const handleHistoryChange = (h) => {
+    if (!h?.legacy) return;
+    setMedical(h.legacy.medical || {});
+    setWomen(h.legacy.women || {});
+    setAllergy({ rows: h.allergies || [] });
   };
 
   const calculateAge = (dob, manual) => {
@@ -1001,13 +1099,9 @@ setHabits({
   );
 
   const isClosed    = (visit?.status || "").toLowerCase() === "closed";
-  const allergyRows = Array.isArray(allergy?.rows) ? allergy.rows : [];
+  // Alerts consider allergies that are still active.
+  const allergyRows = (Array.isArray(allergy?.rows) ? allergy.rows : []).filter((r) => r.status !== "Resolved");
   const hasAnyAllergy = allergyRows.length > 0;
-  console.log("ALLERGY ROWS:", allergyRows);
-  console.log("HAS ANY:", hasAnyAllergy);
-
-  const medicationRows = Array.isArray(medications) ? medications : [];
-  const hasCurrentMedications = medicationRows.length > 0;
 
   const chiefComplaint = (
     visit?.chief_complaint?.trim()    ||
@@ -1038,7 +1132,6 @@ setHabits({
   if (women?.pregnant)                                             alerts.push({ icon: "🔴", text: "Pregnant Patient",                  color: "#86198f", bg: "#fdf4ff" });
   if (hasAnesthesiaAllergy)                                        alerts.push({ icon: "🟣", text: "Anesthesia Allergy on Record",      color: "#5b21b6", bg: "#ede9fe" });
   else if (hasAnyAllergy)                                          alerts.push({ icon: "🟠", text: "Known Allergies on Record",          color: "#92400e", bg: "#fff7ed" });
-console.log("State Allergy:", allergy);
   return (
     <div className="dpv-root" style={{
       minHeight: "100vh",
@@ -1264,149 +1357,17 @@ console.log("State Allergy:", allergy);
           </Section>
         )}
 
-        {/* ══════════ MEDICAL HISTORY ══════════ */}
-        <Section badge="Medical History" badgeColor="#dc2626" badgeBg="#fff5f5" icon="📋" delay="dpv-d3">
-          <DoctorMedicalSummary data={medical} />
-        </Section>
-
-       <Section
-  badge="Allergy Records"
-  badgeColor="#d97706"
-  badgeBg="#fffbeb"
-  icon="⚠️"
-  delay="dpv-d3"
->
-  {!hasAnyAllergy ? (
-
-    <div
-      style={{
-        textAlign: "center",
-        padding: 24,
-        background: "#fafbff",
-        border: "1.5px dashed #d8e3f6",
-        borderRadius: 10,
-        color: "#94a3b8",
-      }}
-    >
-      No known allergies recorded.
-    </div>
-
-  ) : (
-
-    <>
-      <div
-        style={{
-          display: "flex",
-          flexWrap: "wrap",
-          gap: 10,
-          marginBottom: 18,
-        }}
-      >
-        {allergyRows.map((row) => (
-          <span key={row.id} className="dpv-allergy-chip">
-            {row.type ? `${row.type}: ` : ""}{row.allergen}
-          </span>
-        ))}
-      </div>
-
-      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-        {allergyRows.map((row) => (
-          <div key={row.id} className="dpv-info-grid">
-            <InfoCell label="Allergen"  value={row.allergen} />
-            <InfoCell label="Type"      value={row.type} />
-            <InfoCell label="Reaction"  value={row.reaction} />
-            <InfoCell label="Severity"  value={row.severity} />
-            <InfoCell label="Notes"     value={row.notes} wide />
-          </div>
-        ))}
-      </div>
-    </>
-
-  )}
-</Section>
-
-       <Section
-  badge="Current Medications"
-  badgeColor="#2563eb"
-  badgeBg="#eff6ff"
-  icon="💊"
-  delay="dpv-d3"
->
-  {!hasCurrentMedications ? (
-
-    <div
-      style={{
-        textAlign: "center",
-        padding: 24,
-        background: "#fafbff",
-        border: "1.5px dashed #d8e3f6",
-        borderRadius: 10,
-        color: "#94a3b8",
-      }}
-    >
-      No current medications recorded.
-    </div>
-
-  ) : (
-
-    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-      {medicationRows.map((row) => {
-        const isActive = row.active !== false;
-        return (
-          <div
-            key={row.id}
-            style={{
-              background: "#f8faff", border: "1.5px solid #e8edf8",
-              borderRadius: 10, padding: "12px 14px",
-              opacity: isActive ? 1 : 0.55,
-            }}
-          >
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-              <span style={{ fontSize: 13.5, fontWeight: 700, color: "#1a1f36" }}>
-                {row.medicine_name}
-              </span>
-              {row.dosage && (
-                <span style={{ fontSize: 12.5, color: "#5b6b8c" }}>· {row.dosage}</span>
-              )}
-              {!isActive && (
-                <span style={{
-                  fontSize: 10.5, fontWeight: 700, letterSpacing: "0.3px",
-                  color: "#64748b", background: "#e2e8f0",
-                  borderRadius: 12, padding: "2px 8px", textTransform: "uppercase",
-                }}>
-                  Inactive
-                </span>
-              )}
-            </div>
-            <div className="dpv-info-grid">
-              <InfoCell label="Frequency" value={row.frequency} />
-              <InfoCell label="Duration" value={row.duration} />
-              <InfoCell label="Purpose" value={row.purpose} />
-              <InfoCell label="Prescribed By" value={row.prescribed_by} />
-              {row.notes && <InfoCell label="Notes" value={row.notes} wide />}
-            </div>
-          </div>
-        );
-      })}
-    </div>
-
-  )}
-</Section>
-
-        {/* ══════════ HABITS ══════════ */}
-        <Section badge="Personal Habits" badgeColor="#0d6e4a" badgeBg="#f0fdf4" icon="🧬" delay="dpv-d4">
-          <DoctorHabitsSummary
-  data={habits}
-  key={JSON.stringify(habits)}
-/>
-        </Section>
-
-        {/* ══════════ WOMEN'S HEALTH (if Female) ══════════ */}
-        {patient.gender === "Female" && (
-          <Section badge="Women's Health" badgeColor="#be185d" badgeBg="#fdf2f8" icon="🌸" delay="dpv-d4">
-            <DoctorWomenSummary data={women} />
-          </Section>
-        )}
+        {/* ══════════ MEDICAL HISTORY ══════════
+            Medical Conditions · Allergy Records · Current Medications ·
+            Personal Habits · Women's Health — each with its own
+            + Add / Edit / Update / Delete, shared with Reception. */}
+        <div className="dpv-animate dpv-d3" style={{ marginBottom: 22 }}>
+          <MedicalHistoryManager
+            patientId={patient.id}
+            gender={patient.gender}
+            onChange={handleHistoryChange}
+          />
+        </div>
 
         {/* ══════════ CONSENT RECORD ══════════ */}
         {consent?.agreed && (

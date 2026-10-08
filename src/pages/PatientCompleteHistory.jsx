@@ -41,11 +41,20 @@ const API_BASE = resolveApiBase();
   (implemented in patients.py — returns demographics, medical history,
   allergies, habits, women's history, medications, family doctor, consent,
   and every visit with dental chart, findings, consultations,
-  prescriptions, images, and payments.)
+  prescriptions and images.)
+
+  Allergies are also read from GET /api/patients/<patient_id>/medical-history
+  (medical_history.py), which is where the "confirmed: no known allergies"
+  tick lives. If that request fails, the allergy rows that come with
+  complete-history are used instead.
+
+  Billing was removed from this application (it is done in the clinic's
+  separate billing software), so this screen no longer shows payments. The
+  doctor's billing instructions for Reception are still shown per visit.
 
   Layout: every multi-field block renders as a proper two-column
   "Field / Detail" record table (like a real chart), and every list of
-  records (medicines, dental chart rows, findings, payments…) renders as
+  records (medicines, dental chart rows, findings, allergies…) renders as
   a standard multi-column data table. No card grids — nothing reflows
   into ragged, uneven rows regardless of which fields are present.
 
@@ -70,6 +79,9 @@ export default function PatientCompleteHistory({
   readOnlyLabel = "Read Only",
 }) {
   const [data, setData] = useState(null);
+  // Record-level medical history (allergy rows + "none known" ticks).
+  // Optional: the screen still works when this request fails.
+  const [history, setHistory] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [creating, setCreating] = useState(false);
@@ -80,9 +92,14 @@ export default function PatientCompleteHistory({
     (async () => {
       setLoading(true);
       setError(null);
+      setHistory(null);
       try {
-        const res = await api.get(`/patients/${patientId}/complete-history`);
+        const [res, mh] = await Promise.all([
+          api.get(`/patients/${patientId}/complete-history`),
+          api.get(`/patients/${patientId}/medical-history`).catch(() => null),
+        ]);
         if (!cancelled) {
+          setHistory(mh?.data || null);
           setData(res.data);
           if (res.data?.visits?.length) {
             setExpandedVisit(res.data.visits[0].visit_id);
@@ -139,6 +156,14 @@ export default function PatientCompleteHistory({
     ? Object.entries(medical_history).filter(([k, v]) => v === true && k !== "no_known_conditions")
     : [];
 
+  // Allergies: one row per allergy. "Resolved" ones stay in the table but
+  // are left out of the red alert at the top.
+  const allergyRows = collectAllergies(history, allergies);
+  const activeAllergies = allergyRows.filter(a => !isResolved(a));
+  const allergiesConfirmedNone = Boolean(
+    history?.none_known?.allergies || allergies?.no_known_allergies
+  );
+
   const HABIT_FIELDS = ["smoking", "alcohol", "tobacco", "pan_chewing", "spicy_foods"];
   const habitRows = habits
     .flatMap(h => HABIT_FIELDS.filter(f => h[f]).map(f => [formatLabel(f), formatHabitValue(h[f])]));
@@ -178,6 +203,20 @@ export default function PatientCompleteHistory({
           </div>
         </div>
 
+        {activeAllergies.length > 0 && (
+          <div style={s.allergyAlert} role="alert">
+            <span style={s.allergyAlertIcon}>⚠️</span>
+            <div>
+              <div style={s.allergyAlertTitle}>
+                {activeAllergies.length === 1 ? "Allergy" : `Allergies (${activeAllergies.length})`}
+              </div>
+              <div style={s.allergyAlertText}>
+                {activeAllergies.map(allergyLabel).join("  ·  ")}
+              </div>
+            </div>
+          </div>
+        )}
+
         <div style={s.body}>
 
           {/* Demographics */}
@@ -196,10 +235,10 @@ export default function PatientCompleteHistory({
 
           {/* Medical History */}
           <Section title="Medical History">
-            {!medical_history || medical_history.no_known_conditions ? (
-              <EmptyPill text="No known medical conditions" />
+            {medical_history?.no_known_conditions || history?.none_known?.conditions ? (
+              <EmptyPill text="Confirmed: No known medical conditions" />
             ) : activeConditions.length === 0 ? (
-              <EmptyPill text="No conditions recorded" />
+              !medical_history?.other && <NeutralPill text="No conditions recorded" />
             ) : (
               <div style={s.chipRow}>
                 {activeConditions.map(([k]) => (
@@ -213,19 +252,23 @@ export default function PatientCompleteHistory({
           </Section>
 
           {/* Allergies */}
-          <Section title="Allergies">
-            {!allergies || (!allergies.drug_allergy && !allergies.food_allergy && !allergies.latex_allergy &&
-              !allergies.iodine_allergy && !allergies.anesthesia_allergy && !allergies.other_allergy) ? (
-              <EmptyPill text={allergies?.no_known_allergies ? "Confirmed: No known allergies" : "No known allergies"} />
+          <Section title={allergyRows.length ? `Allergies (${allergyRows.length})` : "Allergies"}>
+            {allergyRows.length === 0 ? (
+              allergiesConfirmedNone
+                ? <EmptyPill text="Confirmed: No known allergies" />
+                : <NeutralPill text="No allergies recorded" />
             ) : (
-              <div style={s.chipRow}>
-                {allergies.drug_allergy && <span style={s.chipWarn}>💊 Drug Allergy</span>}
-                {allergies.food_allergy && <span style={s.chipWarn}>🍽️ Food Allergy</span>}
-                {allergies.latex_allergy && <span style={s.chipWarn}>🧤 Latex Allergy</span>}
-                {allergies.iodine_allergy && <span style={s.chipWarn}>🧪 Iodine Allergy</span>}
-                {allergies.anesthesia_allergy && <span style={s.chipWarn}>💉 Anesthesia Allergy</span>}
-                {allergies.other_allergy && <span style={s.chipWarn}>❗ {allergies.other_allergy}</span>}
-              </div>
+              <Table
+                headers={["Type", "Allergic To", "Reaction", "Severity", "Status", "Notes"]}
+                rows={allergyRows.map(a => [
+                  a.type,
+                  a.allergen,
+                  a.reaction,
+                  a.severity,
+                  a.status || "Active",
+                  a.notes,
+                ])}
+              />
             )}
           </Section>
 
@@ -338,7 +381,7 @@ function VisitBlock({ visit, expanded, onToggle }) {
                 ["Advice", visit.advice],
                 ["Doctor", visit.assigned_doctor],
                 ["Next Appointment", visit.next_appointment],
-                ["Billing Note", visit.billing_note],
+                ["Doctor's Billing Instructions", visit.billing_note],
               ]}
             />
           </SubSection>
@@ -386,6 +429,7 @@ function VisitBlock({ visit, expanded, onToggle }) {
               {visit.prescriptions.map(p => {
                 let meds = [];
                 try { meds = JSON.parse(p.medicines || "[]"); } catch { meds = []; }
+                if (!Array.isArray(meds)) meds = [];
                 return (
                   <div key={p.id} style={s.prescBlock}>
                     <div style={s.prescBlockHeader}>
@@ -409,8 +453,13 @@ function VisitBlock({ visit, expanded, onToggle }) {
 
                     {meds.length > 0 && (
                       <Table
-                        headers={["Medicine", "Frequency", "Duration"]}
-                        rows={meds.map(m => [m.name, m.times, m.days ? `${m.days} day${m.days != 1 ? "s" : ""}` : null])}
+                        headers={["Medicine", "Frequency", "Duration", "Instructions"]}
+                        rows={meds.map(m => [
+                          m.name,
+                          m.times,
+                          m.days ? `${m.days} day${m.days != 1 ? "s" : ""}` : null,
+                          [m.when, m.note].map(x => String(x || "").trim()).filter(Boolean).join(" — "),
+                        ])}
                       />
                     )}
                   </div>
@@ -445,15 +494,6 @@ function VisitBlock({ visit, expanded, onToggle }) {
               </div>
             </SubSection>
           )}
-
-          {visit.payments?.length > 0 && (
-            <SubSection title="Payments">
-              <Table
-                headers={["Fee", "Discount", "Paid", "Balance", "Method", "Receipt #"]}
-                rows={visit.payments.map(p => [p.fee, p.discount, p.paid_amount, p.balance, p.payment_method, p.receipt_number])}
-              />
-            </SubSection>
-          )}
         </div>
       )}
     </div>
@@ -474,9 +514,12 @@ const SubSection = ({ title, children, first }) => (
   </div>
 );
 const EmptyPill = ({ text }) => <div style={s.emptyPill}>✓ {text}</div>;
+// Same shape, but grey and without the tick — for "nothing was written
+// down", which is not the same as "confirmed there is none".
+const NeutralPill = ({ text }) => <div style={s.neutralPill}>{text}</div>;
 
 // Standard multi-column data table — used for lists of records
-// (medicines, dental chart rows, findings, payments…).
+// (medicines, dental chart rows, findings, allergies…).
 const Table = ({ headers, rows }) => {
   const cleanRows = rows.filter(r => r.some(c => c !== null && c !== undefined && c !== ""));
   if (cleanRows.length === 0) return null;
@@ -522,6 +565,58 @@ const RecordTable = ({ rows, style }) => {
 };
 
 const formatLabel = (k) => k.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+
+/* ── allergies ──
+   The server sends allergies as one row per allergy:
+     { type, allergen, reaction, severity, status, notes }
+   either from /medical-history (a plain list) or inside complete-history
+   ({ rows: [...] }). Very old data used yes/no boxes (drug_allergy,
+   food_allergy…) — those are still understood so nothing is ever hidden. */
+const OLD_ALLERGY_BOXES = [
+  ["drug_allergy", "Drug"],
+  ["food_allergy", "Food"],
+  ["latex_allergy", "Latex"],
+  ["iodine_allergy", "Iodine"],
+  ["anesthesia_allergy", "Anesthesia"],
+  ["other_allergy", "Other"],
+];
+
+function collectAllergies(history, fromCompleteHistory) {
+  let rows = null;
+  if (Array.isArray(history?.allergies)) rows = history.allergies;
+  else if (Array.isArray(fromCompleteHistory?.rows)) rows = fromCompleteHistory.rows;
+  else if (Array.isArray(fromCompleteHistory)) rows = fromCompleteHistory;
+
+  if (rows) {
+    return rows
+      .filter(r => r && (r.allergen || r.type || r.allergy_type))
+      .map(r => ({
+        type: r.type || r.allergy_type || "",
+        allergen: r.allergen || "",
+        reaction: r.reaction || "",
+        severity: r.severity || "",
+        status: r.status || "Active",
+        notes: r.notes || "",
+      }));
+  }
+
+  // Old yes/no boxes
+  const old = fromCompleteHistory || {};
+  return OLD_ALLERGY_BOXES
+    .filter(([key]) => old[key])
+    .map(([key, type]) => ({
+      type,
+      allergen: typeof old[key] === "string" ? old[key] : `${type} allergy`,
+      reaction: "", severity: "", status: "Active", notes: "",
+    }));
+}
+
+const isResolved = (a) => String(a.status || "").trim().toLowerCase() === "resolved";
+
+const allergyLabel = (a) => {
+  const name = a.allergen || `${a.type} allergy`;
+  return a.severity ? `${name} (${a.severity})` : name;
+};
 const formatHabitValue = (v) => (v === true ? "Yes" : String(v));
 
 /* ── styles ── */
@@ -541,11 +636,18 @@ const s = {
   sectionTitle: { fontSize: 13, fontWeight: 800, color: "#0b2d4e", marginBottom: 12, textTransform: "uppercase", letterSpacing: 0.5 },
   subTitle: { fontSize: 12, fontWeight: 700, color: "#334155", marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.4 },
   emptyPill: { display: "inline-block", fontSize: 12, fontWeight: 600, color: "#166534", background: "#dcfce7", padding: "6px 12px", borderRadius: 20 },
+  neutralPill: { display: "inline-block", fontSize: 12, fontWeight: 600, color: "#475569", background: "#eef2f7", padding: "6px 12px", borderRadius: 20 },
+  allergyAlert: { display: "flex", alignItems: "flex-start", gap: 12, padding: "12px 28px", background: "#fef2f2", borderBottom: "2px solid #fca5a5" },
+  allergyAlertIcon: { fontSize: 20, lineHeight: "24px" },
+  allergyAlertTitle: { fontSize: 11, fontWeight: 800, letterSpacing: 0.8, textTransform: "uppercase", color: "#991b1b" },
+  allergyAlertText: { fontSize: 14, fontWeight: 700, color: "#7f1d1d", marginTop: 2, wordBreak: "break-word" },
   chipRow: { display: "flex", flexWrap: "wrap", gap: 8 },
   chipWarn: { fontSize: 12, fontWeight: 700, color: "#991b1b", background: "#fee2e2", padding: "5px 12px", borderRadius: 20 },
   note: { fontSize: 12.5, color: "#475569", marginTop: 8, background: "#f7f9fe", padding: 10, borderRadius: 8 },
 
-  tableWrap: { borderRadius: 10, overflow: "hidden", border: "1px solid #e4ecfb" },
+  // overflowX "auto": on a narrow screen a wide table (allergies, medicines,
+  // dental chart) can be slid sideways instead of losing its last columns.
+  tableWrap: { borderRadius: 10, overflowX: "auto", overflowY: "hidden", border: "1px solid #e4ecfb" },
   table: { width: "100%", borderCollapse: "collapse" },
   th: { padding: "9px 14px", textAlign: "left", fontSize: 10.5, fontWeight: 700, background: "#1e3a6e", color: "#fff", textTransform: "uppercase", letterSpacing: 0.4 },
   td: { padding: "9px 14px", fontSize: 12.5, color: "#2d3a55", borderBottom: "1px solid #f0f3fb" },

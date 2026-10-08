@@ -1,8 +1,9 @@
 import { useState, useEffect } from "react";
-import BillingSection from "./Billingsection.jsx";
 import { useNavigate, useLocation } from "react-router-dom";
 import api from "../api/api";
 import PatientCompleteHistory from "./PatientCompleteHistory";
+import BillingReceipts from "./BillingReceipts";
+import OtherExpenses from "./OtherExpenses";
 
 /* Doctor signature image, embedded as a data URI so it renders correctly
    inside the print popup window without needing a server-hosted path. */
@@ -138,7 +139,7 @@ const GlobalStyles = () => {
         position: sticky; top: 0; z-index: 100;
       }
       .rdb-navbar-inner {
-        max-width: 1100px; margin: 0 auto;
+        max-width: 1180px; margin: 0 auto;
         padding: 0 16px;
         display: flex; align-items: stretch; gap: 0;
         overflow-x: auto; scrollbar-width: none;
@@ -147,7 +148,7 @@ const GlobalStyles = () => {
       .rdb-navbar-inner::-webkit-scrollbar { display: none; }
       .rdb-nav-link {
         display: inline-flex; align-items: center; gap: 6px;
-        padding: 14px 16px;
+        padding: 14px 12px;
         color: rgba(255,255,255,0.58);
         font-family: 'Plus Jakarta Sans', sans-serif;
         font-size: 12.5px; font-weight: 600;
@@ -1202,13 +1203,36 @@ function fmtTime(t) {
   return `${hr % 12 || 12}:${m} ${hr >= 12 ? "pm" : "am"}`;
 }
 
+/* Clinic timings — printed in the prescription footer (same line as the Doctor's screen). */
+const CLINIC_TIMINGS = "Consultation by Appointment, Timings : Mon to Sat 11.00am to 7.00pm, Sunday Closed";
+
+// Text typed by people goes into the print page as text, never as HTML
+// (a "<" or "&" in a diagnosis used to break the printed page).
+function escHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+// Medicines are stored as JSON text holding a list of { name, times, days }.
+// The Doctor's screen may also add  when ("After food" …)  and  note (instructions).
+function parsePrescMeds(raw) {
+  let list = [];
+  try { list = JSON.parse(raw || "[]"); } catch {}
+  return Array.isArray(list) ? list.filter(m => m && typeof m === "object") : [];
+}
+function medInstructions(m) { return [m.when, m.note].filter(Boolean).join(" · "); }
+function medDuration(m) {
+  if (m.days === "" || m.days === null || m.days === undefined || !(Number(m.days) > 0)) return "—";
+  return `${m.days} day${m.days!=1?"s":""}`;
+}
+
 /* ═══════════════════════════════════════════
    PRESCRIPTION VIEW MODAL — clinic letterhead design
 ═══════════════════════════════════════════ */
 const PrescriptionViewModal = ({ presc, onClose }) => {
   if (!presc) return null;
-  let meds = [];
-  try { meds = JSON.parse(presc.medicines || "[]"); } catch {}
+  const meds = parsePrescMeds(presc.medicines);
+  const showInstructions = meds.some(m => medInstructions(m));   // extra column only when there is something to show
 
   const handlePrint = () => {
     const printContent = document.getElementById("presc-print-area");
@@ -1217,7 +1241,7 @@ const PrescriptionViewModal = ({ presc, onClose }) => {
     win.document.write(`
       <!DOCTYPE html><html><head>
       <meta charset="UTF-8">
-      <title>Prescription — ${presc.patient_name || "Patient"}</title>
+      <title>Prescription — ${escHtml(presc.patient_name || "Patient")}</title>
       <style>
         *{box-sizing:border-box;margin:0;padding:0;}
         body{font-family:Arial,Helvetica,sans-serif;background:#fff;color:#111;}
@@ -1252,7 +1276,7 @@ const PrescriptionViewModal = ({ presc, onClose }) => {
         .bullet-dot{font-weight:700;flex-shrink:0;}
         table{width:100%;border-collapse:collapse;margin-top:4px;}
         th{font-size:9.5px;text-transform:uppercase;letter-spacing:.8px;color:#666;padding:6px 9px;border-bottom:1.5px solid #ddd;text-align:left;background:#f5f5f5;}
-        td{padding:8px 9px;border-bottom:1px solid #eee;font-size:12px;}
+        td{padding:8px 9px;border-bottom:1px solid #eee;font-size:12px;vertical-align:top;}
         tr:last-child td{border-bottom:none;}
         .followup-box{background:#f0fff4;border:1px solid #86efac;border-radius:6px;padding:8px 12px;display:flex;align-items:center;gap:10px;margin-top:12px;}
         .sig-area{display:flex;justify-content:flex-end;margin-top:28px;padding-top:10px;border-top:1px dashed #ccc;}
@@ -1297,25 +1321,25 @@ const PrescriptionViewModal = ({ presc, onClose }) => {
 
         <!-- BODY -->
         <div class="body-pad">
-          <div class="date-row">Date :&nbsp;<span style="font-family:monospace">${fmtDate(presc.date)}</span></div>
+          <div class="date-row">Date :&nbsp;<span style="font-family:monospace">${escHtml(fmtDate(presc.date))}</span></div>
           <div class="patient-grid">
-            <div><span class="field-label">Patient Name</span><span class="field-value">${presc.patient_name || "—"}</span></div>
-            <div><span class="field-label">Age</span><span class="field-value">${presc.patient_age || "—"}</span></div>
-            <div><span class="field-label">Case No.</span><span class="field-value">${presc.case_number || "—"}</span></div>
+            <div><span class="field-label">Patient Name</span><span class="field-value">${escHtml(presc.patient_name || "—")}</span></div>
+            <div><span class="field-label">Age</span><span class="field-value">${escHtml(presc.patient_age || "—")}</span></div>
+            <div><span class="field-label">Case No.</span><span class="field-value">${escHtml(presc.case_number || "—")}</span></div>
           </div>
-          ${presc.diagnosis ? `<div class="section-block"><span class="section-label">📋 Diagnosis</span>${presc.diagnosis.split(";").map(d=>`<div class="bullet-item"><span class="bullet-dot">•</span><span>${d.trim()}</span></div>`).join("")}</div>` : ""}
-          ${presc.advice ? `<div class="section-block"><span class="section-label">💊 Advice &amp; Treatment Plan</span>${presc.advice.split(";").map(a=>`<div class="bullet-item"><span class="bullet-dot">•</span><span>${a.trim()}</span></div>`).join("")}</div>` : ""}
-          ${presc.treatment_done ? `<div class="section-block"><span class="section-label">✅ Treatment Done Today</span>${presc.treatment_done.split(";").map(t=>`<div class="bullet-item"><span class="bullet-dot">•</span><span>${t.trim()}</span></div>`).join("")}</div>` : ""}
+          ${presc.diagnosis ? `<div class="section-block"><span class="section-label">📋 Diagnosis</span>${presc.diagnosis.split(";").map(d=>`<div class="bullet-item"><span class="bullet-dot">•</span><span>${escHtml(d.trim())}</span></div>`).join("")}</div>` : ""}
+          ${presc.advice ? `<div class="section-block"><span class="section-label">💊 Advice &amp; Treatment Plan</span>${presc.advice.split(";").map(a=>`<div class="bullet-item"><span class="bullet-dot">•</span><span>${escHtml(a.trim())}</span></div>`).join("")}</div>` : ""}
+          ${presc.treatment_done ? `<div class="section-block"><span class="section-label">✅ Treatment Done Today</span>${presc.treatment_done.split(";").map(t=>`<div class="bullet-item"><span class="bullet-dot">•</span><span>${escHtml(t.trim())}</span></div>`).join("")}</div>` : ""}
           ${meds.length > 0 ? `
           <div class="section-block">
             <span class="section-label">🧾 Prescribed Medicines</span>
-            <table><thead><tr><th>#</th><th>Medicine</th><th>Frequency</th><th>Duration</th></tr></thead>
-            <tbody>${meds.map((m,i)=>`<tr><td style="color:#999">${i+1}</td><td><strong>${m.name}</strong></td><td>${m.times}</td><td>${m.days} day${m.days!=1?"s":""}</td></tr>`).join("")}</tbody></table>
+            <table><thead><tr><th>#</th><th>Medicine</th><th>Frequency</th><th>Duration</th>${showInstructions ? "<th>Instructions</th>" : ""}</tr></thead>
+            <tbody>${meds.map((m,i)=>`<tr><td style="color:#999">${i+1}</td><td><strong>${escHtml(m.name)}</strong></td><td>${escHtml(m.times)}</td><td>${escHtml(medDuration(m))}</td>${showInstructions ? `<td>${escHtml(medInstructions(m))}</td>` : ""}</tr>`).join("")}</tbody></table>
           </div>` : ""}
-          ${presc.follow_up_date ? `<div class="followup-box"><span style="font-size:18px;">📅</span><div><div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#166534;letter-spacing:0.8px;">5. NEXT FOLLOW-UP</div><div style="display:flex;gap:16px;align-items:center;margin-top:4px;"><div><div style="font-size:8px;color:#4ade80;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;">Date</div><div style="font-family:monospace;font-size:13px;font-weight:700;color:#15803d;">${fmtDate(presc.follow_up_date)}</div></div>${presc.follow_up_time ? `<div style="border-left:1.5px solid #86efac;padding-left:12px;"><div style="font-size:8px;color:#4ade80;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;">Time</div><div style="font-family:monospace;font-size:13px;font-weight:700;color:#15803d;">${fmtTime(presc.follow_up_time)}</div></div>` : ""}</div></div></div>` : ""}
+          ${presc.follow_up_date ? `<div class="followup-box"><span style="font-size:18px;">📅</span><div><div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#166534;letter-spacing:0.8px;">5. NEXT FOLLOW-UP</div><div style="display:flex;gap:16px;align-items:center;margin-top:4px;"><div><div style="font-size:8px;color:#4ade80;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;">Date</div><div style="font-family:monospace;font-size:13px;font-weight:700;color:#15803d;">${escHtml(fmtDate(presc.follow_up_date))}</div></div>${presc.follow_up_time ? `<div style="border-left:1.5px solid #86efac;padding-left:12px;"><div style="font-size:8px;color:#4ade80;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;">Time</div><div style="font-family:monospace;font-size:13px;font-weight:700;color:#15803d;">${escHtml(fmtTime(presc.follow_up_time))}</div></div>` : ""}</div></div></div>` : ""}
           <div class="sig-area"><div class="sig-block"><img src="${DOCTOR_SIGNATURE_IMG}" alt="Doctor's signature" style="width:130px;height:auto;display:block;margin-bottom:2px;" /><div class="sig-line"></div><div style="font-size:12px;font-weight:700;">Dr. Rama Raju. D</div><div style="font-size:10px;color:#666;">MDS (OSM), Oral Health Centre</div></div></div>
         </div>
-        <div class="footer">Timings : Mon to sat 10.30am to 2.00 pm &amp; 5.30pm to 8.00pm</div>
+        <div class="footer">${escHtml(CLINIC_TIMINGS)}</div>
       </div>
       </body></html>
     `);
@@ -1487,7 +1511,7 @@ const PrescriptionViewModal = ({ presc, onClose }) => {
                 <table style={{ width:"100%", borderCollapse:"collapse" }}>
                   <thead>
                     <tr>
-                      {["#","Medicine","Frequency","Duration"].map(h => (
+                      {["#","Medicine","Frequency","Duration", ...(showInstructions ? ["Instructions"] : [])].map(h => (
                         <th key={h} style={{
                           fontSize:10, textTransform:"uppercase", letterSpacing:"0.8px",
                           color:"#777", padding:"7px 10px", borderBottom:"2px solid #ddd",
@@ -1502,7 +1526,8 @@ const PrescriptionViewModal = ({ presc, onClose }) => {
                         <td style={{ padding:"9px 10px", borderBottom:"1px solid #eee", fontSize:12.5, color:"#999" }}>{i+1}</td>
                         <td style={{ padding:"9px 10px", borderBottom:"1px solid #eee", fontSize:12.5, fontWeight:600 }}>💊 {m.name}</td>
                         <td style={{ padding:"9px 10px", borderBottom:"1px solid #eee", fontSize:12.5 }}>{m.times}</td>
-                        <td style={{ padding:"9px 10px", borderBottom:"1px solid #eee", fontSize:12.5 }}>{m.days} day{m.days!=1?"s":""}</td>
+                        <td style={{ padding:"9px 10px", borderBottom:"1px solid #eee", fontSize:12.5 }}>{medDuration(m)}</td>
+                        {showInstructions && <td style={{ padding:"9px 10px", borderBottom:"1px solid #eee", fontSize:12.5 }}>{medInstructions(m)}</td>}
                       </tr>
                     ))}
                   </tbody>
@@ -1553,7 +1578,7 @@ const PrescriptionViewModal = ({ presc, onClose }) => {
             textAlign:"center", fontSize:12, color:"#111", fontWeight:600,
             fontFamily:"Arial,Helvetica,sans-serif", letterSpacing:"0.3px",
           }}>
-            Timings : Mon to sat 10.30am to 2.00 pm &amp; 5.30pm to 8.00pm
+            {CLINIC_TIMINGS}
           </div>
         </div>
       </div>
@@ -1566,8 +1591,7 @@ const PrescriptionViewModal = ({ presc, onClose }) => {
 ═══════════════════════════════════════════ */
 const PrescriptionEditModal = ({ presc, onSave, onClose, saving }) => {
   const [form, setForm] = useState(() => {
-    let meds = [];
-    try { meds = JSON.parse(presc.medicines || "[]"); } catch {}
+    const meds = parsePrescMeds(presc.medicines);
     return {
       patient_name:  presc.patient_name  || "",
       patient_age:   presc.patient_age   || "",
@@ -2029,8 +2053,7 @@ const PrescriptionsSection = ({
           ) : (
             <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
               {sorted.map(p => {
-                let meds = [];
-                try { meds = JSON.parse(p.medicines||"[]"); } catch {}
+                const meds = parsePrescMeds(p.medicines);
                 return (
                   <div key={p.id} style={{
                     border:"1.5px solid #e9eef4", borderRadius:12,
@@ -2117,588 +2140,15 @@ const PrescriptionsSection = ({
 };
 
 /* ═══════════════════════════════════════════
-   OTHER EXPENSES — HELPERS
+   OTHER EXPENSES — in OtherExpenses.jsx (same pages folder)
 ═══════════════════════════════════════════ */
-const OE_EMPTY = {
-  type: "Dr",        // "Dr" | "Company" | "Other"
-  party_name: "",
-  amount: "",
-  description: "",
-  date: new Date().toISOString().split("T")[0],
-};
-
-const fmtCurrency = (v) => {
-  const n = parseFloat(v);
-  if (isNaN(n)) return "—";
-  return "₹" + n.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-};
-
-/* ── Modal: Add / Edit expense ── */
-const OtherExpenseModal = ({ initial, onSave, onClose, saving }) => {
-  const [form, setForm] = useState(initial || { ...OE_EMPTY });
-  const set = (k, v) => setForm(p => ({ ...p, [k]: v }));
-  const isEdit = !!initial?.id;
-
-  const typeLabel = { Dr: "Doctor", Company: "Company", Other: "Other (Name)" };
-
-  const canSave = form.party_name.trim() && form.amount && !isNaN(parseFloat(form.amount)) && form.date;
-
-  return (
-    <div className="oe-overlay" onClick={onClose}>
-      <div className="oe-modal" onClick={e => e.stopPropagation()}>
-        {/* Header */}
-        <div style={{
-          background: "linear-gradient(135deg,#92400e,#b45309)",
-          borderRadius: "20px 20px 0 0",
-          padding: "22px 28px",
-          display: "flex", alignItems: "center", justifyContent: "space-between",
-        }}>
-          <div style={{ display:"flex", alignItems:"center", gap:12 }}>
-            <div style={{
-              width:38, height:38, borderRadius:10,
-              background:"rgba(255,255,255,0.2)", border:"1px solid rgba(255,255,255,0.3)",
-              display:"flex", alignItems:"center", justifyContent:"center", fontSize:18,
-            }}>💸</div>
-            <div>
-              <div style={{ fontSize:15, fontWeight:800, color:"#fff" }}>
-                {isEdit ? "Edit Expense" : "Add Other Expense"}
-              </div>
-              <div style={{ fontSize:11.5, color:"rgba(255,255,255,0.7)", marginTop:1 }}>
-                {isEdit ? "Update expense record" : "Record a new miscellaneous expense"}
-              </div>
-            </div>
-          </div>
-          <button onClick={onClose} style={{
-            width:32, height:32, borderRadius:8,
-            border:"1.5px solid rgba(255,255,255,0.3)", background:"rgba(255,255,255,0.1)",
-            color:"#fff", fontSize:16, cursor:"pointer",
-            display:"flex", alignItems:"center", justifyContent:"center",
-          }}>✕</button>
-        </div>
-
-        {/* Body */}
-        <div style={{ padding:"24px 28px 28px", display:"flex", flexDirection:"column", gap:18 }}>
-
-          {/* Date */}
-          <div>
-            <label className="oe-label">Date *</label>
-            <input type="date" className="oe-input" value={form.date} onChange={e => set("date", e.target.value)} style={{ width:200 }} />
-          </div>
-
-          {/* Type selector */}
-          <div>
-            <label className="oe-label">Paid To *</label>
-            <div style={{ display:"flex", gap:8 }}>
-              {["Dr", "Company", "Other"].map(t => (
-                <button key={t} className={`oe-type-btn ${form.type === t ? "active" : ""}`}
-                  onClick={() => { set("type", t); set("party_name", ""); }}>
-                  {t === "Dr" ? "🩺 Doctor" : t === "Company" ? "🏢 Company" : "👤 Other"}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Party name */}
-          <div>
-            <label className="oe-label">
-              {form.type === "Dr" ? "Doctor Name *" : form.type === "Company" ? "Company Name *" : "Name *"}
-            </label>
-            <input className="oe-input"
-              placeholder={
-                form.type === "Dr" ? "e.g. Dr. Ramesh Kumar" :
-                form.type === "Company" ? "e.g. MedEquip Supplies Pvt Ltd" :
-                "e.g. Electrician, Plumber…"
-              }
-              value={form.party_name}
-              onChange={e => set("party_name", e.target.value)}
-              autoFocus={!isEdit}
-            />
-          </div>
-
-          {/* Amount */}
-          <div>
-            <label className="oe-label">Amount Paid (₹) *</label>
-            <input type="number" min="0" step="0.01" className="oe-input"
-              placeholder="e.g. 2500.00"
-              value={form.amount}
-              onChange={e => set("amount", e.target.value)}
-              style={{ width:220 }}
-            />
-          </div>
-
-          {/* Description */}
-          <div>
-            <label className="oe-label">Description <span style={{ color:"#c0cce0", fontWeight:400, textTransform:"none", letterSpacing:0 }}>(optional)</span></label>
-            <textarea className="oe-input" rows={3}
-              placeholder="e.g. Dental chair maintenance, lab supplies, consultation fee…"
-              value={form.description}
-              onChange={e => set("description", e.target.value)}
-              style={{ resize:"vertical", minHeight:72 }}
-            />
-          </div>
-
-          {/* Preview */}
-          {canSave && (
-            <div style={{
-              background:"#fff7ed", border:"1.5px solid #fed7aa",
-              borderRadius:10, padding:"12px 16px", fontSize:12.5, color:"#92400e", lineHeight:1.7,
-            }}>
-              <div style={{ fontWeight:800, marginBottom:4 }}>📋 Will be saved as:</div>
-              <div>Date: <strong>{form.date}</strong> · To: <strong>{form.type === "Dr" ? "Dr. " : ""}{form.party_name}</strong> · Amount: <strong>{fmtCurrency(form.amount)}</strong></div>
-              {form.description && <div>Note: <em>{form.description}</em></div>}
-              <div style={{ marginTop:6, fontSize:11, color:"#b45309" }}>
-                📂 Auto-saved to Excel → receipts/other expenses/Other Exp {new Date(form.date + "T00:00:00").toLocaleString("en-IN", { month:"long" })}/{new Date(form.date + "T00:00:00").getFullYear()}
-              </div>
-            </div>
-          )}
-
-          {/* Actions */}
-          <div style={{ display:"flex", gap:10, marginTop:4 }}>
-            <button onClick={onClose} style={{
-              flex:1, padding:12, borderRadius:10,
-              background:"transparent", color:"#64748b",
-              border:"1.5px solid #e2e8f4",
-              fontFamily:"'Plus Jakarta Sans',sans-serif",
-              fontSize:14, fontWeight:600, cursor:"pointer",
-            }}>Cancel</button>
-            <button onClick={() => canSave && onSave(form)} disabled={!canSave || saving} style={{
-              flex:2, padding:12, borderRadius:10,
-              background: canSave ? "linear-gradient(135deg,#92400e,#b45309)" : "#e2e8f0",
-              color: canSave ? "#fff" : "#94a3b8",
-              border:"none",
-              fontFamily:"'Plus Jakarta Sans',sans-serif",
-              fontSize:14, fontWeight:700, cursor: canSave ? "pointer" : "not-allowed",
-              boxShadow: canSave ? "0 4px 12px rgba(180,83,9,0.28)" : "none",
-              opacity: saving ? 0.65 : 1,
-              display:"flex", alignItems:"center", justifyContent:"center", gap:6,
-            }}>
-              {saving ? <><span className="rdb-spinner" style={{ marginRight:6, borderTopColor:"#fff" }}/> Saving…</> : (isEdit ? "✅ Update Expense" : "💾 Save & Export to Excel")}
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-/* ── View modal ── */
-const OtherExpenseViewModal = ({ expense, onClose, onEdit, onDelete }) => (
-  <div className="oe-overlay" onClick={onClose}>
-    <div className="oe-modal" onClick={e => e.stopPropagation()} style={{ maxWidth:480 }}>
-      <div style={{
-        background:"linear-gradient(135deg,#78350f,#92400e)",
-        borderRadius:"20px 20px 0 0", padding:"22px 28px",
-        display:"flex", alignItems:"center", justifyContent:"space-between",
-      }}>
-        <div style={{ display:"flex", alignItems:"center", gap:12 }}>
-          <div style={{
-            width:38, height:38, borderRadius:10,
-            background:"rgba(255,255,255,0.18)", border:"1px solid rgba(255,255,255,0.28)",
-            display:"flex", alignItems:"center", justifyContent:"center", fontSize:18,
-          }}>💸</div>
-          <div style={{ fontSize:15, fontWeight:800, color:"#fff" }}>Expense Details</div>
-        </div>
-        <button onClick={onClose} style={{
-          width:30, height:30, borderRadius:8,
-          border:"1.5px solid rgba(255,255,255,0.3)", background:"rgba(255,255,255,0.1)",
-          color:"#fff", fontSize:15, cursor:"pointer",
-          display:"flex", alignItems:"center", justifyContent:"center",
-        }}>✕</button>
-      </div>
-
-      <div style={{ padding:"24px 28px 28px" }}>
-        {[
-          ["Date", expense.date],
-          ["Paid To", `${expense.type === "Dr" ? "Dr. " : ""}${expense.party_name} (${expense.type === "Other" ? "Other" : expense.type})`],
-          ["Amount", fmtCurrency(expense.amount)],
-          ["Description", expense.description || "—"],
-          ["Excel File", `receipts/other expenses/Other Exp ${new Date(expense.date + "T00:00:00").toLocaleString("en-IN",{month:"long"})}/${new Date(expense.date + "T00:00:00").getFullYear()}.xlsx`],
-        ].map(([label, value]) => (
-          <div key={label} style={{
-            display:"flex", gap:16, padding:"10px 0",
-            borderBottom:"1px solid #f0f4fb",
-          }}>
-            <div style={{ width:120, fontSize:11.5, fontWeight:700, color:"#94a3b8", textTransform:"uppercase", letterSpacing:"0.6px", flexShrink:0, paddingTop:1 }}>{label}</div>
-            <div style={{ fontSize:13.5, fontWeight:600, color:"#0b2d4e", flex:1, wordBreak:"break-word" }}>{value}</div>
-          </div>
-        ))}
-
-        <div style={{ display:"flex", gap:10, marginTop:22 }}>
-          <button onClick={onEdit} className="oe-action-btn" style={{
-            flex:1, padding:"10px 0", background:"#eff4ff", color:"#1d4ed8", border:"1.5px solid #c7d9fc",
-          }}>✏️ Edit</button>
-          <button onClick={onDelete} className="oe-action-btn" style={{
-            flex:1, padding:"10px 0", background:"#fff1f2", color:"#dc2626", border:"1.5px solid #fca5a5",
-          }}>🗑️ Delete</button>
-          <button onClick={onClose} className="oe-action-btn" style={{
-            flex:1, padding:"10px 0", background:"#f7f9fe", color:"#64748b", border:"1.5px solid #e2e8f4",
-          }}>Close</button>
-        </div>
-      </div>
-    </div>
-  </div>
-);
-
-/* ── Delete confirm ── */
-const OtherExpenseDeleteModal = ({ expense, onConfirm, onCancel, loading }) => (
-  <div className="oe-overlay" onClick={onCancel}>
-    <div style={{
-      background:"#fff", borderRadius:20, padding:"32px 36px", maxWidth:420, width:"100%",
-      boxShadow:"0 24px 80px rgba(10,25,55,0.28)",
-      animation:"appt-modal-in 0.25s cubic-bezier(.22,.68,0,1.2) both",
-    }} onClick={e => e.stopPropagation()}>
-      <div style={{
-        width:54, height:54, borderRadius:14,
-        background:"linear-gradient(135deg,#fff7ed,#ffedd5)",
-        border:"1.5px solid #fdba74",
-        display:"flex", alignItems:"center", justifyContent:"center",
-        fontSize:24, marginBottom:18,
-      }}>🗑️</div>
-      <div style={{ fontSize:17, fontWeight:800, color:"#0b2d4e", marginBottom:8 }}>Delete Expense?</div>
-      <div style={{ fontSize:13.5, color:"#64748b", lineHeight:1.65, marginBottom:24 }}>
-        This will permanently delete the ₹{parseFloat(expense?.amount||0).toLocaleString("en-IN")} expense
-        {expense?.party_name ? <> for <strong style={{ color:"#0b2d4e" }}>{expense.party_name}</strong></> : ""} and remove it from the Excel file.
-        This action cannot be undone.
-      </div>
-      <div style={{ display:"flex", gap:10 }}>
-        <button onClick={onCancel} style={{
-          flex:1, padding:12, borderRadius:10,
-          background:"transparent", color:"#64748b",
-          border:"1.5px solid #e2e8f4",
-          fontFamily:"'Plus Jakarta Sans',sans-serif",
-          fontSize:14, fontWeight:600, cursor:"pointer",
-        }}>Cancel</button>
-        <button onClick={onConfirm} disabled={loading} style={{
-          flex:1, padding:12, borderRadius:10,
-          background:"linear-gradient(135deg,#c2410c,#ea580c)",
-          color:"#fff", border:"none",
-          fontFamily:"'Plus Jakarta Sans',sans-serif",
-          fontSize:14, fontWeight:700, cursor:"pointer",
-          boxShadow:"0 4px 12px rgba(194,65,12,0.28)",
-          opacity:loading ? 0.65 : 1,
-        }}>{loading ? "Deleting…" : "🗑️ Delete"}</button>
-      </div>
-    </div>
-  </div>
-);
-
 /* ═══════════════════════════════════════════
-   OTHER EXPENSES SECTION
+   BILLING and DOCTOR'S INSTRUCTIONS
+   Both are in BillingReceipts.jsx (the "Billing" menu button). Doctor's
+   Instructions — the visits the doctor has closed, with the billing
+   instructions — open from the button at the top of Billing; the menu's
+   Billing button shows how many are waiting.
 ═══════════════════════════════════════════ */
-const OtherExpensesSection = ({ onBack }) => {
-  const [expenses,   setExpenses]   = useState([]);
-  const [loading,    setLoading]    = useState(false);
-  const [searchQ,    setSearchQ]    = useState("");
-  const [addOpen,    setAddOpen]    = useState(false);
-  const [editExp,    setEditExp]    = useState(null);
-  const [viewExp,    setViewExp]    = useState(null);
-  const [deleteExp,  setDeleteExp]  = useState(null);
-  const [saving,     setSaving]     = useState(false);
-  const [deleting,   setDeleting]   = useState(false);
-  const [toast,      setToast]      = useState(null);
-  const [filterDate, setFilterDate] = useState("");
-
-  /* ── Generate Excel filename from date ── */
-  const excelName = (dateStr) => {
-    const d = new Date(dateStr + "T00:00:00");
-    const month = d.toLocaleString("en-IN", { month: "long" });
-    const year  = d.getFullYear();
-    return `Other Exp ${month}/${year}`;
-  };
-
-  /* ── Load from backend ── */
-  const loadExpenses = async () => {
-    setLoading(true);
-    try {
-      const res = await api.get("/other-expenses");
-      setExpenses(res.data || []);
-    } catch (err) {
-      console.error("Failed to load other expenses:", err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => { loadExpenses(); }, []);
-
-  /* ── Save (create) ── */
-  const handleSave = async (form) => {
-    setSaving(true);
-    try {
-      const payload = {
-        ...form,
-        excel_file: excelName(form.date),
-      };
-      const res = await api.post("/other-expenses", payload);
-      setExpenses(prev => [res.data, ...prev]);
-      setAddOpen(false);
-      showToast("💾 Expense saved & exported to Excel!");
-    } catch (err) {
-      console.error("Save failed:", err);
-      alert("Failed to save expense. Please try again.");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  /* ── Update (edit) ── */
-  const handleUpdate = async (form) => {
-    setSaving(true);
-    try {
-      const payload = {
-        ...form,
-        excel_file: excelName(form.date),
-      };
-      const res = await api.put(`/other-expenses/${editExp.id}`, payload);
-      setExpenses(prev => prev.map(e => e.id === editExp.id ? res.data : e));
-      setEditExp(null);
-      showToast("✅ Expense updated in Excel!");
-    } catch (err) {
-      console.error("Update failed:", err);
-      alert("Failed to update. Please try again.");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  /* ── Delete ── */
-  const handleDelete = async () => {
-    setDeleting(true);
-    try {
-      await api.delete(`/other-expenses/${deleteExp.id}`);
-      setExpenses(prev => prev.filter(e => e.id !== deleteExp.id));
-      setDeleteExp(null);
-      setViewExp(null);
-      showToast("🗑️ Expense deleted from Excel.");
-    } catch (err) {
-      console.error("Delete failed:", err);
-      alert("Failed to delete. Please try again.");
-    } finally {
-      setDeleting(false);
-    }
-  };
-
-  const showToast = (msg) => {
-    setToast(msg);
-    setTimeout(() => setToast(null), 4000);
-  };
-
-  /* ── Filter & search ── */
-  const q = searchQ.trim().toLowerCase();
-  const filtered = expenses.filter(e => {
-    const matchSearch = !q || [e.party_name, e.description, e.type, e.amount+""].some(f => (f||"").toLowerCase().includes(q));
-    const matchDate   = !filterDate || (e.date || "").startsWith(filterDate);
-    return matchSearch && matchDate;
-  });
-  const sorted = [...filtered].sort((a,b) => (b.date||"") > (a.date||"") ? 1 : -1);
-
-  const totalFiltered = sorted.reduce((s,e) => s + (parseFloat(e.amount)||0), 0);
-
-  return (
-    <>
-      {/* Toast */}
-      {toast && (
-        <div className="oe-save-toast">
-          <span style={{ fontSize:20 }}>💸</span>
-          {toast}
-          <button onClick={() => setToast(null)} style={{ background:"transparent", border:"none", color:"rgba(255,255,255,0.7)", fontSize:16, cursor:"pointer", padding:"0 4px" }}>✕</button>
-        </div>
-      )}
-
-      {/* Add / Edit modal */}
-      {addOpen && (
-        <OtherExpenseModal onSave={handleSave} onClose={() => setAddOpen(false)} saving={saving} />
-      )}
-      {editExp && (
-        <OtherExpenseModal initial={editExp} onSave={handleUpdate} onClose={() => setEditExp(null)} saving={saving} />
-      )}
-      {viewExp && !editExp && !deleteExp && (
-        <OtherExpenseViewModal
-          expense={viewExp}
-          onClose={() => setViewExp(null)}
-          onEdit={() => { setEditExp(viewExp); setViewExp(null); }}
-          onDelete={() => { setDeleteExp(viewExp); setViewExp(null); }}
-        />
-      )}
-      {deleteExp && (
-        <OtherExpenseDeleteModal expense={deleteExp} onConfirm={handleDelete} onCancel={() => setDeleteExp(null)} loading={deleting} />
-      )}
-
-      <div className="rdb-fade rdb-fade-1" style={{
-        background:"#fff", borderRadius:16,
-        border:"1px solid rgba(226,232,244,0.9)",
-        boxShadow:"0 2px 8px rgba(29,77,122,0.05), 0 8px 24px rgba(29,77,122,0.07)",
-        marginBottom:22, overflow:"hidden",
-      }}>
-        {/* Section header */}
-        <div style={{
-          background:"linear-gradient(135deg,#78350f,#b45309)",
-          padding:"20px 28px",
-          display:"flex", alignItems:"center", justifyContent:"space-between", flexWrap:"wrap", gap:12,
-        }}>
-          <div style={{ display:"flex", alignItems:"center", gap:12 }}>
-            <div style={{
-              width:42, height:42, borderRadius:11,
-              background:"rgba(255,255,255,0.18)", border:"1px solid rgba(255,255,255,0.28)",
-              display:"flex", alignItems:"center", justifyContent:"center", fontSize:20,
-            }}>💸</div>
-            <div>
-              <div style={{ fontSize:16, fontWeight:800, color:"#fff" }}>Other Expenses</div>
-              <div style={{ fontSize:11.5, color:"rgba(255,255,255,0.72)", marginTop:1 }}>
-                {expenses.length} record{expenses.length !== 1 ? "s" : ""} · Auto-synced to Excel
-              </div>
-            </div>
-          </div>
-          <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
-            <button onClick={onBack} style={{
-              padding:"7px 16px", borderRadius:9,
-              background:"rgba(255,255,255,0.12)", border:"1.5px solid rgba(255,255,255,0.22)",
-              color:"rgba(255,255,255,0.82)", fontFamily:"'Plus Jakarta Sans',sans-serif",
-              fontSize:12.5, fontWeight:600, cursor:"pointer",
-            }}>← Dashboard</button>
-            <button onClick={() => setAddOpen(true)} style={{
-              display:"inline-flex", alignItems:"center", gap:7,
-              padding:"8px 18px", borderRadius:9,
-              background:"rgba(255,255,255,0.22)", border:"1.5px solid rgba(255,255,255,0.4)",
-              color:"#fff", fontFamily:"'Plus Jakarta Sans',sans-serif",
-              fontSize:13, fontWeight:700, cursor:"pointer",
-            }}>+ Add Expense</button>
-          </div>
-        </div>
-
-        {/* Search + filter bar */}
-        <div style={{
-          padding:"16px 24px", borderBottom:"1px solid #f0f4fb",
-          display:"flex", gap:12, alignItems:"center", flexWrap:"wrap",
-        }}>
-          <div style={{ position:"relative", flex:1, minWidth:200 }}>
-            <span style={{ position:"absolute", left:14, top:"50%", transform:"translateY(-50%)", fontSize:14, color:"#b0bad0" }}>🔍</span>
-            <input
-              className="oe-input"
-              placeholder="Search by name, type, description…"
-              value={searchQ}
-              onChange={e => setSearchQ(e.target.value)}
-              style={{ paddingLeft:40, background:"#f7f9fe" }}
-            />
-          </div>
-          <div>
-            <input type="month" className="oe-input"
-              value={filterDate}
-              onChange={e => setFilterDate(e.target.value)}
-              style={{ width:170 }}
-              title="Filter by month"
-            />
-          </div>
-          {(searchQ || filterDate) && (
-            <button onClick={() => { setSearchQ(""); setFilterDate(""); }} style={{
-              padding:"8px 14px", borderRadius:9, border:"1.5px solid #e2e8f4",
-              background:"#f7f9fe", color:"#64748b",
-              fontFamily:"'Plus Jakarta Sans',sans-serif", fontSize:12.5, fontWeight:600, cursor:"pointer",
-            }}>✕ Clear</button>
-          )}
-        </div>
-
-        {/* Summary strip */}
-        {sorted.length > 0 && (
-          <div style={{
-            padding:"10px 24px", background:"#fff7ed", borderBottom:"1px solid #fde8cc",
-            display:"flex", alignItems:"center", gap:16, flexWrap:"wrap",
-          }}>
-            <span style={{ fontSize:12.5, fontWeight:700, color:"#92400e" }}>
-              Showing {sorted.length} record{sorted.length !== 1 ? "s" : ""}
-            </span>
-            <span style={{ fontSize:12, color:"#b45309" }}>·</span>
-            <span style={{ fontSize:12.5, fontWeight:700, color:"#92400e" }}>
-              Total: <strong>{fmtCurrency(totalFiltered)}</strong>
-            </span>
-          </div>
-        )}
-
-        {/* Body */}
-        <div style={{ padding:"18px 24px 24px" }}>
-          {loading ? (
-            <div style={{ textAlign:"center", padding:"40px 0", color:"#94a3b8" }}>
-              <span className="rdb-spinner" style={{ width:24, height:24, borderWidth:3, borderTopColor:"#b45309" }} />
-              <div style={{ marginTop:12, fontSize:13.5, fontWeight:600 }}>Loading expenses…</div>
-            </div>
-          ) : sorted.length === 0 ? (
-            <div style={{ textAlign:"center", padding:"48px 20px" }}>
-              <div style={{ fontSize:42, marginBottom:12, opacity:0.35 }}>💸</div>
-              <div style={{ fontSize:14, fontWeight:700, color:"#475569", marginBottom:6 }}>
-                {searchQ || filterDate ? "No expenses match your search" : "No expenses recorded yet"}
-              </div>
-              <div style={{ fontSize:12.5, color:"#94a3b8", marginBottom:18 }}>
-                {searchQ || filterDate ? "Try different search terms or clear the filters." : "Click 'Add Expense' to record your first other expense."}
-              </div>
-              {!searchQ && !filterDate && (
-                <button onClick={() => setAddOpen(true)} style={{
-                  display:"inline-flex", alignItems:"center", gap:8,
-                  padding:"10px 22px", borderRadius:10,
-                  background:"linear-gradient(135deg,#92400e,#b45309)",
-                  color:"#fff", border:"none",
-                  fontFamily:"'Plus Jakarta Sans',sans-serif",
-                  fontSize:13, fontWeight:700, cursor:"pointer",
-                  boxShadow:"0 4px 12px rgba(180,83,9,0.25)",
-                }}>+ Add First Expense</button>
-              )}
-            </div>
-          ) : (
-            <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
-              {sorted.map((exp, i) => (
-                <div key={exp.id || i} className="oe-row">
-                  {/* Left: info */}
-                  <div style={{ flex:1, minWidth:0 }}>
-                    <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
-                      <span style={{
-                        fontSize:11, fontWeight:700, padding:"2px 9px", borderRadius:20,
-                        background: exp.type === "Dr" ? "#eff4ff" : exp.type === "Company" ? "#f0fdf4" : "#fff7ed",
-                        color: exp.type === "Dr" ? "#1d4ed8" : exp.type === "Company" ? "#166534" : "#92400e",
-                        border: `1px solid ${exp.type === "Dr" ? "#c7d9fc" : exp.type === "Company" ? "#86efac" : "#fdba74"}`,
-                        letterSpacing:"0.5px", textTransform:"uppercase",
-                      }}>
-                        {exp.type === "Dr" ? "🩺 Dr" : exp.type === "Company" ? "🏢 Co." : "👤 Other"}
-                      </span>
-                      <span style={{ fontSize:14, fontWeight:700, color:"#0b2d4e" }}>
-                        {exp.type === "Dr" ? "Dr. " : ""}{exp.party_name}
-                      </span>
-                    </div>
-                    <div style={{ display:"flex", alignItems:"center", gap:12, marginTop:5, flexWrap:"wrap" }}>
-                      <span style={{ fontSize:12, color:"#64748b" }}>📅 {exp.date}</span>
-                      {exp.description && (
-                        <span style={{ fontSize:12, color:"#94a3b8", fontStyle:"italic" }}>
-                          {exp.description.length > 60 ? exp.description.slice(0,60) + "…" : exp.description}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Center: amount */}
-                  <div style={{ fontSize:16, fontWeight:800, color:"#b45309", flexShrink:0 }}>
-                    {fmtCurrency(exp.amount)}
-                  </div>
-
-                  {/* Right: actions */}
-                  <div style={{ display:"flex", gap:7, flexShrink:0 }}>
-                    <button className="oe-action-btn" onClick={() => setViewExp(exp)} style={{
-                      background:"#f0fdf4", color:"#166534", border:"1.5px solid #bbf7d0",
-                    }}>👁 View</button>
-                    <button className="oe-action-btn" onClick={() => setEditExp(exp)} style={{
-                      background:"#eff4ff", color:"#1d4ed8", border:"1.5px solid #c7d9fc",
-                    }}>✏️ Edit</button>
-                    <button className="oe-action-btn" onClick={() => setDeleteExp(exp)} style={{
-                      background:"#fff1f2", color:"#dc2626", border:"1.5px solid #fca5a5",
-                    }}>🗑️</button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-    </>
-  );
-};
-
 /* ═══════════════════════════════════════════
    MAIN COMPONENT
 ═══════════════════════════════════════════ */
@@ -2725,23 +2175,48 @@ export default function ReceptionDashboard() {
   const [prescSearchQuery,  setPrescSearchQuery]  = useState("");
   const [prescLoaded,       setPrescLoaded]       = useState(false);
 
-  // Active section: "dashboard" | "prescriptions" | "billing" | "other-expenses"
+  // Active section: "dashboard" | "prescriptions" | "receipts" (Billing) | "other-expenses"
   const [activeSection, setActiveSection] = useState("dashboard");
 
-  // visitId passed via URL — auto-selects patient in billing after doctor closes a visit
-  const [billingVisitId, setBillingVisitId] = useState(null);
+  // visitId passed via URL — that closed visit is pointed out in Billing → Doctor's Instructions
+  const [instrVisitId, setInstrVisitId] = useState(null);
+  // Billing opens on its Payment Dashboard ("payments") or on Doctor's Instructions ("instructions")
+  const [billingView, setBillingView] = useState("payments");
+  const [billingKey, setBillingKey] = useState(0);         // a new Billing screen each time the menu is pressed
+  const openBilling = (view = "payments") => {
+    setBillingView(view);
+    setBillingKey(k => k + 1);
+    setActiveSection("receipts");
+  };
 
-  // On mount — if navigated here with ?section=billing&visitId=X or ?section=prescriptions
+  // How many closed visits are still waiting to be billed (shown on the Billing menu button)
+  const [pendingInstr, setPendingInstr] = useState(0);
+  const refreshPendingInstr = () => {
+    api.get("/visits/closed", { params: { status: "pending" } })
+      .then(res => setPendingInstr(Array.isArray(res.data) ? res.data.length : 0))
+      .catch(() => {});                 // the count is only a convenience; never show an error for it
+  };
+  useEffect(() => {
+    refreshPendingInstr();
+    const timer = setInterval(refreshPendingInstr, 60000);
+    return () => clearInterval(timer);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // On mount — if navigated here with ?section=instructions&visitId=X, ?section=receipts or ?section=prescriptions
+  // (?section=instructions and the old ?section=billing open Billing → Doctor's Instructions)
   useEffect(() => {
     const params = new URLSearchParams(location.search);
     const section = params.get("section");
     const visitId = params.get("visitId");
-    if (visitId) setBillingVisitId(visitId);
+    if (visitId) setInstrVisitId(visitId);
     if (section === "prescriptions") {
       openPrescriptions();
       window.history.replaceState({}, "", "/reception/dashboard");
-    } else if (section === "billing") {
-      setActiveSection("billing");
+    } else if (section === "instructions" || section === "billing") {
+      openBilling("instructions");
+      window.history.replaceState({}, "", "/reception/dashboard");
+    } else if (section === "receipts") {
+      openBilling("payments");
       window.history.replaceState({}, "", "/reception/dashboard");
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -3113,9 +2588,16 @@ export default function ReceptionDashboard() {
               onClick={openPrescriptions}>
               <span className="rdb-nav-emoji">💊</span> Prescriptions
             </button>
-            <button className={`rdb-nav-link ${activeSection === "billing" ? "active" : ""}`}
-              onClick={() => setActiveSection("billing")}>
-              <span className="rdb-nav-emoji">💰</span> Billing
+            <button className={`rdb-nav-link ${activeSection === "receipts" ? "active" : ""}`}
+              onClick={() => openBilling("payments")}>
+              <span className="rdb-nav-emoji">🧾</span> Billing
+              {pendingInstr > 0 && (
+                <span title={`${pendingInstr} closed visit${pendingInstr !== 1 ? "s" : ""} waiting to be billed`} style={{
+                  marginLeft:7, minWidth:19, height:19, padding:"0 6px", borderRadius:10,
+                  background:"#f59e0b", color:"#fff", fontSize:11, fontWeight:800,
+                  display:"inline-flex", alignItems:"center", justifyContent:"center",
+                }}>{pendingInstr}</span>
+              )}
             </button>
             <button className={`rdb-nav-link ${activeSection === "other-expenses" ? "active" : ""}`}
               onClick={() => setActiveSection("other-expenses")}>
@@ -3401,34 +2883,15 @@ export default function ReceptionDashboard() {
           {/* ════════════════════════════════
               SECTION: PRESCRIPTIONS (shown on chip click)
           ════════════════════════════════ */}
-          {activeSection === "billing" && (
-            <>
-              {billingVisitId && (
-                <div style={{
-                  background: "linear-gradient(135deg, #f0fdf4, #dcfce7)",
-                  border: "1.5px solid #86efac",
-                  borderRadius: 12, padding: "12px 18px", marginBottom: 16,
-                  display: "flex", alignItems: "center", gap: 12,
-                  fontFamily: "'Plus Jakarta Sans', sans-serif",
-                }}>
-                  <span style={{ fontSize: 22 }}>✅</span>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 13.5, fontWeight: 700, color: "#0d6e4a" }}>
-                      Visit closed by doctor — patient auto-selected for billing
-                    </div>
-                    <div style={{ fontSize: 12, color: "#166534", marginTop: 2 }}>
-                      Review the doctor's billing instructions and treatment details below, then proceed to bill.
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => setBillingVisitId(null)}
-                    style={{ background: "transparent", border: "none", color: "#16a34a", fontSize: 18, cursor: "pointer", padding: "0 4px" }}>
-                    ✕
-                  </button>
-                </div>
-              )}
-              <BillingSection initialVisitId={billingVisitId} />
-            </>
+          {/* ── Billing (receipts + Doctor's Instructions) ── */}
+          {activeSection === "receipts" && (
+            <BillingReceipts
+              key={billingKey}
+              onBack={() => setActiveSection("dashboard")}
+              initialView={billingView}
+              highlightVisitId={instrVisitId}
+              onChanged={refreshPendingInstr}
+            />
           )}
 
           {activeSection === "prescriptions" && (
@@ -3444,7 +2907,7 @@ export default function ReceptionDashboard() {
           )}
 
           {activeSection === "other-expenses" && (
-            <OtherExpensesSection onBack={() => setActiveSection("dashboard")} />
+            <OtherExpenses onBack={() => setActiveSection("dashboard")} />
           )}
 
         </div>

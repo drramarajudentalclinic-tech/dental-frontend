@@ -2,15 +2,16 @@ import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import api from "../api/api";
 
-import DoctorMedicalSummary from "../components/doctor/DoctorMedicalSummary";
-import DoctorHabitsSummary from "../components/doctor/DoctorHabitsSummary";
-import DoctorWomenSummary from "../components/doctor/DoctorWomenSummary";
 
 import DentalChart, { resolveDiagnosisCondition } from "../components/DentalChart";
 import Findings from "../components/Findings";
 import Consultation from "../components/Consultation";
 import Prescription from "../components/Prescription";
 import ImageUpload from "../components/ImageUpload";
+// Medical Conditions, Allergy Records, Current Medications, Personal Habits
+// and Women's Health: one shared component — the same one Reception uses,
+// reading and writing the same records.
+import MedicalHistoryManager from "../components/MedicalHistoryManager";
 
 /* ═══════════════════════════════════════════
    GLOBAL STYLES
@@ -157,6 +158,125 @@ const injectStyles = () => {
       50%      { box-shadow: 0 0 0 6px rgba(220,38,38,0); }
     }
     .vp-alert-pulse { animation: vp-pulse-alert 2.2s ease-in-out infinite; }
+
+    /* ══════════ Doctor-editable section controls ══════════ */
+    .vp-card-hd-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 4px; }
+    .vp-card-hd-row .vp-badge { margin-bottom: 0; }
+    .vp-edit-btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 6px 14px; border-radius: 8px;
+      background: #eff6ff; color: #1d4ed8; border: 1.5px solid #bfdbfe;
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      font-size: 12px; font-weight: 700; cursor: pointer;
+      transition: all 0.15s; flex-shrink: 0;
+    }
+    .vp-edit-btn:hover { background: #dbeafe; border-color: #93c5fd; }
+    .vp-edit-actions { display: flex; gap: 8px; flex-shrink: 0; }
+    .vp-save-btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 6px 14px; border-radius: 8px;
+      background: linear-gradient(135deg, #16a34a, #22c55e);
+      color: #fff; border: none;
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      font-size: 12px; font-weight: 700; cursor: pointer;
+      transition: all 0.15s;
+    }
+    .vp-save-btn:hover:not(:disabled) { filter: brightness(1.06); }
+    .vp-save-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+    .vp-cancel-btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 6px 14px; border-radius: 8px;
+      background: #f1f5f9; color: #475569; border: 1.5px solid #e2e8f0;
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      font-size: 12px; font-weight: 700; cursor: pointer;
+      transition: all 0.15s;
+    }
+    .vp-cancel-btn:hover:not(:disabled) { background: #e2e8f0; }
+    .vp-cancel-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+    .vp-edit-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      gap: 10px;
+    }
+    .vp-check-cell {
+      display: flex; align-items: center; gap: 9px;
+      background: #f7f9fe; border: 1px solid #edf1fa; border-radius: 10px;
+      padding: 10px 12px;
+    }
+    .vp-check-cell input[type="checkbox"] { width: 16px; height: 16px; accent-color: #2563eb; cursor: pointer; flex-shrink: 0; }
+    .vp-check-cell label { font-size: 13px; font-weight: 600; color: #1a2540; cursor: pointer; user-select: none; }
+    .vp-detail-input {
+      width: 100%; margin-top: 8px;
+      padding: 8px 10px; border: 1.5px solid #dde5f4; border-radius: 7px;
+      font-family: 'Plus Jakarta Sans', sans-serif; font-size: 12.5px; color: #1a2540;
+      box-sizing: border-box; outline: none; transition: border-color 0.15s;
+    }
+    .vp-detail-input:focus { border-color: #93c5fd; box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+    .vp-field-block { margin-top: 14px; }
+    .vp-field-block label {
+      display: block; font-size: 10.5px; font-weight: 700; color: #8899bb;
+      letter-spacing: 0.8px; text-transform: uppercase; margin-bottom: 6px;
+    }
+    .vp-text-input, .vp-textarea-input {
+      width: 100%; padding: 10px 12px; border: 1.5px solid #dde5f4; border-radius: 9px;
+      font-family: 'Plus Jakarta Sans', sans-serif; font-size: 13.5px; color: #1a2540;
+      box-sizing: border-box; outline: none; transition: border-color 0.15s;
+    }
+    .vp-text-input:focus, .vp-textarea-input:focus { border-color: #93c5fd; box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+    .vp-textarea-input { resize: vertical; min-height: 70px; }
+    .vp-yn-toggle { display: flex; gap: 8px; }
+    .vp-yn-btn {
+      padding: 7px 18px; border-radius: 8px; cursor: pointer;
+      font-family: 'Plus Jakarta Sans', sans-serif; font-size: 12.5px; font-weight: 700;
+      border: 1.5px solid #dde5f4; background: #fff; color: #64748b; transition: all 0.15s;
+    }
+    .vp-yn-btn.active { background: #2563eb; color: #fff; border-color: #2563eb; }
+    .vp-allergy-edit-row {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)) auto;
+      gap: 8px; align-items: end;
+      background: #fafbff; border: 1.5px solid #e8edf8; border-radius: 10px;
+      padding: 12px; margin-bottom: 10px;
+    }
+    .vp-remove-row-btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 34px; height: 34px; border-radius: 8px; flex-shrink: 0;
+      background: #fee2e2; color: #b91c1c; border: 1.5px solid #fca5a5;
+      font-size: 14px; cursor: pointer; transition: all 0.15s;
+    }
+    .vp-remove-row-btn:hover { background: #fecaca; }
+    .vp-add-row-btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 9px 16px; border-radius: 9px;
+      background: #f7f9fe; color: #2563eb; border: 1.5px dashed #93c5fd;
+      font-family: 'Plus Jakarta Sans', sans-serif; font-size: 12.5px; font-weight: 700; cursor: pointer;
+      transition: all 0.15s;
+    }
+    .vp-add-row-btn:hover { background: #eff6ff; }
+    .vp-no-flag-row { margin-bottom: 16px; }
+    .vp-it-btn {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 7px 14px; border-radius: 8px; cursor: pointer;
+      font-family: 'Plus Jakarta Sans', sans-serif; font-size: 12px; font-weight: 700;
+      border: 1.5px solid transparent; transition: all 0.15s; white-space: nowrap;
+    }
+    .vp-it-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+    .vp-it-add    { background: #2563eb; color: #fff; border-color: #2563eb; }
+    .vp-it-add:hover:not(:disabled)    { background: #1d4ed8; }
+    .vp-it-edit   { background: #eff6ff; color: #1d4ed8; border-color: #bfdbfe; padding: 5px 10px; }
+    .vp-it-edit:hover:not(:disabled)   { background: #dbeafe; }
+    .vp-it-update { background: #16a34a; color: #fff; border-color: #16a34a; }
+    .vp-it-update:hover:not(:disabled) { background: #15803d; }
+    .vp-it-delete { background: #fee2e2; color: #b91c1c; border-color: #fca5a5; padding: 5px 10px; }
+    .vp-it-delete:hover:not(:disabled) { background: #fecaca; }
+    .vp-it-cancel { background: #fff; color: #64748b; border-color: #dde5f4; }
+    .vp-it-cancel:hover:not(:disabled) { background: #f1f5f9; }
+    .vp-it-card {
+      background: #f8faff; border: 1.5px solid #e8edf8; border-radius: 10px;
+      padding: 12px 14px; display: flex; flex-direction: column; gap: 10px;
+    }
+    .vp-it-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+    .vp-it-form-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px; }
   `;
   document.head.appendChild(s);
 };
@@ -180,13 +300,6 @@ const InfoCell = ({ label, value, wide, accent }) => (
   </div>
 );
 
-const SevPill = ({ s }) => {
-  const map = { Mild: "vp-sev-mild", Moderate: "vp-sev-mod", Severe: "vp-sev-sev", "Life-threatening": "vp-sev-life" };
-  return s
-    ? <span className={`vp-sev ${map[s] || "vp-sev-mod"}`}>{s}</span>
-    : <span style={{ color: "#b0bad0" }}>—</span>;
-};
-
 const Module = ({ icon, title, sub, bg, children, delay = "" }) => (
   <div className={`vp-module vp-animate ${delay}`}>
     <div className="vp-module-header">
@@ -200,21 +313,49 @@ const Module = ({ icon, title, sub, bg, children, delay = "" }) => (
   </div>
 );
 
-const Card = ({ badge, badgeColor, badgeBg, icon, children, delay = "", extra = "" }) => (
+const Card = ({ badge, badgeColor, badgeBg, icon, children, delay = "", extra = "", headerActions }) => (
   <div className={`vp-card vp-animate ${delay} ${extra}`}>
     {badge && (
-      <div className="vp-badge" style={{
-        background: badgeBg || "#eff4ff",
-        color: badgeColor || "#1d4ed8",
-        border: `1px solid ${badgeColor || "#1d4ed8"}22`,
-      }}>
-        {icon && <span style={{ fontSize: 12 }}>{icon}</span>}
-        {badge}
+      <div className="vp-card-hd-row">
+        <div className="vp-badge" style={{
+          background: badgeBg || "#eff4ff",
+          color: badgeColor || "#1d4ed8",
+          border: `1px solid ${badgeColor || "#1d4ed8"}22`,
+        }}>
+          {icon && <span style={{ fontSize: 12 }}>{icon}</span>}
+          {badge}
+        </div>
+        {headerActions}
       </div>
     )}
     {children}
   </div>
 );
+
+/* ══════════════════════════════════════════════════════════════
+   EDIT / SAVE / CANCEL header control — shown at the top-right of
+   any doctor-editable card (everything except Patient Information,
+   Chief Complaint, and Family Doctor, which stay reception-owned).
+══════════════════════════════════════════════════════════════ */
+const EditControls = ({ editing, saving, onEdit, onSave, onCancel }) => {
+  if (!editing) {
+    return (
+      <button type="button" className="vp-edit-btn" onClick={onEdit}>
+        ✏️ Edit
+      </button>
+    );
+  }
+  return (
+    <div className="vp-edit-actions">
+      <button type="button" className="vp-cancel-btn" disabled={saving} onClick={onCancel}>
+        Cancel
+      </button>
+      <button type="button" className="vp-save-btn" disabled={saving} onClick={onSave}>
+        {saving ? "Saving…" : "💾 Save"}
+      </button>
+    </div>
+  );
+};
 
 /* ═══════════════════════════════════════════
    BILLING INSTRUCTIONS MODAL
@@ -254,7 +395,7 @@ function BillingInstructionsModal({ visit, patient, onConfirm, onCancel }) {
               display:"flex", alignItems:"center", justifyContent:"center", fontSize:20,
             }}>💰</div>
             <div>
-              <div style={{ fontSize:16, fontWeight:800, color:"#fff" }}>Close Visit & Send to Billing</div>
+              <div style={{ fontSize:16, fontWeight:800, color:"#fff" }}>Close Visit & Send to Reception</div>
               <div style={{ fontSize:12, color:"rgba(255,255,255,0.65)", marginTop:2 }}>
                 {patient?.name}{patient?.case_number ? ` · Case ${patient.case_number}` : ""}
               </div>
@@ -274,7 +415,7 @@ function BillingInstructionsModal({ visit, patient, onConfirm, onCancel }) {
             borderRadius:10, padding:"10px 14px", marginBottom:18,
             fontSize:12.5, color:"#1d4d7a", lineHeight:1.6,
           }}>
-            📋 The clinical summary will be sent to the <strong>reception billing queue</strong> automatically.
+            📋 The clinical summary will be sent to <strong>Reception</strong> automatically (their “Doctor's Instructions” list).
             Add optional billing instructions below, then you will return to your <strong>dashboard</strong> for the next patient.
           </div>
 
@@ -285,7 +426,7 @@ function BillingInstructionsModal({ visit, patient, onConfirm, onCancel }) {
             }}>
               <div style={{ fontSize:11, fontWeight:800, color:"#1d4d7a", letterSpacing:0.5,
                 textTransform:"uppercase", marginBottom:10 }}>
-                📋 Clinical Summary (auto-sent to billing)
+                📋 Clinical Summary (auto-sent to Reception)
               </div>
               {visit?.diagnosis      && <div style={{ display:"flex", gap:8, marginBottom:6, fontSize:13 }}><span style={{ fontWeight:700, color:"#0b2d4e", minWidth:130, flexShrink:0 }}>Diagnosis:</span><span style={{ color:"#334155" }}>{visit.diagnosis}</span></div>}
               {visit?.treatment_done && <div style={{ display:"flex", gap:8, marginBottom:6, fontSize:13 }}><span style={{ fontWeight:700, color:"#0b2d4e", minWidth:130, flexShrink:0 }}>Treatment Done:</span><span style={{ color:"#334155" }}>{visit.treatment_done}</span></div>}
@@ -364,10 +505,10 @@ export default function VisitPage() {
   const [loading,    setLoading]    = useState(true);
   const [visit,      setVisit]      = useState(null);
   const [patient,    setPatient]    = useState(null);
+  // Kept only to work out the Medical Alerts banner. The records themselves
+  // are shown and edited by <MedicalHistoryManager> further down.
   const [medical,    setMedical]    = useState({});
-  const [allergy, setAllergy] = useState({});
-  const [medications, setMedications] = useState([]);
-  const [habits, setHabits] = useState({});
+  const [allergy,    setAllergy]    = useState({});
   const [women,      setWomen]      = useState({});
   const [familyDoc,  setFamilyDoc]  = useState({});
   const [consent,    setConsent]    = useState({});
@@ -376,6 +517,15 @@ export default function VisitPage() {
   const [chartRecords,       setChartRecords]       = useState([]);
   const [findings,           setFindings]           = useState([]);
   const [latestConsultation, setLatestConsultation] = useState(null);
+
+  // ── Doctor-editable sections ──
+  // Patient Information and Family Doctor stay reception-owned and read-only
+  // here. The chief complaint can be corrected below. Medical conditions,
+  // allergies, current medications, habits and women's health have full
+  // Add / Edit / Update / Delete through <MedicalHistoryManager>.
+  const [editingSection, setEditingSection] = useState(null); // 'complaint' | null
+  const [savingSection,  setSavingSection]   = useState(false);
+  const [complaintDraft, setComplaintDraft]  = useState("");
 
     useEffect(() => {
       injectStyles();
@@ -392,8 +542,6 @@ export default function VisitPage() {
       setPatient(d.patient || null);
       setMedical(d.medical || {});
       setAllergy(d.allergy || {});
-      setMedications(Array.isArray(d.medications) ? d.medications : []);
-   setHabits(d.habits || {});
       setWomen(d.women     || {});
       setFamilyDoc(d.family_doctor || {});
       setConsent(d.consent || {});
@@ -482,6 +630,32 @@ export default function VisitPage() {
     }
   };
 
+  // ── Edit-mode helpers ──
+  const cancelEdit = () => setEditingSection(null);
+
+  const startEditComplaint = () => { setComplaintDraft(chiefComplaint || ""); setEditingSection("complaint"); };
+  const saveComplaint = async () => {
+    setSavingSection(true);
+    try {
+      const res = await api.put(`/visits/${visitId}/chief-complaint`, { chief_complaint: complaintDraft });
+      setVisit(v => ({ ...v, chief_complaint: res?.data?.chief_complaint ?? complaintDraft }));
+      setEditingSection(null);
+    } catch (err) {
+      alert(err?.response?.data?.error || "Failed to save chief complaint");
+    } finally {
+      setSavingSection(false);
+    }
+  };
+
+  // Called by <MedicalHistoryManager> after every load and every change
+  // (including changes made at Reception), so the alert banner stays current.
+  const handleHistoryChange = (h) => {
+    if (!h?.legacy) return;
+    setMedical(h.legacy.medical || {});
+    setWomen(h.legacy.women || {});
+    setAllergy({ rows: h.allergies || [] });
+  };
+
   const calculateAge = (dob, manual) => {
     if (dob) {
       const b = new Date(dob), t = new Date();
@@ -507,11 +681,8 @@ export default function VisitPage() {
 
   const isClosed = (visit.status || "").toUpperCase() === "CLOSED";
 
-  // AllergyRecord has no drug_allergy/food_allergy/... boolean columns —
-  // each allergy is its own row with a `type` field ("Food", "Drug", etc.).
-  // GET /visits/<id> returns allergy as { rows: [...] }, same shape as
-  // GET /allergies/<patient_id>.
-  const allergyRows = Array.isArray(allergy?.rows) ? allergy.rows : [];
+  // Alerts consider allergies that are still active.
+  const allergyRows = (Array.isArray(allergy?.rows) ? allergy.rows : []).filter(r => r.status !== "Resolved");
   const chiefComplaint =
     (visit.chief_complaint && visit.chief_complaint.trim())
       ? visit.chief_complaint
@@ -665,8 +836,27 @@ export default function VisitPage() {
         </Card>
 
         {/* ══════════ VISIT DETAILS / CHIEF COMPLAINT ══════════ */}
-        <Card badge="Visit Details — Chief Complaint" badgeColor="#0e7490" badgeBg="#ecfeff" icon="🩺" delay="vp-d2" extra="vp-card-teal">
-          {chiefComplaint ? (
+        <Card
+          badge="Visit Details — Chief Complaint" badgeColor="#0e7490" badgeBg="#ecfeff" icon="🩺" delay="vp-d2" extra="vp-card-teal"
+          headerActions={
+            <EditControls
+              editing={editingSection === "complaint"}
+              saving={savingSection}
+              onEdit={startEditComplaint}
+              onSave={saveComplaint}
+              onCancel={cancelEdit}
+            />
+          }
+        >
+          {editingSection === "complaint" ? (
+            <textarea
+              className="vp-textarea-input"
+              placeholder="What is the patient's chief complaint?"
+              value={complaintDraft}
+              onChange={e => setComplaintDraft(e.target.value)}
+              autoFocus
+            />
+          ) : chiefComplaint ? (
             <p style={{ fontSize:14.5, color:"#1a2540", lineHeight:1.8,
               fontStyle:"italic", borderLeft:"3px solid #0e7490", paddingLeft:14 }}>
               "{chiefComplaint}"
@@ -687,103 +877,17 @@ export default function VisitPage() {
           </Card>
         )}
 
-        {/* ══════════ MEDICAL HISTORY ══════════ */}
-        <Card badge="Medical History" badgeColor="#dc2626" badgeBg="#fff5f5" icon="📋" delay="vp-d3" extra="vp-card-red">
-          <DoctorMedicalSummary data={medical} />
-        </Card>
-
-        {/* ══════════ ALLERGY RECORDS ══════════ */}
-        <Card badge="Allergy Records" badgeColor="#d97706" badgeBg="#fffbeb" icon="⚠️" delay="vp-d3" extra="vp-card-amber">
-          {allergyRows.length === 0 ? (
-            <div style={{ textAlign:"center", padding:"22px 0", background:"#fafbff",
-              borderRadius:10, border:"1.5px dashed #dde8f8", color:"#94a3b8", fontSize:13.5 }}>
-              No known allergies recorded.
-            </div>
-          ) : (
-            <div className="vp-table-wrap">
-              <table className="vp-table">
-                <thead>
-                  <tr>
-                    <th>Type</th>
-                    <th>Allergen / Substance</th>
-                    <th>Reaction</th>
-                    <th>Severity</th>
-                    <th>Notes</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {allergyRows.map((row,i) => (
-                    <tr key={row.id||i}>
-                      <td style={{ fontWeight:600, color:"#0b2d4e" }}>{row.type||"—"}</td>
-                      <td style={{ fontWeight:600 }}>{row.allergen||"—"}</td>
-                      <td>{row.reaction||"—"}</td>
-                      <td><SevPill s={row.severity} /></td>
-                      <td style={{ color:"#64748b", fontSize:12.5 }}>{row.notes||"—"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </Card>
-
-        {/* ══════════ CURRENT MEDICATIONS ══════════ */}
-        <Card badge="Current Medications" badgeColor="#2563eb" badgeBg="#eff6ff" icon="💊" delay="vp-d3">
-          {medications.length === 0 ? (
-            <div style={{ textAlign:"center", padding:"22px 0", background:"#fafbff",
-              borderRadius:10, border:"1.5px dashed #dde8f8", color:"#94a3b8", fontSize:13.5 }}>
-              No current medications recorded.
-            </div>
-          ) : (
-            <div className="vp-table-wrap">
-              <table className="vp-table">
-                <thead>
-                  <tr>
-                    <th>Medicine</th>
-                    <th>Dosage</th>
-                    <th>Frequency</th>
-                    <th>Duration</th>
-                    <th>Purpose</th>
-                    <th>Prescribed By</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {medications.map((row, i) => (
-                    <tr key={row.id || i} style={{ opacity: row.active === false ? 0.55 : 1 }}>
-                      <td style={{ fontWeight:600, color:"#0b2d4e" }}>
-                        {row.medicine_name || "—"}
-                        {row.active === false && (
-                          <span style={{
-                            marginLeft:8, fontSize:10, fontWeight:700, letterSpacing:"0.3px",
-                            color:"#64748b", background:"#e2e8f0", borderRadius:12,
-                            padding:"1px 7px", textTransform:"uppercase",
-                          }}>Inactive</span>
-                        )}
-                      </td>
-                      <td>{row.dosage || "—"}</td>
-                      <td>{row.frequency || "—"}</td>
-                      <td>{row.duration || "—"}</td>
-                      <td>{row.purpose || "—"}</td>
-                      <td style={{ color:"#64748b", fontSize:12.5 }}>{row.prescribed_by || "—"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </Card>
-
-        {/* ══════════ HABITS ══════════ */}
-        <Card badge="Personal Habits" badgeColor="#0d6e4a" badgeBg="#f0fdf4" icon="🧬" delay="vp-d4" extra="vp-card-green">
-          <DoctorHabitsSummary data={habits} />
-        </Card>
-
-        {/* ══════════ WOMEN'S HEALTH ══════════ */}
-        {patient.gender === "Female" && (
-          <Card badge="Women's Health" badgeColor="#be185d" badgeBg="#fdf2f8" icon="🌸" delay="vp-d4">
-            <DoctorWomenSummary data={women} />
-          </Card>
-        )}
+        {/* ══════════ MEDICAL HISTORY ══════════
+            Medical Conditions · Allergy Records · Current Medications ·
+            Personal Habits · Women's Health — each with its own
+            + Add / Edit / Update / Delete, shared with Reception. */}
+        <div className="vp-animate vp-d3" style={{ marginBottom: 22 }}>
+          <MedicalHistoryManager
+            patientId={patient.id}
+            gender={patient.gender}
+            onChange={handleHistoryChange}
+          />
+        </div>
 
         {/* ══════════ CONSENT RECORD ══════════ */}
         {consent?.agreed && (

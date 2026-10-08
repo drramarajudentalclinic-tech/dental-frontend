@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
+import { createPortal } from "react-dom";
 import api from "../api/api";
 
 /* ─── constants ─────────────────────────────────────────────── */
@@ -8,6 +9,9 @@ const IMAGE_TYPES = [
   { value: "CBCT",      label: "CBCT",             icon: "🔬", desc: "Cone Beam CT" },
   { value: "INTRAORAL", label: "Intra Oral Image",  icon: "📸", desc: "Intraoral Photo" },
 ];
+
+// Biggest picture the server accepts (images.py: IMAGE_MAX_MB, default 25).
+const MAX_UPLOAD_MB = 25;
 
 // Reads the backend URL from Vite's env (VITE_API_URL in .env / .env.production).
 // If that's not set for some reason, auto-detect: use localhost when running
@@ -37,70 +41,126 @@ function imgSrc(url) {
   return `${API_BASE}${url}`;
 }
 
+/* ─── loading the actual picture ──────────────────────────────────────────────
+ * The pictures are FILES on the server (see images.py). The browser gets each
+ * one through the same signed-in `api` client used everywhere else, as raw
+ * bytes, and shows it from memory.
+ *
+ * Each picture is downloaded once and then shared: the small card and the
+ * full-screen viewer use the same copy, so opening the viewer is instant.
+ * ─────────────────────────────────────────────────────────────────────────── */
+const pictureCache = new Map();   // server url -> { promise, url (blob:), type, size }
+
+// Backend returns urls like "/api/images/123/data". The `api` client's
+// baseURL already includes "/api", so strip the duplicate prefix to
+// avoid requesting "/api/api/images/123/data".
+function apiPath(src) {
+  return src.startsWith("http") ? src : src.replace(/^\/api(?=\/)/, "");
+}
+
+async function explainLoadError(err) {
+  const status = err?.response?.status;
+  const data = err?.response?.data;
+  let message = "";
+  try {
+    if (typeof Blob !== "undefined" && data instanceof Blob) message = JSON.parse(await data.text()).error || "";
+    else if (data && typeof data === "object") message = data.error || "";
+  } catch { /* not JSON */ }
+  if (message) return message;
+  if (status === 404) return "The file for this picture is missing on the server.";
+  if (status === 401 || status === 403) return "You are not signed in, or not allowed to see this picture.";
+  if (!err?.response) return "Could not reach the server.";
+  return "The picture could not be loaded.";
+}
+
+function loadPicture(src) {
+  let entry = pictureCache.get(src);
+  if (!entry) {
+    entry = { url: null, type: "", size: 0 };
+    entry.promise = api.get(apiPath(src), { responseType: "blob" })
+      .then((res) => {
+        const blob = res.data;
+        if (!blob || typeof blob.size !== "number" || blob.size === 0) throw new Error("empty");
+        entry.url  = URL.createObjectURL(blob);
+        entry.type = blob.type || "";
+        entry.size = blob.size;
+        return entry;
+      })
+      .catch(async (err) => {
+        pictureCache.delete(src);              // so "Try again" really tries again
+        console.error("Failed to load image:", src, err);
+        throw new Error(err?.message === "empty" ? "The server sent an empty file for this picture." : await explainLoadError(err));
+      });
+    pictureCache.set(src, entry);
+  }
+  return entry.promise;
+}
+
+function forgetPicture(src) {
+  const entry = pictureCache.get(src);
+  if (entry?.url) URL.revokeObjectURL(entry.url);
+  pictureCache.delete(src);
+}
+
+function forgetAllPictures() {
+  [...pictureCache.keys()].forEach(forgetPicture);
+}
+
 /**
  * <img src="..."> requests are made directly by the browser and can never
  * carry an Authorization header, so a JWT-protected image endpoint always
- * 401s a plain <img> tag — regardless of whether the backend also accepts
- * a "token" query param (that depends on backend config we don't control
- * here, and isn't reliable). Instead, fetch the bytes through the same
+ * 401s a plain <img> tag. Instead, fetch the bytes through the same
  * `api` client already used (successfully) for every other authenticated
  * request in this app, then hand the browser a local blob: URL to render.
  */
 function AuthImage({ src, alt, style, className, draggable, onMouseOver, onMouseOut }) {
   const [blobUrl, setBlobUrl] = useState(null);
-  const [failed,  setFailed]  = useState(false);
+  const [error,   setError]   = useState("");
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
-    let objectUrl = null;
-    let cancelled  = false;
-    setFailed(false);
+    let cancelled = false;
+    setError("");
     setBlobUrl(null);
 
     if (!src) return;
 
-    // Backend returns urls like "/api/images/123/data". The `api` client's
-    // baseURL already includes "/api", so strip the duplicate prefix to
-    // avoid requesting "/api/api/images/123/data".
-    const path = src.startsWith("http") ? src : src.replace(/^\/api(?=\/)/, "");
+    loadPicture(src)
+      .then((entry) => { if (!cancelled) setBlobUrl(entry.url); })
+      .catch((err) => { if (!cancelled) setError(err.message || "The picture could not be loaded."); });
 
-    api.get(path, { responseType: "blob" })
-      .then((res) => {
-        if (cancelled) return;
-        objectUrl = URL.createObjectURL(res.data);
-        setBlobUrl(objectUrl);
-      })
-      .catch((err) => {
-        console.error("Failed to load image:", src, err);
-        if (!cancelled) setFailed(true);
-      });
+    return () => { cancelled = true; };
+  }, [src, attempt]);
 
-    return () => {
-      cancelled = true;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    };
-  }, [src]);
-
-  if (failed) {
+  if (error) {
     return (
-      <div className={className} style={{ ...style, display:"flex", alignItems:"center",
-        justifyContent:"center", background:"#1e293b", color:"#94a3b8", fontSize:12, gap:6 }}>
-        ⚠️ Failed to load
+      <div className={className} role="alert" style={{ ...style, display:"flex", flexDirection:"column", alignItems:"center",
+        justifyContent:"center", background:"#1e293b", color:"#cbd5e1", fontSize:12, gap:8, padding:10, textAlign:"center",
+        transform:"none", filter:"none" }}>
+        <span>⚠️ {error}</span>
+        <button type="button" onClick={(e) => { e.stopPropagation(); setAttempt((n) => n + 1); }}
+          style={{ padding:"4px 12px", borderRadius:6, border:"1px solid #475569", background:"#0f172a",
+            color:"#e2e8f0", fontSize:11.5, fontWeight:600, cursor:"pointer" }}>
+          Try again
+        </button>
       </div>
     );
   }
   if (!blobUrl) {
     return (
       <div className={className} style={{ ...style, display:"flex", alignItems:"center",
-        justifyContent:"center", background:"#0b1120" }}>
+        justifyContent:"center", background:"#0b1120", transform:"none", filter:"none" }}>
         <span className="imgup-spinner" />
       </div>
     );
   }
   return (
     <img src={blobUrl} alt={alt} className={className} style={style} draggable={draggable}
-      onMouseOver={onMouseOver} onMouseOut={onMouseOut} />
+      onMouseOver={onMouseOver} onMouseOut={onMouseOut}
+      onError={() => setError("This file is not a picture the browser can display.")} />
   );
 }
+
 function todayStr() { return new Date().toISOString().split("T")[0]; }
 function fmtDate(d) {
   if (!d) return "—";
@@ -149,9 +209,9 @@ function angleDeg(a,b,c) {
 
 /* ─── inject styles ─────────────────────────────────────────── */
 const injectStyles = () => {
-  if (document.getElementById("imgup-styles")) return;
+  if (document.getElementById("imgup-styles-v2")) return;
   const s = document.createElement("style");
-  s.id = "imgup-styles";
+  s.id = "imgup-styles-v2";
   s.textContent = `
     @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=DM+Mono:wght@400;500&display=swap');
     .imgup-root { font-family: 'Plus Jakarta Sans', sans-serif; }
@@ -200,21 +260,22 @@ const injectStyles = () => {
     }
     .imgup-lbox-btn:hover { background:rgba(255,255,255,0.22); }
     .imgup-modal-overlay {
-      position:fixed; inset:0; z-index:1000;
+      position:fixed; inset:0; z-index:9000;
       background:rgba(10,25,55,0.5); backdrop-filter:blur(4px);
       display:flex; align-items:center; justify-content:center;
+      font-family:'Plus Jakarta Sans',sans-serif;
       animation:imgup-fade 0.2s ease both;
     }
     .imgup-modal {
       background:#fff; border-radius:18px; padding:28px 30px;
-      width:92%; max-width:520px; max-height:90vh; overflow-y:auto;
+      width:92%; max-width:620px; max-height:92vh; overflow-y:auto;
       box-shadow:0 24px 80px rgba(10,25,55,0.25);
       animation:imgup-slide 0.25s cubic-bezier(.22,.68,0,1.2) both;
     }
     @keyframes imgup-slide { from{opacity:0;transform:translateY(18px) scale(0.97)} to{opacity:1;transform:none} }
     .imgup-edit-modal {
       background:#fff; border-radius:18px; padding:26px 28px;
-      width:92%; max-width:460px;
+      width:92%; max-width:460px; max-height:92vh; overflow-y:auto;
       box-shadow:0 24px 80px rgba(10,25,55,0.25);
       animation:imgup-slide 0.25s cubic-bezier(.22,.68,0,1.2) both;
     }
@@ -304,37 +365,205 @@ const injectStyles = () => {
       cursor:pointer; font-family:'DM Mono',monospace; transition:all 0.15s;
     }
     .cbct-layout-btn.active { background:#1d4ed8; color:#fff; border-color:#3b82f6; }
+
+    /* ── v2: buttons that used to be plain boxes ── */
+    button.imgup-type-card { font-family:inherit; }
+    .imgup-type-card:focus-visible, .imgup-thumb:focus-visible, .imgup-icon-btn:focus-visible,
+    .imgup-lbox-btn:focus-visible, .imgup-viewer-nav:focus-visible { outline:2px solid #60a5fa; outline-offset:2px; }
+    .imgup-thumb {
+      position:relative; display:block; width:100%; padding:0; border:none; margin:0;
+      background:#0b1120; overflow:hidden; cursor:zoom-in; font-family:inherit; text-align:left;
+    }
+    .imgup-icon-btn:disabled { opacity:0.45; cursor:not-allowed; }
+
+    /* ── v2: list of pictures chosen for upload ── */
+    .imgup-pick-list { display:flex; flex-direction:column; gap:6px; margin-top:10px; max-height:210px; overflow-y:auto; }
+    .imgup-pick {
+      display:flex; align-items:center; gap:10px; padding:6px 8px;
+      border:1.5px solid #d1fae5; background:#f0fdf4; border-radius:9px;
+    }
+    .imgup-pick.bad { border-color:#fecaca; background:#fef2f2; }
+    .imgup-pick-thumb { width:46px; height:46px; border-radius:6px; object-fit:cover; background:#0b1120; flex-shrink:0; }
+
+    /* ── v2: full-screen viewer (drawn on the page body, so it always covers the whole screen) ── */
+    .imgup-viewer {
+      position:fixed; inset:0; z-index:9999;
+      background:#040814;
+      display:flex; flex-direction:column;
+      font-family:'Plus Jakarta Sans',sans-serif;
+      animation:imgup-fade 0.18s ease both;
+    }
+    .imgup-viewer-bar {
+      display:flex; align-items:center; gap:8px; flex-wrap:wrap; flex-shrink:0;
+      padding:10px 16px;
+      background:rgba(255,255,255,0.05); border-bottom:1px solid rgba(255,255,255,0.08);
+    }
+    .imgup-viewer-title { flex:1 1 160px; min-width:0; }
+    .imgup-viewer-tools { display:flex; align-items:center; gap:6px; flex-shrink:0; flex-wrap:wrap; }
+    .imgup-viewer-zoom {
+      color:#fff; font-size:12px; font-weight:700; font-family:'DM Mono',monospace;
+      min-width:50px; text-align:center; background:rgba(255,255,255,0.08); border-radius:7px; padding:5px 8px;
+    }
+    .imgup-viewer-sep { width:1px; height:22px; background:rgba(255,255,255,0.15); margin:0 2px; }
+    .imgup-lbox-btn.wide { width:auto; padding:0 12px; font-size:12px; font-weight:700; font-family:inherit; white-space:nowrap; }
+    .imgup-lbox-btn.on { background:#1d6fa4; border-color:#60a5fa; }
+    .imgup-lbox-btn:disabled { opacity:0.4; cursor:not-allowed; }
+    .imgup-viewer-adjust {
+      display:flex; align-items:center; gap:14px; flex-wrap:wrap; flex-shrink:0;
+      padding:9px 16px; background:rgba(255,255,255,0.03); border-bottom:1px solid rgba(255,255,255,0.08);
+    }
+    .imgup-viewer-adjust label { display:flex; align-items:center; gap:8px; font-size:12px; font-weight:600; color:rgba(255,255,255,0.8); }
+    .imgup-viewer-adjust label span { font-family:'DM Mono',monospace; font-size:11.5px; min-width:40px; color:rgba(255,255,255,0.6); }
+    .imgup-viewer-adjust input[type=range] { width:150px; accent-color:#38bdf8; }
+    .imgup-viewer-stage {
+      position:relative; flex:1 1 auto; min-height:0; overflow:hidden;
+      display:flex; align-items:center; justify-content:center;
+      user-select:none; touch-action:none;
+    }
+    .imgup-viewer-img { flex-shrink:0; object-fit:contain; transform-origin:center center; pointer-events:none; }
+    .imgup-viewer-nav {
+      position:absolute; top:50%; transform:translateY(-50%);
+      width:46px; height:76px; border-radius:12px;
+      border:1.5px solid rgba(255,255,255,0.2); background:rgba(15,23,42,0.65);
+      color:#fff; font-size:34px; line-height:1; cursor:pointer;
+      display:flex; align-items:center; justify-content:center; transition:background 0.15s;
+    }
+    .imgup-viewer-nav:hover { background:rgba(29,111,164,0.85); }
+    .imgup-viewer-nav.left { left:14px; }
+    .imgup-viewer-nav.right { right:14px; }
+    .imgup-viewer-hint { text-align:center; padding:7px 10px 9px; font-size:11px; color:rgba(255,255,255,0.35); flex-shrink:0; }
+    @media (max-width:820px) {
+      /* small screens: title and Close on the first line, the tools on a line of their own */
+      .imgup-viewer-tools.main { order:3; flex-basis:100%; }
+      .imgup-viewer-tools.end .imgup-viewer-sep { display:none; }
+    }
+    @media (max-width:640px) {
+      .imgup-viewer-hint { display:none; }
+      .imgup-viewer-bar { padding:8px 10px; }
+      .imgup-lbox-btn { width:36px; height:36px; }
+      .imgup-lbox-btn.wide { padding:0 9px; }
+      .imgup-viewer-adjust input[type=range] { width:110px; }
+    }
   `;
   document.head.appendChild(s);
 };
 
+/* Every pop-up window is drawn directly on the page body. If it were drawn
+   inside the "Image Upload" card it would be trapped inside that card (cards on
+   the visit page are animated, and an animated box becomes the frame for
+   anything "fixed" inside it) — which is why the viewer used to show only its
+   title bar while the picture sat somewhere off-screen. */
+function inBody(node) {
+  return createPortal(node, document.body);
+}
+
+function useLockPageScroll() {
+  useEffect(() => {
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = previous; };
+  }, []);
+}
+
+function fmtSize(bytes) {
+  if (!bytes && bytes !== 0) return "";
+  if (bytes >= 1048576) return `${(bytes / 1048576).toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+
+function serverMessage(err, fallback) {
+  const fromServer = err?.response?.data?.error;
+  if (fromServer) return fromServer;
+  if (err?.response?.status === 413) return `This picture is too large. The limit is ${MAX_UPLOAD_MB} MB.`;
+  if (!err?.response) return `${fallback} The server could not be reached — please check the connection.`;
+  return fallback;
+}
+
+function downloadName(img, type) {
+  const ext = { "image/png":"png", "image/webp":"webp", "image/gif":"gif", "image/bmp":"bmp", "application/pdf":"pdf" }[type || img.mime_type] || "jpg";
+  return `${img.type || "image"}_${img.image_date || "undated"}_${img.id}.${ext}`;
+}
+
 /* ═══════════════════════════════════════════
-   LIGHTBOX  — full-screen pan + zoom
+   LIGHTBOX  — full-screen viewer
+   zoom · drag to move · rotate · brightness / contrast / invert ·
+   previous / next · download
 ═══════════════════════════════════════════ */
-function Lightbox({ img, onClose }) {
+function Lightbox({ img, images = [], onNavigate, onClose }) {
   const MIN = 0.5, MAX = 8, STEP = 0.35;
-  const [zoom,     setZoom]     = useState(1);
-  const [pan,      setPan]      = useState({ x:0, y:0 });
-  const [dragging, setDragging] = useState(false);
+  const [zoom,       setZoom]       = useState(1);
+  const [pan,        setPan]        = useState({ x:0, y:0 });
+  const [rotation,   setRotation]   = useState(0);
+  const [brightness, setBrightness] = useState(100);
+  const [contrast,   setContrast]   = useState(100);
+  const [invert,     setInvert]     = useState(false);
+  const [showAdjust, setShowAdjust] = useState(false);
+  const [dragging,   setDragging]   = useState(false);
+  const [stage,      setStage]      = useState({ w:0, h:0 });
+  const [picture,    setPicture]    = useState(null);     // { url, type } once loaded
+  const [error,      setError]      = useState("");
+  const [attempt,    setAttempt]    = useState(0);
   const dragRef  = useRef(null);
   const stageRef = useRef(null);
 
+  useLockPageScroll();
+
+  const index   = images.findIndex(i => i.id === img.id);
+  const hasPrev = index > 0;
+  const hasNext = index >= 0 && index < images.length - 1;
+  const go = (step) => { const next = images[index + step]; if (next && onNavigate) onNavigate(next); };
+
+  const resetView = () => { setZoom(1); setPan({ x:0, y:0 }); };
   const applyZoom = (next) => {
     const z = Math.min(Math.max(next, MIN), MAX);
     setZoom(z);
-    if (z === 1) setPan({ x:0, y:0 });
+    if (z <= 1) setPan({ x:0, y:0 });
   };
+  const rotate = (deg) => { setRotation(r => (r + deg + 360) % 360); setPan({ x:0, y:0 }); };
+  const adjusted = brightness !== 100 || contrast !== 100 || invert;
+  const resetAdjust = () => { setBrightness(100); setContrast(100); setInvert(false); };
+
+  // A different picture: load it and start from a clean view
+  useEffect(() => {
+    let cancelled = false;
+    setPicture(null); setError("");
+    setZoom(1); setPan({ x:0, y:0 }); setRotation(0);
+    setBrightness(100); setContrast(100); setInvert(false);
+    if (img.available === false) { setError("The file for this picture is missing on the server."); return; }
+    loadPicture(img.url)
+      .then(entry => { if (!cancelled) setPicture({ url: entry.url, type: entry.type }); })
+      .catch(err => { if (!cancelled) setError(err.message || "The picture could not be loaded."); });
+    return () => { cancelled = true; };
+  }, [img.id, img.url, img.available, attempt]);
+
+  // Size of the viewing area (so a rotated picture still fits)
+  useEffect(() => {
+    const el = stageRef.current;
+    if (!el) return;
+    const measure = () => setStage(prev =>
+      (prev.w === el.clientWidth && prev.h === el.clientHeight) ? prev : { w: el.clientWidth, h: el.clientHeight });
+    measure();
+    window.addEventListener("resize", measure);
+    // also when the tool strip opens or closes and the viewing area changes height
+    const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null;
+    if (observer) observer.observe(el);
+    return () => { window.removeEventListener("resize", measure); if (observer) observer.disconnect(); };
+  }, []);
 
   useEffect(() => {
     const h = (e) => {
+      if (e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) && e.key !== "Escape") return;
       if (e.key === "Escape") onClose();
-      if (e.key === "+" || e.key === "=") applyZoom(zoom + STEP);
-      if (e.key === "-") applyZoom(zoom - STEP);
-      if (e.key === "0") { setZoom(1); setPan({x:0,y:0}); }
+      else if (e.key === "+" || e.key === "=") applyZoom(zoom + STEP);
+      else if (e.key === "-") applyZoom(zoom - STEP);
+      else if (e.key === "0") resetView();
+      else if (e.key === "ArrowLeft")  go(-1);
+      else if (e.key === "ArrowRight") go(1);
+      else if (e.key === "r" || e.key === "R") rotate(90);
     };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
-  }, [zoom, onClose]);
+  });
 
   const handleWheel = (e) => { e.preventDefault(); applyZoom(zoom + (e.deltaY < 0 ? STEP : -STEP)); };
   useEffect(() => {
@@ -344,208 +573,351 @@ function Lightbox({ img, onClose }) {
     return () => el.removeEventListener("wheel", handleWheel);
   });
 
-  const onMouseDown = (e) => {
-    if (zoom <= 1) return;
+  const onPointerDown = (e) => {
+    if (zoom <= 1 || e.button > 0) return;
     e.preventDefault();
     dragRef.current = { startX:e.clientX, startY:e.clientY, panX:pan.x, panY:pan.y };
     setDragging(true);
   };
-  const onMouseMove = (e) => {
+  const onPointerMove = (e) => {
     if (!dragging || !dragRef.current) return;
     setPan({ x: dragRef.current.panX + e.clientX - dragRef.current.startX,
              y: dragRef.current.panY + e.clientY - dragRef.current.startY });
   };
-  const onMouseUp = () => setDragging(false);
-  const typeObj = IMAGE_TYPES.find(t => t.value === img.type) || { label: img.type };
+  const onPointerUp = () => setDragging(false);
 
-  return (
-    <div style={{ position:"fixed",inset:0,zIndex:9999,background:"rgba(4,8,20,0.96)",
-      display:"flex",flexDirection:"column",animation:"imgup-fade 0.18s ease both" }}
-      onClick={onClose}>
-      <div onClick={e=>e.stopPropagation()} style={{
-        display:"flex",alignItems:"center",gap:8,padding:"12px 18px",
-        background:"rgba(255,255,255,0.04)",borderBottom:"1px solid rgba(255,255,255,0.07)",flexShrink:0,
-      }}>
-        <div style={{ flex:1,minWidth:0 }}>
-          <div style={{ fontSize:13.5,fontWeight:700,color:"#fff" }}>
+  const typeObj = IMAGE_TYPES.find(t => t.value === img.type) || { label: img.type };
+  const isPdf   = (picture?.type || img.mime_type) === "application/pdf";
+
+  // The picture always fills the viewing area as far as its shape allows —
+  // also after turning it on its side.
+  const sideways = rotation % 180 !== 0;
+  const boxW = Math.max(60, (sideways ? stage.h : stage.w) - 24);
+  const boxH = Math.max(60, (sideways ? stage.w : stage.h) - 24);
+
+  const download = () => {
+    if (!picture) return;
+    const a = document.createElement("a");
+    a.href = picture.url;
+    a.download = downloadName(img, picture.type);
+    document.body.appendChild(a); a.click(); a.remove();
+  };
+
+  return inBody(
+    <div className="imgup-viewer" role="dialog" aria-modal="true" aria-label={`${typeObj.label} picture viewer`}>
+      {/* ── top bar ── */}
+      <div className="imgup-viewer-bar">
+        <div className="imgup-viewer-title">
+          <div style={{ fontSize:13.5, fontWeight:700, color:"#fff", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
             {typeObj.label}
-            {img.description && <span style={{ fontWeight:400,color:"rgba(255,255,255,0.6)",marginLeft:8 }}>{img.description}</span>}
+            {img.description && <span style={{ fontWeight:400, color:"rgba(255,255,255,0.65)", marginLeft:8 }}>{img.description}</span>}
           </div>
-          {img.image_date && <div style={{ fontSize:11.5,color:"rgba(255,255,255,0.4)",marginTop:2 }}>📅 {fmtDate(img.image_date)}</div>}
+          <div style={{ fontSize:11.5, color:"rgba(255,255,255,0.5)", marginTop:2 }}>
+            {img.image_date && <>📅 {fmtDate(img.image_date)}</>}
+            {images.length > 1 && index >= 0 && <span style={{ marginLeft: img.image_date ? 10 : 0 }}>Picture {index + 1} of {images.length}</span>}
+          </div>
         </div>
-        <div style={{ display:"flex",alignItems:"center",gap:6,flexShrink:0 }}>
-          <button className="imgup-lbox-btn" onClick={()=>applyZoom(zoom-STEP)}>−</button>
-          <span style={{ color:"#fff",fontSize:12,fontWeight:700,fontFamily:"'DM Mono',monospace",
-            minWidth:48,textAlign:"center",background:"rgba(255,255,255,0.08)",borderRadius:7,padding:"4px 8px" }}>
-            {Math.round(zoom*100)}%
-          </span>
-          <button className="imgup-lbox-btn" onClick={()=>applyZoom(zoom+STEP)}>+</button>
-          <button className="imgup-lbox-btn" onClick={()=>{setZoom(1);setPan({x:0,y:0});}}
-            style={{ fontSize:11,fontWeight:800 }}>1:1</button>
-          <div style={{ width:1,height:22,background:"rgba(255,255,255,0.15)",margin:"0 2px" }}/>
-          <button className="imgup-lbox-btn" onClick={onClose} style={{ fontSize:16 }}>✕</button>
+        {!isPdf && (
+          <div className="imgup-viewer-tools main">
+            <button type="button" className="imgup-lbox-btn" onClick={()=>applyZoom(zoom-STEP)} title="Zoom out (−)" aria-label="Zoom out">−</button>
+            <span className="imgup-viewer-zoom" aria-live="polite">{Math.round(zoom*100)}%</span>
+            <button type="button" className="imgup-lbox-btn" onClick={()=>applyZoom(zoom+STEP)} title="Zoom in (+)" aria-label="Zoom in">+</button>
+            <button type="button" className="imgup-lbox-btn wide" onClick={resetView} title="Fit to screen (0)" aria-label="Fit to screen">Fit</button>
+            <span className="imgup-viewer-sep"/>
+            <button type="button" className="imgup-lbox-btn" onClick={()=>rotate(-90)} title="Turn left" aria-label="Turn left">⟲</button>
+            <button type="button" className="imgup-lbox-btn" onClick={()=>rotate(90)} title="Turn right (R)" aria-label="Turn right">⟳</button>
+            <button type="button" className={`imgup-lbox-btn wide${showAdjust || adjusted ? " on" : ""}`} onClick={()=>setShowAdjust(s=>!s)}
+              title="Brightness, contrast, invert" aria-label="Brightness and contrast" aria-expanded={showAdjust}>☀ Adjust</button>
+          </div>
+        )}
+        <div className="imgup-viewer-tools end">
+          <span className="imgup-viewer-sep"/>
+          <button type="button" className="imgup-lbox-btn" onClick={download} disabled={!picture} title="Download" aria-label="Download">⬇</button>
+          <button type="button" className="imgup-lbox-btn" onClick={onClose} title="Close (Esc)" aria-label="Close" style={{ fontSize:16 }}>✕</button>
         </div>
       </div>
-      <div ref={stageRef} onClick={e=>e.stopPropagation()} onMouseDown={onMouseDown}
-        onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp}
-        style={{ flex:1,overflow:"hidden",display:"flex",alignItems:"center",justifyContent:"center",
-          cursor:zoom>1?(dragging?"grabbing":"grab"):"default",userSelect:"none" }}>
-        <AuthImage src={img.url} alt={img.description||img.type} draggable={false}
-          style={{ maxWidth:"100%",maxHeight:"100%",objectFit:"contain",
-            borderRadius:zoom===1?10:0,
-            transform:`scale(${zoom}) translate(${pan.x/zoom}px,${pan.y/zoom}px)`,
-            transformOrigin:"center center",
-            transition:dragging?"none":"transform 0.15s ease",
-            boxShadow:zoom===1?"0 8px 40px rgba(0,0,0,0.6)":"none",pointerEvents:"none" }} />
+
+      {/* ── brightness / contrast ── */}
+      {showAdjust && !isPdf && (
+        <div className="imgup-viewer-adjust">
+          <label>Brightness
+            <input type="range" min={40} max={220} value={brightness} onChange={e=>setBrightness(+e.target.value)} aria-label="Brightness" />
+            <span>{brightness}%</span>
+          </label>
+          <label>Contrast
+            <input type="range" min={40} max={250} value={contrast} onChange={e=>setContrast(+e.target.value)} aria-label="Contrast" />
+            <span>{contrast}%</span>
+          </label>
+          <button type="button" className={`imgup-lbox-btn wide${invert ? " on" : ""}`} onClick={()=>setInvert(v=>!v)} aria-pressed={invert}>◐ Invert</button>
+          <button type="button" className="imgup-lbox-btn wide" onClick={resetAdjust} disabled={!adjusted}>Reset</button>
+          <span style={{ fontSize:11, color:"rgba(255,255,255,0.4)" }}>Only changes how it looks here — the saved picture is not altered.</span>
+        </div>
+      )}
+
+      {/* ── the picture ── */}
+      <div ref={stageRef} className="imgup-viewer-stage"
+        onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerLeave={onPointerUp}
+        onDoubleClick={() => (zoom === 1 ? applyZoom(2) : resetView())}
+        style={{ cursor: zoom>1 ? (dragging ? "grabbing" : "grab") : "default" }}>
+
+        {error && (
+          <div role="alert" style={{ textAlign:"center", color:"#e2e8f0", maxWidth:420, padding:20 }}>
+            <div style={{ fontSize:36, marginBottom:10 }}>⚠️</div>
+            <div style={{ fontSize:14, fontWeight:600, marginBottom:14 }}>{error}</div>
+            <button type="button" className="imgup-lbox-btn wide" style={{ margin:"0 auto" }} onClick={()=>setAttempt(n=>n+1)}>Try again</button>
+          </div>
+        )}
+        {!error && !picture && (
+          <div style={{ color:"rgba(255,255,255,0.6)", fontSize:13, display:"flex", alignItems:"center", gap:10 }}>
+            <span className="imgup-spinner" /> Loading picture…
+          </div>
+        )}
+        {!error && picture && isPdf && (
+          <iframe title={img.description || "PDF"} src={picture.url}
+            style={{ width:"100%", height:"100%", border:0, background:"#fff" }} />
+        )}
+        {!error && picture && !isPdf && (
+          <img src={picture.url} alt={img.description || `${typeObj.label} picture`} draggable={false}
+            className="imgup-viewer-img"
+            onError={() => setError("This file is not a picture the browser can display.")}
+            style={{
+              width: boxW, height: boxH,
+              transform: `translate(${pan.x}px,${pan.y}px) rotate(${rotation}deg) scale(${zoom})`,
+              filter: adjusted ? `brightness(${brightness}%) contrast(${contrast}%) invert(${invert ? 1 : 0})` : "none",
+              transition: dragging ? "none" : "transform 0.15s ease",
+            }} />
+        )}
+
+        {hasPrev && (
+          <button type="button" className="imgup-viewer-nav left" onClick={()=>go(-1)} title="Previous picture (←)" aria-label="Previous picture">‹</button>
+        )}
+        {hasNext && (
+          <button type="button" className="imgup-viewer-nav right" onClick={()=>go(1)} title="Next picture (→)" aria-label="Next picture">›</button>
+        )}
       </div>
-      <div onClick={e=>e.stopPropagation()} style={{ textAlign:"center",padding:"8px 0 10px",
-        fontSize:11,color:"rgba(255,255,255,0.25)",flexShrink:0 }}>
-        Scroll to zoom · Drag to pan · +/− keys · 0 to reset · Esc to close
+
+      <div className="imgup-viewer-hint">
+        Scroll or +/− to zoom · drag to move · double-click to zoom · R to turn{images.length > 1 ? " · ← → for other pictures" : ""} · Esc to close
       </div>
     </div>
   );
 }
 
 /* ═══════════════════════════════════════════
-   UPLOAD MODAL
+   UPLOAD MODAL — one or several pictures at a time
 ═══════════════════════════════════════════ */
+let pickSeq = 0;
+
 function UploadModal({ onClose, onUploaded, visitId }) {
-  const [step,        setStep]        = useState(1);
   const [selType,     setSelType]     = useState(null);
-  const [file,        setFile]        = useState(null);
-  const [preview,     setPreview]     = useState(null);
+  const [picks,       setPicks]       = useState([]);     // [{ key, file, preview, error }]
   const [description, setDescription] = useState("");
   const [imageDate,   setImageDate]   = useState(todayStr());
   const [drag,        setDrag]        = useState(false);
   const [uploading,   setUploading]   = useState(false);
-  const fileRef = useRef();
+  const [progress,    setProgress]    = useState("");
+  const [message,     setMessage]     = useState("");
+  const fileRef  = useRef();
+  const picksRef = useRef([]);
+  picksRef.current = picks;
 
-  const pickFile = (f) => {
-    if (!f) return;
-    setFile(f);
-    const reader = new FileReader();
-    reader.onload = e => setPreview(e.target.result);
-    reader.readAsDataURL(f);
+  useLockPageScroll();
+
+  // free the preview memory when the window closes
+  useEffect(() => () => { picksRef.current.forEach(p => p.preview && URL.revokeObjectURL(p.preview)); }, []);
+
+  const checkFile = (f) => {
+    const isHeic = /\.(heic|heif)$/i.test(f.name) || /hei[cf]/i.test(f.type);
+    if (isHeic) return "iPhone HEIC photos cannot be displayed in the browser. Please save it as JPG first.";
+    if (!f.type.startsWith("image/")) return "This is not a picture file. Use JPG, PNG or WEBP.";
+    if (f.size === 0) return "This file is empty.";
+    if (f.size > MAX_UPLOAD_MB * 1048576) return `Too large (${fmtSize(f.size)}). The limit is ${MAX_UPLOAD_MB} MB.`;
+    return "";
+  };
+
+  const addFiles = (list) => {
+    const incoming = Array.from(list || []);
+    if (incoming.length === 0) return;
+    setMessage("");
+    setPicks(prev => [
+      ...prev,
+      ...incoming.map(f => {
+        const error = checkFile(f);
+        return { key: ++pickSeq, file: f, error, preview: !error ? URL.createObjectURL(f) : null };
+      }),
+    ]);
+  };
+
+  const removePick = (key) => {
+    setPicks(prev => {
+      const gone = prev.find(p => p.key === key);
+      if (gone?.preview) URL.revokeObjectURL(gone.preview);
+      return prev.filter(p => p.key !== key);
+    });
   };
 
   const handleDrop = (e) => {
     e.preventDefault(); setDrag(false);
-    const f = e.dataTransfer.files?.[0];
-    if (f && f.type.startsWith("image/")) pickFile(f);
+    if (!uploading) addFiles(e.dataTransfer.files);
   };
 
+  const ready = picks.filter(p => !p.error);
+  const canUpload = !!selType && ready.length > 0 && !uploading;
+
   const handleUpload = async () => {
-    if (!file) return;
-    setUploading(true);
-    try {
-      const fd = new FormData();
-      fd.append("image",       file);
-      fd.append("type",        selType);
-      fd.append("description", description);
-      fd.append("image_date",  imageDate);
-      await api.post(`/visits/${visitId}/images`, fd, { headers:{ "Content-Type":"multipart/form-data" } });
-      onUploaded();
-      onClose();
-    } catch (err) {
-      console.error("Upload failed", err);
-      alert("Upload failed. Please try again.");
-    } finally {
-      setUploading(false);
+    if (!canUpload) return;
+    setUploading(true); setMessage("");
+    let done = 0;
+    const failed = [];
+    for (let i = 0; i < ready.length; i++) {
+      const pick = ready[i];
+      setProgress(ready.length > 1 ? `Uploading ${i + 1} of ${ready.length}…` : "Uploading…");
+      try {
+        const fd = new FormData();
+        fd.append("image",       pick.file);
+        fd.append("type",        selType);
+        fd.append("description", description);
+        fd.append("image_date",  imageDate);
+        await api.post(`/visits/${visitId}/images`, fd, { headers:{ "Content-Type":"multipart/form-data" } });
+        done += 1;
+        if (pick.preview) URL.revokeObjectURL(pick.preview);
+        setPicks(prev => prev.filter(p => p.key !== pick.key));
+      } catch (err) {
+        console.error("Upload failed", err);
+        const why = serverMessage(err, "Upload failed.");
+        failed.push(pick.key);
+        setPicks(prev => prev.map(p => p.key === pick.key ? { ...p, uploadError: why } : p));
+      }
     }
+    setUploading(false); setProgress("");
+    if (done > 0) onUploaded();
+    if (failed.length === 0) { onClose(); return; }
+    setMessage(done > 0
+      ? `${done} uploaded. ${failed.length} could not be uploaded — see below.`
+      : `${failed.length === 1 ? "The picture" : "The pictures"} could not be uploaded — see below.`);
   };
 
   const selTypeObj = IMAGE_TYPES.find(t => t.value === selType);
+  const closeIfIdle = () => { if (!uploading && picks.length === 0) onClose(); };
+  const lbl = { fontSize:10.5,fontWeight:700,color:"#8899bb",letterSpacing:"0.7px",textTransform:"uppercase",display:"block",marginBottom:5 };
 
-  return (
-    <div className="imgup-modal-overlay" onClick={onClose}>
-      <div className="imgup-modal" onClick={e=>e.stopPropagation()}>
-        <div style={{ display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:20 }}>
+  return inBody(
+    <div className="imgup-modal-overlay" onClick={closeIfIdle}>
+      <div className="imgup-modal" role="dialog" aria-modal="true" aria-label="Upload pictures" onClick={e=>e.stopPropagation()}>
+        <div style={{ display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:18 }}>
           <div>
             <div style={{ fontSize:16,fontWeight:800,color:"#0b2d4e" }}>
-              {step===1?"📂 Select Image Type":`📸 Upload ${selTypeObj?.label}`}
+              📸 Upload {selTypeObj ? selTypeObj.label : "Clinical Images"}
             </div>
             <div style={{ fontSize:12,color:"#94a3b8",marginTop:2 }}>
-              {step===1?"Choose the category for this clinical image":selTypeObj?.desc}
+              {selTypeObj ? selTypeObj.desc : "Choose the kind of picture, then add one or more files"}
             </div>
           </div>
-          <button onClick={onClose} style={{ width:30,height:30,borderRadius:8,border:"1.5px solid #e2e8f4",
+          <button type="button" onClick={onClose} disabled={uploading} aria-label="Close" style={{ width:30,height:30,borderRadius:8,border:"1.5px solid #e2e8f4",
             background:"#f7f9fe",fontSize:15,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center" }}>✕</button>
         </div>
 
-        {step===1 && (
-          <>
-            <div style={{ display:"flex",gap:10,flexWrap:"wrap" }}>
-              {IMAGE_TYPES.map(t => (
-                <div key={t.value} className={`imgup-type-card ${selType===t.value?"selected":""}`}
-                  onClick={()=>setSelType(t.value)}>
-                  <span style={{ fontSize:22 }}>{t.icon}</span>
-                  <span style={{ fontSize:12,fontWeight:700,color:"#0b2d4e" }}>{t.label}</span>
-                  <span style={{ fontSize:10,color:"#94a3b8",lineHeight:1.3 }}>{t.desc}</span>
+        {/* 1 — kind of picture */}
+        <label style={lbl}>1 · Kind of picture</label>
+        <div style={{ display:"flex",gap:10,flexWrap:"wrap" }} role="group" aria-label="Kind of picture">
+          {IMAGE_TYPES.map(t => (
+            <button type="button" key={t.value} className={`imgup-type-card ${selType===t.value?"selected":""}`}
+              aria-pressed={selType===t.value}
+              onClick={()=>setSelType(t.value)}>
+              <span style={{ fontSize:22 }}>{t.icon}</span>
+              <span style={{ fontSize:12,fontWeight:700,color:"#0b2d4e" }}>{t.label}</span>
+              <span style={{ fontSize:10,color:"#94a3b8",lineHeight:1.3 }}>{t.desc}</span>
+            </button>
+          ))}
+        </div>
+        {selType === "CBCT" && (
+          <div style={{ fontSize:11.5,color:"#92400e",background:"#fffbeb",border:"1px solid #fde68a",borderRadius:8,padding:"7px 10px",marginTop:8 }}>
+            This is for a <b>picture</b> of a CBCT (a screenshot or exported slice). To load a full CBCT scan, use the “CBCT Volumes” tab.
+          </div>
+        )}
+
+        {/* 2 — files */}
+        <label style={{ ...lbl, marginTop:16 }}>2 · Pictures</label>
+        <div className={`imgup-dropzone ${drag?"drag":""} ${ready.length?"has-file":""}`}
+          onClick={()=>!uploading && fileRef.current?.click()}
+          onDragOver={e=>{e.preventDefault();setDrag(true);}}
+          onDragLeave={()=>setDrag(false)} onDrop={handleDrop}>
+          <span style={{ fontSize:28 }}>🖼️</span>
+          <span style={{ fontSize:13.5,fontWeight:600,color:"#475569" }}>
+            {picks.length ? "Click or drop to add more pictures" : "Click or drag & drop pictures here"}
+          </span>
+          <span style={{ fontSize:11.5,color:"#94a3b8" }}>JPG, PNG, WEBP · up to {MAX_UPLOAD_MB} MB each · several at once is fine</span>
+          <input ref={fileRef} type="file" accept="image/*" multiple style={{ display:"none" }}
+            aria-label="Choose pictures"
+            onChange={e=>{ addFiles(e.target.files); e.target.value = ""; }} />
+        </div>
+
+        {picks.length > 0 && (
+          <div className="imgup-pick-list">
+            {picks.map(p => (
+              <div key={p.key} className={`imgup-pick${p.error || p.uploadError ? " bad" : ""}`}>
+                {p.preview
+                  ? <img src={p.preview} alt="" className="imgup-pick-thumb" />
+                  : <div className="imgup-pick-thumb" style={{ display:"flex",alignItems:"center",justifyContent:"center",fontSize:18 }}>⚠️</div>}
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ fontSize:12.5,fontWeight:600,color:"#1e293b",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap" }}>{p.file.name}</div>
+                  {p.error || p.uploadError
+                    ? <div role="alert" style={{ fontSize:11.5,color:"#b91c1c",fontWeight:600,marginTop:2 }}>{p.error || p.uploadError}</div>
+                    : <div style={{ fontSize:11,color:"#64748b",marginTop:2 }}>{fmtSize(p.file.size)}</div>}
                 </div>
-              ))}
-            </div>
-            <button disabled={!selType} onClick={()=>setStep(2)} style={{
-              marginTop:20,width:"100%",padding:"12px 0",borderRadius:10,
-              background:selType?"linear-gradient(135deg,#1d4d7a,#1d6fa4)":"#e2e8f0",
-              color:selType?"#fff":"#94a3b8",border:"none",
-              fontFamily:"'Plus Jakarta Sans',sans-serif",fontSize:14,fontWeight:700,
-              cursor:selType?"pointer":"not-allowed" }}>Continue →</button>
-          </>
+                <button type="button" className="imgup-icon-btn danger" disabled={uploading} onClick={()=>removePick(p.key)}
+                  title="Remove from this upload" aria-label={`Remove ${p.file.name}`}>✕</button>
+              </div>
+            ))}
+          </div>
         )}
 
-        {step===2 && (
-          <>
-            <div className={`imgup-dropzone ${drag?"drag":""} ${file?"has-file":""}`}
-              onClick={()=>fileRef.current?.click()}
-              onDragOver={e=>{e.preventDefault();setDrag(true);}}
-              onDragLeave={()=>setDrag(false)} onDrop={handleDrop}>
-              {preview ? (
-                <img src={preview} alt="preview" style={{ maxHeight:120,maxWidth:"100%",borderRadius:8,objectFit:"contain" }} />
-              ) : (
-                <>
-                  <span style={{ fontSize:32 }}>🖼️</span>
-                  <span style={{ fontSize:13.5,fontWeight:600,color:"#475569" }}>Click or drag & drop an image</span>
-                  <span style={{ fontSize:11.5,color:"#94a3b8" }}>JPG, PNG, WEBP supported</span>
-                </>
-              )}
-              <input ref={fileRef} type="file" accept="image/*" style={{ display:"none" }}
-                onChange={e=>pickFile(e.target.files?.[0])} />
-            </div>
-            {file && <div style={{ fontSize:11.5,color:"#16a34a",fontWeight:600,marginTop:6,textAlign:"center" }}>✓ {file.name}</div>}
+        {/* 3 — details */}
+        <div style={{ display:"grid",gridTemplateColumns:"minmax(0,170px) minmax(0,1fr)",gap:12,marginTop:16 }}>
+          <div>
+            <label style={lbl}>Image Date</label>
+            <input type="date" value={imageDate} onChange={e=>setImageDate(e.target.value || todayStr())} aria-label="Image date"
+              style={{ width:"100%",padding:"9px 12px",border:"1.5px solid #e2e8f0",borderRadius:9,
+                fontFamily:"'DM Mono',monospace",fontSize:13,color:"#1e293b",background:"#f8fafc",
+                outline:"none",boxSizing:"border-box" }} />
+          </div>
+          <div>
+            <label style={lbl}>
+              Description <span style={{ fontWeight:400,textTransform:"none",color:"#94a3b8" }}>
+                (optional{ready.length > 1 ? " — used for all of them" : ""})
+              </span>
+            </label>
+            <textarea value={description} onChange={e=>setDescription(e.target.value)} aria-label="Description"
+              placeholder="e.g. Upper left molar region, post-RCT…" rows={2}
+              style={{ width:"100%",padding:"9px 12px",border:"1.5px solid #e2e8f0",borderRadius:9,
+                fontFamily:"'Plus Jakarta Sans',sans-serif",fontSize:13,color:"#1e293b",
+                background:"#f8fafc",outline:"none",resize:"vertical",boxSizing:"border-box" }} />
+          </div>
+        </div>
 
-            <div style={{ marginTop:14 }}>
-              <label style={{ fontSize:10.5,fontWeight:700,color:"#8899bb",letterSpacing:"0.7px",textTransform:"uppercase",display:"block",marginBottom:5 }}>Image Date</label>
-              <input type="date" value={imageDate} onChange={e=>setImageDate(e.target.value)}
-                style={{ width:"100%",padding:"9px 12px",border:"1.5px solid #e2e8f0",borderRadius:9,
-                  fontFamily:"'DM Mono',monospace",fontSize:13,color:"#1e293b",background:"#f8fafc",
-                  outline:"none",boxSizing:"border-box" }} />
-            </div>
-            <div style={{ marginTop:12 }}>
-              <label style={{ fontSize:10.5,fontWeight:700,color:"#8899bb",letterSpacing:"0.7px",textTransform:"uppercase",display:"block",marginBottom:5 }}>
-                Description <span style={{ fontWeight:400,textTransform:"none",color:"#c0ccd8" }}>(optional)</span>
-              </label>
-              <textarea value={description} onChange={e=>setDescription(e.target.value)}
-                placeholder="e.g. Upper left molar region, post-RCT…" rows={3}
-                style={{ width:"100%",padding:"9px 12px",border:"1.5px solid #e2e8f0",borderRadius:9,
-                  fontFamily:"'Plus Jakarta Sans',sans-serif",fontSize:13,color:"#1e293b",
-                  background:"#f8fafc",outline:"none",resize:"vertical",boxSizing:"border-box" }} />
-            </div>
-            <div style={{ display:"flex",gap:10,marginTop:18 }}>
-              <button onClick={()=>setStep(1)} style={{ flex:1,padding:11,borderRadius:10,background:"transparent",
-                color:"#64748b",border:"1.5px solid #e2e8f4",fontFamily:"'Plus Jakarta Sans',sans-serif",
-                fontSize:13.5,fontWeight:600,cursor:"pointer" }}>← Back</button>
-              <button onClick={handleUpload} disabled={!file||uploading} style={{
-                flex:2,padding:11,borderRadius:10,
-                background:(file&&!uploading)?"linear-gradient(135deg,#0d6e4a,#10b981)":"#e2e8f0",
-                color:(file&&!uploading)?"#fff":"#94a3b8",border:"none",
-                fontFamily:"'Plus Jakarta Sans',sans-serif",fontSize:14,fontWeight:700,
-                cursor:(file&&!uploading)?"pointer":"not-allowed",
-                display:"flex",alignItems:"center",justifyContent:"center",gap:8 }}>
-                {uploading?<><span className="imgup-spinner"/> Uploading…</>:"✓ Upload Image"}
-              </button>
-            </div>
-          </>
+        {message && (
+          <div role="alert" style={{ marginTop:12,fontSize:12.5,fontWeight:600,color:"#b91c1c",background:"#fef2f2",
+            border:"1px solid #fecaca",borderRadius:8,padding:"8px 12px" }}>⚠️ {message}</div>
         )}
+
+        <div style={{ display:"flex",gap:10,marginTop:18,alignItems:"center" }}>
+          <span style={{ flex:1,fontSize:12,color:"#64748b" }}>
+            {!selType ? "Choose the kind of picture first." : ready.length === 0 ? "Now add at least one picture." : ""}
+          </span>
+          <button type="button" onClick={onClose} disabled={uploading} style={{ padding:"11px 18px",borderRadius:10,background:"transparent",
+            color:"#64748b",border:"1.5px solid #e2e8f4",fontFamily:"'Plus Jakarta Sans',sans-serif",
+            fontSize:13.5,fontWeight:600,cursor:"pointer" }}>Cancel</button>
+          <button type="button" onClick={handleUpload} disabled={!canUpload} style={{
+            padding:"11px 22px",borderRadius:10,
+            background:canUpload?"linear-gradient(135deg,#0d6e4a,#10b981)":"#e2e8f0",
+            color:canUpload?"#fff":"#94a3b8",border:"none",
+            fontFamily:"'Plus Jakarta Sans',sans-serif",fontSize:14,fontWeight:700,
+            cursor:canUpload?"pointer":"not-allowed",
+            display:"flex",alignItems:"center",justifyContent:"center",gap:8 }}>
+            {uploading ? <><span className="imgup-spinner"/> {progress}</>
+              : ready.length > 1 ? `✓ Upload ${ready.length} Images` : "✓ Upload Image"}
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -559,27 +931,30 @@ function EditModal({ img, onClose, onSaved }) {
   const [imageDate,   setImageDate]   = useState(img.image_date||todayStr());
   const [type,        setType]        = useState(img.type||"IOPA");
   const [saving,      setSaving]      = useState(false);
+  const [error,       setError]       = useState("");
+
+  useLockPageScroll();
 
   const handleSave = async () => {
-    setSaving(true);
+    setSaving(true); setError("");
     try {
       await api.put(`/images/${img.id}`, { description, image_date:imageDate, type });
       onSaved(); onClose();
-    } catch(err) { console.error("Edit failed",err); alert("Failed to save changes."); }
+    } catch(err) { console.error("Edit failed",err); setError(serverMessage(err, "The changes were NOT saved.")); }
     finally { setSaving(false); }
   };
 
-  return (
-    <div className="imgup-modal-overlay" onClick={onClose}>
-      <div className="imgup-edit-modal" onClick={e=>e.stopPropagation()}>
+  return inBody(
+    <div className="imgup-modal-overlay" onClick={()=>!saving && onClose()}>
+      <div className="imgup-edit-modal" role="dialog" aria-modal="true" aria-label="Edit image details" onClick={e=>e.stopPropagation()}>
         <div style={{ display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:18 }}>
           <div style={{ fontSize:15,fontWeight:800,color:"#0b2d4e" }}>✏️ Edit Image Details</div>
-          <button onClick={onClose} style={{ width:28,height:28,borderRadius:7,border:"1.5px solid #e2e8f4",
+          <button type="button" onClick={onClose} aria-label="Close" style={{ width:28,height:28,borderRadius:7,border:"1.5px solid #e2e8f4",
             background:"#f7f9fe",fontSize:14,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center" }}>✕</button>
         </div>
         <div style={{ marginBottom:12 }}>
           <label style={{ fontSize:10.5,fontWeight:700,color:"#8899bb",letterSpacing:"0.7px",textTransform:"uppercase",display:"block",marginBottom:5 }}>Image Type</label>
-          <select value={type} onChange={e=>setType(e.target.value)} style={{ width:"100%",padding:"9px 12px",
+          <select value={type} onChange={e=>setType(e.target.value)} aria-label="Image type" style={{ width:"100%",padding:"9px 12px",
             border:"1.5px solid #e2e8f0",borderRadius:9,fontFamily:"'Plus Jakarta Sans',sans-serif",
             fontSize:13,color:"#1e293b",background:"#f8fafc",outline:"none" }}>
             {IMAGE_TYPES.map(t=><option key={t.value} value={t.value}>{t.label} — {t.desc}</option>)}
@@ -587,24 +962,28 @@ function EditModal({ img, onClose, onSaved }) {
         </div>
         <div style={{ marginBottom:12 }}>
           <label style={{ fontSize:10.5,fontWeight:700,color:"#8899bb",letterSpacing:"0.7px",textTransform:"uppercase",display:"block",marginBottom:5 }}>Image Date</label>
-          <input type="date" value={imageDate} onChange={e=>setImageDate(e.target.value)}
+          <input type="date" value={imageDate} onChange={e=>setImageDate(e.target.value)} aria-label="Image date"
             style={{ width:"100%",padding:"9px 12px",border:"1.5px solid #e2e8f0",borderRadius:9,
               fontFamily:"'DM Mono',monospace",fontSize:13,color:"#1e293b",background:"#f8fafc",
               outline:"none",boxSizing:"border-box" }} />
         </div>
         <div style={{ marginBottom:18 }}>
           <label style={{ fontSize:10.5,fontWeight:700,color:"#8899bb",letterSpacing:"0.7px",textTransform:"uppercase",display:"block",marginBottom:5 }}>Description</label>
-          <textarea value={description} onChange={e=>setDescription(e.target.value)} rows={3}
+          <textarea value={description} onChange={e=>setDescription(e.target.value)} rows={3} aria-label="Description"
             placeholder="Image description…" style={{ width:"100%",padding:"9px 12px",
               border:"1.5px solid #e2e8f0",borderRadius:9,fontFamily:"'Plus Jakarta Sans',sans-serif",
               fontSize:13,color:"#1e293b",background:"#f8fafc",outline:"none",
               resize:"vertical",boxSizing:"border-box" }} />
         </div>
+        {error && (
+          <div role="alert" style={{ marginBottom:12,fontSize:12.5,fontWeight:600,color:"#b91c1c",background:"#fef2f2",
+            border:"1px solid #fecaca",borderRadius:8,padding:"8px 12px" }}>⚠️ {error}</div>
+        )}
         <div style={{ display:"flex",gap:10 }}>
-          <button onClick={onClose} style={{ flex:1,padding:10,borderRadius:9,background:"transparent",
+          <button type="button" onClick={onClose} disabled={saving} style={{ flex:1,padding:10,borderRadius:9,background:"transparent",
             color:"#64748b",border:"1.5px solid #e2e8f4",fontFamily:"'Plus Jakarta Sans',sans-serif",
             fontSize:13.5,fontWeight:600,cursor:"pointer" }}>Cancel</button>
-          <button onClick={handleSave} disabled={saving} style={{ flex:2,padding:10,borderRadius:9,
+          <button type="button" onClick={handleSave} disabled={saving} style={{ flex:2,padding:10,borderRadius:9,
             background:saving?"#e2e8f0":"linear-gradient(135deg,#1d4d7a,#1d6fa4)",
             color:saving?"#94a3b8":"#fff",border:"none",fontFamily:"'Plus Jakarta Sans',sans-serif",
             fontSize:14,fontWeight:700,cursor:saving?"not-allowed":"pointer",
@@ -618,43 +997,116 @@ function EditModal({ img, onClose, onSaved }) {
 }
 
 /* ═══════════════════════════════════════════
+   DELETE CONFIRMATION
+═══════════════════════════════════════════ */
+function DeleteModal({ img, onClose, onDeleted }) {
+  const [deleting, setDeleting] = useState(false);
+  const [error,    setError]    = useState("");
+  const typeObj = IMAGE_TYPES.find(t=>t.value===img.type)||{label:img.type};
+
+  useLockPageScroll();
+
+  const handleDelete = async () => {
+    setDeleting(true); setError("");
+    try {
+      await api.delete(`/images/${img.id}`);
+      forgetPicture(img.url);
+      onDeleted(); onClose();
+    } catch (err) {
+      if (err?.response?.status === 404) { forgetPicture(img.url); onDeleted(); onClose(); return; }   // already gone
+      console.error("Delete failed", err);
+      setError(serverMessage(err, "The picture was NOT deleted."));
+      setDeleting(false);
+    }
+  };
+
+  return inBody(
+    <div className="imgup-modal-overlay" onClick={()=>!deleting && onClose()}>
+      <div className="imgup-edit-modal" role="dialog" aria-modal="true" aria-label="Delete picture" style={{ maxWidth:400 }} onClick={e=>e.stopPropagation()}>
+        <div style={{ fontSize:32,marginBottom:10 }}>🗑️</div>
+        <div style={{ fontSize:16,fontWeight:800,color:"#0b2d4e",marginBottom:8 }}>Delete this {typeObj.label} picture?</div>
+        <div style={{ fontSize:13,color:"#64748b",marginBottom:6,lineHeight:1.6 }}>
+          {img.description ? <>“{img.description}” · </> : null}{fmtDate(img.image_date)}
+        </div>
+        <div style={{ fontSize:13,color:"#64748b",marginBottom:18,lineHeight:1.6 }}>
+          The picture file is removed from the server. This cannot be undone.
+        </div>
+        {error && (
+          <div role="alert" style={{ marginBottom:12,fontSize:12.5,fontWeight:600,color:"#b91c1c",background:"#fef2f2",
+            border:"1px solid #fecaca",borderRadius:8,padding:"8px 12px" }}>⚠️ {error}</div>
+        )}
+        <div style={{ display:"flex",gap:10 }}>
+          <button type="button" onClick={onClose} disabled={deleting} style={{ flex:1,padding:10,borderRadius:9,background:"transparent",
+            color:"#64748b",border:"1.5px solid #e2e8f4",fontFamily:"'Plus Jakarta Sans',sans-serif",
+            fontSize:13.5,fontWeight:600,cursor:"pointer" }}>No, keep it</button>
+          <button type="button" onClick={handleDelete} disabled={deleting} style={{ flex:1,padding:10,borderRadius:9,
+            background:"linear-gradient(135deg,#dc2626,#ef4444)",color:"#fff",border:"none",
+            fontFamily:"'Plus Jakarta Sans',sans-serif",fontSize:14,fontWeight:700,cursor:"pointer",opacity:deleting?0.65:1 }}>
+            {deleting ? "Deleting…" : "Yes, delete"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════
    IMAGE CARD
 ═══════════════════════════════════════════ */
 function ImageCard({ img, disabled, onEdit, onDelete, onView }) {
   const typeObj = IMAGE_TYPES.find(t=>t.value===img.type)||{icon:"📄",label:img.type};
+  const missing = img.available === false;
+  const isPdf   = img.mime_type === "application/pdf";
   return (
     <div className="imgup-img-card">
-      <div style={{ position:"relative",cursor:"zoom-in",background:"#0b1120",overflow:"hidden" }}
-        onClick={()=>onView(img)}>
-        <AuthImage src={img.url} alt={img.description||img.type}
-          style={{ width:"100%",height:160,objectFit:"cover",display:"block",
-            transition:"transform 0.22s",filter:"brightness(0.92)" }}
-          onMouseOver={e=>e.currentTarget.style.transform="scale(1.04)"}
-          onMouseOut={e=>e.currentTarget.style.transform="scale(1)"} />
-        <div style={{ position:"absolute",top:8,left:8,background:"rgba(11,45,78,0.78)",
+      <button type="button" className="imgup-thumb" onClick={()=>onView(img)}
+        aria-label={`View ${typeObj.label} picture${img.description ? `: ${img.description}` : ""}`}>
+        {missing ? (
+          <div style={{ width:"100%",height:160,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",
+            gap:6,background:"#1e293b",color:"#cbd5e1",fontSize:12,padding:10,textAlign:"center" }}>
+            <span style={{ fontSize:22 }}>⚠️</span>
+            The file for this picture is missing on the server
+          </div>
+        ) : isPdf ? (
+          <div style={{ width:"100%",height:160,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",
+            gap:6,background:"#0b1120",color:"#e2e8f0",fontSize:12.5 }}>
+            <span style={{ fontSize:34 }}>📄</span>PDF document
+          </div>
+        ) : (
+          <AuthImage src={img.url} alt={img.description||img.type}
+            style={{ width:"100%",height:160,objectFit:"cover",display:"block",
+              transition:"transform 0.22s",filter:"brightness(0.92)" }}
+            onMouseOver={e=>e.currentTarget.style.transform="scale(1.04)"}
+            onMouseOut={e=>e.currentTarget.style.transform="scale(1)"} />
+        )}
+        <span style={{ position:"absolute",top:8,left:8,background:"rgba(11,45,78,0.78)",
           backdropFilter:"blur(4px)",borderRadius:6,padding:"3px 9px",
           fontSize:11,fontWeight:700,color:"#fff",letterSpacing:"0.3px" }}>
           {typeObj.icon} {typeObj.label}
-        </div>
-        <div style={{ position:"absolute",bottom:8,right:8,background:"rgba(0,0,0,0.55)",
-          borderRadius:20,padding:"2px 8px",fontSize:10.5,color:"rgba(255,255,255,0.85)" }}>
-          🔍 Click to zoom
-        </div>
-      </div>
+        </span>
+        {!missing && (
+          <span style={{ position:"absolute",bottom:8,right:8,background:"rgba(0,0,0,0.6)",
+            borderRadius:20,padding:"2px 9px",fontSize:10.5,color:"rgba(255,255,255,0.9)" }}>
+            🔍 Click to view
+          </span>
+        )}
+      </button>
       <div style={{ padding:"10px 12px" }}>
         <div style={{ display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:8 }}>
           <div style={{ flex:1,minWidth:0 }}>
             {img.image_date && <div style={{ fontSize:11,fontWeight:700,color:"#1d6fa4",
               fontFamily:"'DM Mono',monospace",marginBottom:3 }}>📅 {fmtDate(img.image_date)}</div>}
             {img.description
-              ? <div style={{ fontSize:12.5,color:"#374151",lineHeight:1.5 }}>{img.description}</div>
-              : <div style={{ fontSize:12,color:"#cbd5e1",fontStyle:"italic" }}>No description</div>}
-            {img.uploaded_at && <div style={{ fontSize:10.5,color:"#94a3b8",marginTop:4 }}>Uploaded: {img.uploaded_at}</div>}
+              ? <div style={{ fontSize:12.5,color:"#374151",lineHeight:1.5,overflowWrap:"anywhere" }}>{img.description}</div>
+              : <div style={{ fontSize:12,color:"#94a3b8",fontStyle:"italic" }}>No description</div>}
+            {img.uploaded_at && <div style={{ fontSize:10.5,color:"#94a3b8",marginTop:4 }}>
+              Uploaded: {img.uploaded_at}{img.size ? ` · ${fmtSize(img.size)}` : ""}
+            </div>}
           </div>
           {!disabled && (
             <div style={{ display:"flex",gap:5,flexShrink:0 }}>
-              <button className="imgup-icon-btn" onClick={()=>onEdit(img)} title="Edit">✏️</button>
-              <button className="imgup-icon-btn danger" onClick={()=>onDelete(img)} title="Delete">🗑️</button>
+              <button type="button" className="imgup-icon-btn" onClick={()=>onEdit(img)} title="Edit details" aria-label="Edit details">✏️</button>
+              <button type="button" className="imgup-icon-btn danger" onClick={()=>onDelete(img)} title="Delete" aria-label="Delete picture">🗑️</button>
             </div>
           )}
         </div>
@@ -1392,40 +1844,51 @@ export default function ImageUpload({ visitId, disabled = false }) {
   const [activeTab,   setActiveTab]   = useState("images"); // "images" | "cbct"
   const [images,      setImages]      = useState([]);
   const [loadingImgs, setLoadingImgs] = useState(false);
+  const [loadError,   setLoadError]   = useState("");
   const [showUpload,  setShowUpload]  = useState(false);
   const [lightbox,    setLightbox]    = useState(null);
   const [editImg,     setEditImg]     = useState(null);
+  const [deleteImg,   setDeleteImg]   = useState(null);
 
-  useEffect(() => { if (visitId) loadImages(); }, [visitId]);
+  useEffect(() => { if (visitId) loadImages(true); }, [visitId]);
 
-  const loadImages = async () => {
-    setLoadingImgs(true);
+  // Leaving the page: free the pictures held in memory.
+  useEffect(() => () => forgetAllPictures(), []);
+
+  const loadImages = async (showSpinner = false) => {
+    if (showSpinner) setLoadingImgs(true);
+    setLoadError("");
     try {
       const res = await api.get(`/visits/${visitId}/images`);
-      setImages(res.data || []);
-    } catch (err) { console.error("Failed to load images", err); }
+      setImages(Array.isArray(res.data) ? res.data : []);
+    } catch (err) {
+      console.error("Failed to load images", err);
+      setLoadError("Could not load the pictures for this visit.");
+    }
     finally { setLoadingImgs(false); }
   };
 
-  const handleDelete = async (img) => {
-    if (!window.confirm(`Delete this ${img.type} image? This cannot be undone.`)) return;
-    try { await api.delete(`/images/${img.id}`); loadImages(); }
-    catch (err) { console.error("Delete failed",err); alert("Delete failed."); }
-  };
-
-  // Non-CBCT images only in the gallery
-  const regularImages = images.filter(img => img.type !== "CBCT");
-  const grouped = IMAGE_TYPES.filter(t=>t.value!=="CBCT").reduce((acc,t) => {
-    const group = regularImages.filter(img=>img.type===t.value);
-    if (group.length>0) acc.push({...t,images:group});
+  // Gallery: X-rays and photos, grouped by kind. A plain picture saved with the
+  // kind "CBCT" (for example a screenshot of a slice) is shown here too; full
+  // CBCT scans live in the "CBCT Volumes" tab.
+  const grouped = IMAGE_TYPES.reduce((acc,t) => {
+    const group = images.filter(img=>img.type===t.value);
+    if (group.length>0) acc.push({...t,label:t.value==="CBCT"?"CBCT (pictures)":t.label,images:group});
     return acc;
   },[]);
+  const known = new Set(IMAGE_TYPES.map(t => t.value));
+  const others = images.filter(img => !known.has(img.type));
+  if (others.length > 0) grouped.push({ value:"OTHER", label:"Other", icon:"📄", images:others });
+  const ordered = grouped.flatMap(g => g.images);            // same order as on screen, for ← → in the viewer
+
+  // Keep the viewer on the same picture if the list is refreshed underneath it.
+  const viewing = lightbox ? (ordered.find(i => i.id === lightbox.id) || null) : null;
 
   return (
     <div className="imgup-root">
 
       {/* ── Header ── */}
-      <div style={{ display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14 }}>
+      <div style={{ display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,flexWrap:"wrap",marginBottom:14 }}>
         <div style={{ display:"flex",alignItems:"center",gap:10 }}>
           <div style={{ width:36,height:36,borderRadius:9,
             background:"linear-gradient(135deg,#dbeafe,#bfdbfe)",
@@ -1438,7 +1901,7 @@ export default function ImageUpload({ visitId, disabled = false }) {
           </div>
         </div>
         {!disabled && activeTab==="images" && (
-          <button onClick={()=>setShowUpload(true)} style={{
+          <button type="button" onClick={()=>setShowUpload(true)} style={{
             display:"inline-flex",alignItems:"center",gap:8,
             padding:"10px 20px",borderRadius:10,
             background:"linear-gradient(135deg,#1d4d7a,#1d6fa4)",
@@ -1454,11 +1917,11 @@ export default function ImageUpload({ visitId, disabled = false }) {
       {/* ── Tab bar ── */}
       <div style={{ display:"flex",gap:8,marginBottom:16,
         borderBottom:"2px solid #e8eef8",paddingBottom:10 }}>
-        <button className={`cbct-tab-btn ${activeTab==="images"?"active":""}`}
+        <button type="button" className={`cbct-tab-btn ${activeTab==="images"?"active":""}`}
           onClick={()=>setActiveTab("images")}>
           🖼️ X-Rays & Photos
         </button>
-        <button className={`cbct-tab-btn ${activeTab==="cbct"?"active":""}`}
+        <button type="button" className={`cbct-tab-btn ${activeTab==="cbct"?"active":""}`}
           onClick={()=>setActiveTab("cbct")}>
           🔬 CBCT Volumes
         </button>
@@ -1467,21 +1930,30 @@ export default function ImageUpload({ visitId, disabled = false }) {
       {/* ── Images Tab ── */}
       {activeTab==="images" && (
         <>
+          {loadError && (
+            <div role="alert" style={{ display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,flexWrap:"wrap",
+              background:"#fef2f2",border:"1px solid #fecaca",borderRadius:9,padding:"9px 12px",
+              color:"#b91c1c",fontSize:12.5,fontWeight:600,marginBottom:12 }}>
+              <span>⚠️ {loadError}</span>
+              <button type="button" onClick={()=>loadImages(true)} style={{ background:"#fff",border:"1px solid currentColor",color:"inherit",
+                borderRadius:6,padding:"3px 10px",fontSize:12,fontWeight:600,cursor:"pointer" }}>Try again</button>
+            </div>
+          )}
           {loadingImgs && (
             <div style={{ textAlign:"center",padding:"28px 0",color:"#94a3b8",fontSize:13 }}>
               <span className="imgup-spinner" style={{ marginRight:8 }}/>Loading images…
             </div>
           )}
-          {!loadingImgs && regularImages.length===0 && (
+          {!loadingImgs && !loadError && images.length===0 && (
             <div style={{ textAlign:"center",padding:"40px 20px",background:"#fafbff",
               borderRadius:12,border:"1.5px dashed #dde8f8" }}>
               <div style={{ fontSize:40,marginBottom:10 }}>🦷</div>
               <div style={{ fontSize:14,fontWeight:600,color:"#475569",marginBottom:6 }}>No clinical images yet</div>
               <div style={{ fontSize:12.5,color:"#94a3b8",marginBottom:16 }}>
-                Upload X-rays, OPGs or intraoral photos
+                {disabled ? "No pictures were added for this visit" : "Upload X-rays, OPGs or intraoral photos"}
               </div>
               {!disabled && (
-                <button onClick={()=>setShowUpload(true)} style={{
+                <button type="button" onClick={()=>setShowUpload(true)} style={{
                   padding:"10px 22px",borderRadius:10,
                   background:"linear-gradient(135deg,#1d4d7a,#1d6fa4)",
                   color:"#fff",border:"none",fontFamily:"'Plus Jakarta Sans',sans-serif",
@@ -1504,7 +1976,7 @@ export default function ImageUpload({ visitId, disabled = false }) {
               <div style={{ display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(200px,1fr))",gap:12,marginBottom:8 }}>
                 {group.images.map(img=>(
                   <ImageCard key={img.id} img={img} disabled={disabled}
-                    onView={setLightbox} onEdit={setEditImg} onDelete={handleDelete} />
+                    onView={setLightbox} onEdit={setEditImg} onDelete={setDeleteImg} />
                 ))}
               </div>
             </div>
@@ -1517,10 +1989,11 @@ export default function ImageUpload({ visitId, disabled = false }) {
         <CBCTUploadSection visitId={visitId} disabled={disabled} />
       )}
 
-      {/* ── Modals ── */}
-      {showUpload && <UploadModal visitId={visitId} onClose={()=>setShowUpload(false)} onUploaded={loadImages} />}
-      {editImg    && <EditModal   img={editImg}    onClose={()=>setEditImg(null)}     onSaved={loadImages} />}
-      {lightbox   && <Lightbox    img={lightbox}   onClose={()=>setLightbox(null)} />}
+      {/* ── Modals (each one is drawn on the page body, over everything) ── */}
+      {showUpload && <UploadModal visitId={visitId} onClose={()=>setShowUpload(false)} onUploaded={()=>loadImages(false)} />}
+      {editImg    && <EditModal   img={editImg}    onClose={()=>setEditImg(null)}     onSaved={()=>loadImages(false)} />}
+      {deleteImg  && <DeleteModal img={deleteImg}  onClose={()=>setDeleteImg(null)}   onDeleted={()=>loadImages(false)} />}
+      {viewing    && <Lightbox    img={viewing} images={ordered} onNavigate={setLightbox} onClose={()=>setLightbox(null)} />}
     </div>
   );
 }

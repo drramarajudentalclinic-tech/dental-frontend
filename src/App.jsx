@@ -1,10 +1,9 @@
-import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useLocation, useParams } from "react-router-dom";
 import { useEffect } from "react";
 import ProtectedRoute from "./ProtectedRoute";
 import ReceptionDashboard from "./pages/ReceptionDashboard";
 import DoctorDashboard from "./pages/DoctorDashboard";
 import VisitPage from "./pages/VisitPage";
-import BillingPage from "./pages/BillingPage";
 import EditPatient from "./pages/EditPatient";
 import DoctorPatientView from "./pages/DoctorPatientView";
 import ReceptionPatientForm from "./pages/ReceptionPatientForm";
@@ -20,6 +19,21 @@ function NavTracer() {
   }, [location]);
 
   return null;
+}
+
+// Billing was removed from this application (it is done in the clinic's
+// separate billing software). Any old link or bookmark to /billing/<visit>
+// now opens Reception's "Doctor's Instructions" list with that visit
+// highlighted, instead of the old billing page.
+function OldBillingLink() {
+  const { visitId } = useParams();
+  const id = /^\d+$/.test(visitId || "") ? visitId : "";
+  return (
+    <Navigate
+      to={`/reception/dashboard?section=instructions${id ? `&visitId=${id}` : ""}`}
+      replace
+    />
+  );
 }
 
 export default function App() {
@@ -107,9 +121,15 @@ export default function App() {
           element={<VisitPage />}
         />
 
+        {/* Old billing links → Reception's "Doctor's Instructions" */}
         <Route
           path="/billing/:visitId"
-          element={<BillingPage />}
+          element={<OldBillingLink />}
+        />
+
+        <Route
+          path="/billing"
+          element={<OldBillingLink />}
         />
 
         <Route

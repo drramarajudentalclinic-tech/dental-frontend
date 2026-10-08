@@ -2,20 +2,15 @@ import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import api from "../api/api";
 
-import PatientMedical from "../components/PatientMedical";
-import PatientAllergy from "../components/PatientAllergy";
-import PatientHabits from "../components/PatientHabits";
-import PatientWomen from "../components/PatientWomen";
+// Medical Conditions, Allergy Records, Current Medications, Personal Habits
+// and Women's Health: one shared component, the same records the Doctor sees.
+import MedicalHistoryManager from "../components/MedicalHistoryManager";
 
 export default function EditPatient() {
   const { id } = useParams();
   const navigate = useNavigate();
 
   const [patient, setPatient] = useState({});
-  const [medical, setMedical] = useState({});
-  const [allergy, setAllergy] = useState({});
-  const [habits, setHabits] = useState({});
-  const [women, setWomen] = useState({});
 
   useEffect(() => {
     loadPatient();
@@ -25,10 +20,7 @@ export default function EditPatient() {
     try {
       const res = await api.get(`/patients/${id}`);
       setPatient(res.data.patient);
-      setMedical(res.data.medical || {});
-      setAllergy(res.data.allergy || {});
-      setHabits(res.data.habits || {});
-      setWomen(res.data.women || {});
+      // Medical history is loaded by <MedicalHistoryManager> itself.
     } catch {
       alert("Failed to load patient");
     }
@@ -37,13 +29,11 @@ export default function EditPatient() {
   const updatePatient = async () => {
     try {
       await api.put(`/patients/${id}`, patient);
-      await api.put(`/patients/${id}/medical`, medical);
-      await api.put(`/patients/${id}/allergy`, allergy);
-      await api.put(`/patients/${id}/habits`, habits);
 
-      if (patient.gender === "Female") {
-        await api.put(`/patients/${id}/women`, women);
-      }
+      // Medical history is not re-sent from here. Every condition, allergy,
+      // medication, habit and women's-health entry is its own record and is
+      // saved by its own Add / Update / Delete button in the section below,
+      // so saving this page can never overwrite what the Doctor entered.
 
       alert("Patient updated successfully");
       navigate("/reception");
@@ -83,13 +73,9 @@ export default function EditPatient() {
         onChange={e => setPatient({ ...patient, complaint: e.target.value })}
       />
 
-      <PatientMedical data={medical} setData={setMedical} />
-      <PatientAllergy data={allergy} setData={setAllergy} />
-      <PatientHabits data={habits} setData={setHabits} />
-
-      {patient.gender === "Female" && (
-        <PatientWomen data={women} setData={setWomen} />
-      )}
+      <div style={{ margin: "20px 0" }}>
+        <MedicalHistoryManager patientId={id} gender={patient.gender} />
+      </div>
 
       <button onClick={updatePatient}>Update Patient</button>
       <button onClick={() => navigate(-1)}>Cancel</button>
