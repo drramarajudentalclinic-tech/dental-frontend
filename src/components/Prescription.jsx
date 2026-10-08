@@ -32,24 +32,75 @@ function saveError(err, fallback) {
 
 /* ─── Medicine catalogue ───────────────────────────────────── */
 const MEDICINES = [
-  { name: "Amoxicillin 500mg",       times: "3 times/day", days: 5 },
-  { name: "Metronidazole 400mg",     times: "3 times/day", days: 5 },
-  { name: "Ibuprofen 400mg",         times: "3 times/day", days: 3 },
-  { name: "Paracetamol 500mg",       times: "3 times/day", days: 3 },
-  { name: "Diclofenac 50mg",         times: "2 times/day", days: 3 },
-  { name: "Omeprazole 20mg",         times: "1 time/day",  days: 5 },
-  { name: "Chlorhexidine Mouthwash", times: "2 times/day", days: 7 },
-  { name: "Betadine Mouthwash",      times: "3 times/day", days: 5 },
-  { name: "Clindamycin 300mg",       times: "3 times/day", days: 5 },
-  { name: "Augmentin 625mg",         times: "2 times/day", days: 5 },
-  { name: "Aceclofenac 100mg",       times: "2 times/day", days: 3 },
-  { name: "Serratiopeptidase 10mg",  times: "2 times/day", days: 5 },
-  { name: "Pantoprazole 40mg",       times: "1 time/day",  days: 5 },
-  { name: "Tetanus Toxoid",          times: "1 time/day",  days: 1 },
-  { name: "Vitamin C 500mg",         times: "1 time/day",  days: 7 },
+  { name: "Amoxicillin 500mg",       times: "3 times/day", days: 5, cat: "Antibiotics" },
+  { name: "Metronidazole 400mg",     times: "3 times/day", days: 5, cat: "Antibiotics" },
+  { name: "Ibuprofen 400mg",         times: "3 times/day", days: 3, cat: "Painkillers", when: "After food" },
+  { name: "Paracetamol 500mg",       times: "3 times/day", days: 3, cat: "Painkillers" },
+  { name: "Diclofenac 50mg",         times: "2 times/day", days: 3, cat: "Painkillers", when: "After food" },
+  { name: "Omeprazole 20mg",         times: "1 time/day",  days: 5, cat: "Antacids", when: "Before food" },
+  { name: "Chlorhexidine Mouthwash", times: "2 times/day", days: 7, cat: "Mouthwash & gels" },
+  { name: "Betadine Mouthwash",      times: "3 times/day", days: 5, cat: "Mouthwash & gels" },
+  { name: "Clindamycin 300mg",       times: "3 times/day", days: 5, cat: "Antibiotics" },
+  { name: "Augmentin 625mg",         times: "2 times/day", days: 5, cat: "Antibiotics", when: "After food" },
+  { name: "Aceclofenac 100mg",       times: "2 times/day", days: 3, cat: "Painkillers", when: "After food" },
+  { name: "Serratiopeptidase 10mg",  times: "2 times/day", days: 5, cat: "Painkillers" },
+  { name: "Pantoprazole 40mg",       times: "1 time/day",  days: 5, cat: "Antacids", when: "Before food" },
+  { name: "Tetanus Toxoid",          times: "1 time/day",  days: 1, cat: "Vitamins & others" },
+  { name: "Vitamin C 500mg",         times: "1 time/day",  days: 7, cat: "Vitamins & others" },
+  // more common dental medicines
+  { name: "Azithromycin 500mg",      times: "1 time/day",  days: 3, cat: "Antibiotics" },
+  { name: "Cefixime 200mg",          times: "2 times/day", days: 5, cat: "Antibiotics" },
+  { name: "Ofloxacin + Ornidazole",  times: "2 times/day", days: 5, cat: "Antibiotics", when: "After food" },
+  { name: "Paracetamol 650mg",       times: "3 times/day", days: 3, cat: "Painkillers" },
+  { name: "Aceclofenac + Paracetamol", times: "2 times/day", days: 3, cat: "Painkillers", when: "After food" },
+  { name: "Ketorolac 10mg",          times: "2 times/day", days: 3, cat: "Painkillers", when: "After food" },
+  { name: "Etoricoxib 90mg",         times: "1 time/day",  days: 3, cat: "Painkillers", when: "After food" },
+  { name: "Rabeprazole 20mg",        times: "1 time/day",  days: 5, cat: "Antacids", when: "Before food" },
+  { name: "Benzydamine Mouthwash",   times: "3 times/day", days: 5, cat: "Mouthwash & gels" },
+  { name: "Chlorhexidine Gel",       times: "2 times/day", days: 7, cat: "Mouthwash & gels" },
+  { name: "Lignocaine Gel 2%",       times: "When needed (SOS)", days: 3, cat: "Mouthwash & gels" },
+  { name: "Clotrimazole Mouth Paint", times: "3 times/day", days: 7, cat: "Mouthwash & gels" },
+  { name: "Desensitizing Toothpaste", times: "2 times/day", days: 30, cat: "Mouthwash & gels" },
+  { name: "B-Complex",               times: "1 time/day",  days: 15, cat: "Vitamins & others", when: "After food" },
+  { name: "Multivitamin",            times: "1 time/day",  days: 15, cat: "Vitamins & others", when: "After food" },
+  { name: "Fluconazole 150mg",       times: "1 time/day",  days: 1, cat: "Vitamins & others" },
 ];
 // Shown alphabetically on screen.
 const MEDICINES_AZ = [...MEDICINES].sort((a, b) => a.name.localeCompare(b.name, "en", { sensitivity: "base" }));
+const MED_CATEGORIES = ["Antibiotics", "Painkillers", "Antacids", "Mouthwash & gels", "Vitamins & others"];
+const MY_CATEGORY = "My medicines";
+
+/* ─── My medicines: the clinic's own list, saved on the server ────
+   GET/POST/PUT/DELETE /prescription-medicines (prescription.py). Loaded once
+   and shared by every medicine editor on the page.                         */
+const catalogue = { custom: [], usage: {}, loaded: false, error: "", listeners: new Set(), loading: null };
+function notifyCatalogue() { catalogue.listeners.forEach(fn => fn({ ...catalogue })); }
+function loadCatalogue(force = false) {
+  if (catalogue.loading && !force) return catalogue.loading;
+  catalogue.loading = api.get("/prescription-medicines")
+    .then(res => {
+      catalogue.custom = Array.isArray(res.data?.medicines) ? res.data.medicines : [];
+      catalogue.usage = res.data?.usage || {};
+      catalogue.error = "";
+    })
+    .catch(err => {
+      catalogue.error = err?.response?.status === 404 && !err?.response?.data?.error
+        ? "My medicines needs the new prescription.py on the server."
+        : (err?.response?.data?.error || "My medicines could not be loaded.");
+    })
+    .finally(() => { catalogue.loaded = true; notifyCatalogue(); });
+  return catalogue.loading;
+}
+function useCatalogue() {
+  const [state, setState] = useState({ ...catalogue });
+  useEffect(() => {
+    catalogue.listeners.add(setState);
+    if (!catalogue.loading) loadCatalogue();
+    else setState({ ...catalogue });
+    return () => { catalogue.listeners.delete(setState); };
+  }, []);
+  return state;
+}
 
 const FREQUENCY_OPTIONS = ["1 time/day", "2 times/day", "3 times/day", "4 times/day", "At night", "When needed (SOS)"];
 const WHEN_OPTIONS      = ["After food", "Before food", "With food", "At bedtime"];
@@ -138,13 +189,13 @@ const CLINIC_LOGO_IMG = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/4gHY
 
 /* ─── CSS injection ─────────────────────────────────────────── */
 const injectStyles = () => {
-  if (document.getElementById("presc-styles-v2")) return;
+  if (document.getElementById("presc-styles-v3")) return;
   const link = document.createElement("link");
   link.rel = "stylesheet";
   link.href = "https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=DM+Mono:wght@400;500&display=swap";
   document.head.appendChild(link);
   const s = document.createElement("style");
-  s.id = "presc-styles-v2";
+  s.id = "presc-styles-v3";
   s.textContent = `
     .presc-root { font-family: 'Plus Jakarta Sans', sans-serif; }
     .presc-root *, .presc-pop * { box-sizing: border-box; }
@@ -255,6 +306,34 @@ const injectStyles = () => {
     .presc-window-body { overflow-y:auto; flex:1 1 auto; min-height:0; padding:18px 22px; }
     .presc-window-foot { padding:12px 22px; border-top:1px solid #f0f0f0; display:flex; gap:10px; flex-shrink:0; }
     .presc-x { width:30px; height:30px; border-radius:7px; border:1.5px solid rgba(255,255,255,0.25); background:rgba(255,255,255,0.12); color:#fff; font-size:15px; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+    /* ── v3: medicine groups, My medicines ── */
+    .presc-msg.success { background:#ecfdf5; border:1px solid #a7f3d0; color:#065f46; }
+    .presc-btn-my { padding:8px 14px; border-radius:8px; font-weight:700; font-size:13px; font-family:inherit; cursor:pointer; background:#fffbeb; color:#92400e; border:1.5px solid #fcd34d; white-space:nowrap; }
+    .presc-btn-my:hover { background:#fef3c7; }
+    .presc-groups { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px; }
+    .presc-group { font-family:inherit; font-size:12px; font-weight:700; padding:5px 11px; border-radius:20px; cursor:pointer; background:#f8fafc; color:#475569; border:1.5px solid #e2e8f0; }
+    .presc-group span { font-weight:600; color:#94a3b8; margin-left:2px; }
+    .presc-group[aria-pressed="true"] { background:#1d6fa4; border-color:#1d6fa4; color:#fff; }
+    .presc-group[aria-pressed="true"] span { color:rgba(255,255,255,0.75); }
+    .presc-chip.mine { background:#fffbeb; border-color:#fde68a; }
+    .presc-chip.mine.on { background:#1d6fa4; border-color:#1d6fa4; }
+    .presc-chip-star { margin-left:auto; font-size:11px; }
+    .presc-chip-uses { margin-left:auto; font-size:10.5px; font-weight:800; color:#64748b; background:#eef2f7; border-radius:10px; padding:0 6px; }
+    .presc-chip.on .presc-chip-uses { background:rgba(255,255,255,0.2); color:#fff; }
+    .presc-linkbtn { background:none; border:0; padding:0; font:inherit; color:#1d6fa4; font-weight:700; cursor:pointer; text-decoration:underline; }
+    .presc-empty-meds { font-size:12.5px; color:#94a3b8; font-style:italic; padding:12px; border:1.5px dashed #e2e8f0; border-radius:10px; text-align:center; }
+    .presc-rx-new { margin-top:8px; margin-left:34px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; font-size:12px; color:#92400e; background:#fffbeb; border:1px solid #fde68a; border-radius:7px; padding:5px 9px; }
+    .presc-save-mine { border:1.5px solid #fcd34d; background:#fff; color:#92400e; }
+    .presc-mm-form { background:#f8fafc; border:1px solid #e9eef4; border-radius:12px; padding:12px 14px; }
+    .presc-mm-title { font-size:13px; font-weight:800; color:#1e293b; margin-bottom:8px; }
+    .presc-mm-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; }
+    .presc-mm-grid label { display:block; font-size:9.5px; font-weight:700; color:#8899bb; letter-spacing:0.6px; text-transform:uppercase; margin-bottom:3px; }
+    .presc-mm-grid input, .presc-mm-grid select { width:100%; padding:7px 9px; border:1.5px solid #e2e8f0; border-radius:8px; font-family:inherit; font-size:13px; color:#1e293b; background:#fff; outline:none; }
+    .presc-mm-grid input:focus, .presc-mm-grid select:focus { border-color:#3b82f6; }
+    .presc-mm-hint { font-size:11.5px; color:#b45309; margin-top:3px; }
+    .presc-mm-list { display:flex; flex-direction:column; gap:6px; }
+    .presc-mm-row { display:flex; justify-content:space-between; align-items:center; gap:10px; padding:9px 12px; border:1px solid #fde68a; background:#fffdf5; border-radius:10px; flex-wrap:wrap; }
+    @media (max-width:640px) { .presc-mm-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
     .presc-rowbtn { padding:5px 11px; border-radius:7px; font-size:12px; font-weight:600; cursor:pointer; font-family:inherit; white-space:nowrap; }
     @media (max-width:560px) { .presc-overlay { padding:8px; } .presc-window-head, .presc-window-body, .presc-window-foot { padding-left:14px; padding-right:14px; } }
   `;
@@ -723,27 +802,183 @@ function AllergyBanner({ allergies, noneKnown }) {
      · every medicine: frequency, when to take, number of days, instructions
 ═══════════════════════════════════════════════════════════════ */
 let editorSeq = 0;
+const lower = (x) => String(x || "").trim().toLowerCase();
+
+/* ── My medicines: add / change / remove (opened from the medicine editor) ── */
+function MyMedicinesWindow({ onClose, startWith = null }) {
+  const cat = useCatalogue();
+  const blank = { name: "", category: MY_CATEGORY, times: "2 times/day", when: "", days: 3, note: "" };
+  const [form, setForm] = useState(startWith ? { ...blank, ...startWith } : blank);
+  const [editingId, setEditingId] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);
+  const [confirmId, setConfirmId] = useState(null);
+  const [filter, setFilter] = useState("");
+  const freqId = useRef(`presc-mm-freq-${++editorSeq}`).current;
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  const inBuiltIn = MEDICINES.some(m => lower(m.name) === lower(form.name));
+
+  const save = async () => {
+    if (busy) return;
+    if (!form.name.trim()) { setMsg({ ok: false, text: "Please enter the medicine's name (with strength)." }); return; }
+    setBusy(true); setMsg(null);
+    const body = { ...form, name: form.name.trim(), days: form.days === "" ? "" : Number(form.days) };
+    try {
+      if (editingId) await api.put(`/prescription-medicines/${editingId}`, body);
+      else await api.post("/prescription-medicines", body);
+      await loadCatalogue(true);
+      setMsg({ ok: true, text: `${editingId ? "Updated" : "Added to My medicines"}: ${body.name}` });
+      setForm(blank); setEditingId(null);
+    } catch (err) {
+      setMsg({ ok: false, text: saveError(err, "Not saved — please try again.") });
+    } finally { setBusy(false); }
+  };
+  const remove = async (m) => {
+    setBusy(true); setMsg(null);
+    try {
+      await api.delete(`/prescription-medicines/${m.id}`);
+      await loadCatalogue(true);
+      setMsg({ ok: true, text: `Removed from My medicines: ${m.name}. Prescriptions already written keep it.` });
+      if (editingId === m.id) { setForm(blank); setEditingId(null); }
+    } catch (err) {
+      setMsg({ ok: false, text: saveError(err, "Not removed — please try again.") });
+    } finally { setBusy(false); setConfirmId(null); }
+  };
+  const shown = cat.custom.filter(m => !filter.trim() || lower(m.name).includes(lower(filter)));
+
+  return (
+    <PopWindow label="My medicines" onClose={onClose} busy={busy} maxWidth={820}>
+      <div className="presc-window-head" style={{ background: "linear-gradient(135deg,#1d4d7a,#1d6fa4)" }}>
+        <div>
+          <div style={{ fontSize: 14, fontWeight: 800, color: "#fff" }}>⭐ My medicines</div>
+          <div style={{ fontSize: 11, color: "rgba(255,255,255,0.7)" }}>Medicines not in the built-in list — saved once, offered on every prescription</div>
+        </div>
+        <button type="button" className="presc-x" onClick={onClose} disabled={busy} aria-label="Close">✕</button>
+      </div>
+      <div className="presc-window-body">
+        <div className="presc-mm-form" role="group" aria-label={editingId ? "Change medicine" : "New medicine"}>
+          <div className="presc-mm-title">{editingId ? "✏️ Change medicine" : "➕ New medicine"}</div>
+          <div className="presc-mm-grid">
+            <div style={{ gridColumn: "1 / -1" }}>
+              <label>Name with strength</label>
+              <input value={form.name} onChange={e => set("name", e.target.value)} aria-label="New medicine name" placeholder="e.g. Doxycycline 100mg, Hexigel gum paint" autoFocus maxLength={200} />
+              {inBuiltIn && !editingId && <div className="presc-mm-hint">“{form.name.trim()}” is already in the built-in list.</div>}
+            </div>
+            <div>
+              <label>Group</label>
+              <select value={form.category || MY_CATEGORY} onChange={e => set("category", e.target.value)} aria-label="Group">
+                {[MY_CATEGORY, ...MED_CATEGORIES].map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
+            <div>
+              <label>Usual frequency</label>
+              <input value={form.times} list={freqId} onChange={e => set("times", e.target.value)} aria-label="Usual frequency" placeholder="e.g. 2 times/day" />
+              <datalist id={freqId}>{FREQUENCY_OPTIONS.map(o => <option key={o} value={o} />)}</datalist>
+            </div>
+            <div>
+              <label>When</label>
+              <select value={form.when || ""} onChange={e => set("when", e.target.value)} aria-label="Usual time">
+                <option value="">—</option>
+                {WHEN_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
+              </select>
+            </div>
+            <div>
+              <label>Days</label>
+              <input type="number" min={1} max={365} value={form.days} onChange={e => set("days", e.target.value)} aria-label="Usual days" />
+            </div>
+            <div style={{ gridColumn: "1 / -1" }}>
+              <label>Usual instructions <span style={{ textTransform: "none", fontWeight: 500 }}>(optional)</span></label>
+              <input value={form.note || ""} onChange={e => set("note", e.target.value)} aria-label="Usual instructions" placeholder="e.g. Apply on the gums after brushing" maxLength={300} />
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+            <button type="button" className="presc-btn-add" disabled={busy || !form.name.trim()} onClick={save}>{busy ? "Saving…" : editingId ? "💾 Save changes" : "⭐ Add to My medicines"}</button>
+            {editingId && <button type="button" className="presc-rowbtn" style={{ border: "1.5px solid #e2e8f0", background: "#fff", color: "#475569" }} onClick={() => { setForm(blank); setEditingId(null); }}>Cancel</button>}
+          </div>
+        </div>
+        {msg && <div className={`presc-msg ${msg.ok ? "success" : "error"}`} role={msg.ok ? "status" : "alert"} style={{ margin: "12px 0 0" }}>{msg.ok ? "✓" : "⚠️"} {msg.text}</div>}
+
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, margin: "18px 0 8px", flexWrap: "wrap" }}>
+          <div style={{ fontSize: 13, fontWeight: 800, color: "#1e293b" }}>Saved ({cat.custom.length})</div>
+          {cat.custom.length > 6 && <input className="presc-filter-inp" style={{ maxWidth: 260 }} value={filter} onChange={e => setFilter(e.target.value)} placeholder="Find…" aria-label="Find in My medicines" />}
+        </div>
+        {cat.error && <div className="presc-msg error" role="alert">⚠️ {cat.error}</div>}
+        {!cat.loaded ? <div style={{ fontSize: 12.5, color: "#94a3b8" }}>Loading…</div>
+          : cat.custom.length === 0 ? <div style={{ fontSize: 12.5, color: "#94a3b8", fontStyle: "italic" }}>Nothing saved yet. Add a medicine above, or press “☆ Save to My medicines” on a medicine typed into a prescription.</div>
+          : (
+            <div className="presc-mm-list">
+              {shown.map(m => (
+                <div key={m.id} className="presc-mm-row" data-my-medicine={m.id}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontWeight: 800, fontSize: 13.5, overflowWrap: "anywhere" }}>⭐ {m.name}</div>
+                    <div style={{ fontSize: 12, color: "#64748b" }}>
+                      {[m.category, m.times, m.when, m.days !== "" && m.days != null ? `${m.days} day${Number(m.days) !== 1 ? "s" : ""}` : "", m.note].filter(Boolean).join(" · ")}
+                      {cat.usage[lower(m.name)] ? ` · prescribed ${cat.usage[lower(m.name)]}×` : ""}
+                    </div>
+                  </div>
+                  {confirmId === m.id ? (
+                    <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                      <span style={{ fontSize: 12, color: "#b91c1c", fontWeight: 700 }}>Remove?</span>
+                      <button type="button" className="presc-rowbtn" style={{ border: "none", background: "#dc2626", color: "#fff" }} disabled={busy} onClick={() => remove(m)}>Remove</button>
+                      <button type="button" className="presc-rowbtn" style={{ border: "1.5px solid #e2e8f0", background: "#fff", color: "#475569" }} onClick={() => setConfirmId(null)}>Keep</button>
+                    </div>
+                  ) : (
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <button type="button" className="presc-rowbtn" style={{ border: "1.5px solid #fde68a", background: "#fef9c3", color: "#713f12" }} aria-label={`Change ${m.name}`}
+                        onClick={() => { setEditingId(m.id); setForm({ name: m.name, category: m.category || MY_CATEGORY, times: m.times || "", when: m.when || "", days: m.days ?? "", note: m.note || "" }); setMsg(null); }}>Edit</button>
+                      <button type="button" className="presc-rowbtn" style={{ border: "1.5px solid #fecaca", background: "#fff1f2", color: "#b91c1c" }} aria-label={`Remove ${m.name}`} onClick={() => setConfirmId(m.id)}>Remove</button>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+      </div>
+      <div className="presc-window-foot">
+        <button type="button" onClick={onClose} disabled={busy} style={{ marginLeft: "auto", padding: "10px 22px", borderRadius: 10, background: "linear-gradient(135deg,#1d4d7a,#1d6fa4)", color: "#fff", border: "none", fontFamily: "inherit", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>Done</button>
+      </div>
+    </PopWindow>
+  );
+}
 
 function MedicineEditor({ medicines, onChange, allergies = [] }) {
+  const cat = useCatalogue();
   const [query, setQuery] = useState("");
+  const [group, setGroup] = useState("All");
+  const [manager, setManager] = useState(null);         // null | { startWith }
+  const [savingName, setSavingName] = useState("");
+  const [saveNote, setSaveNote] = useState(null);
   const listId = useRef(`presc-freq-${++editorSeq}`).current;
 
-  const has = name => medicines.some(m => m.name.trim().toLowerCase() === String(name).trim().toLowerCase());
-  const q = query.trim().toLowerCase();
-  const shown = q ? MEDICINES_AZ.filter(m => m.name.toLowerCase().includes(q)) : MEDICINES_AZ;
-  const exact = MEDICINES_AZ.find(m => m.name.toLowerCase() === q);
+  // everything that can be ticked: the built-in list + My medicines
+  const all = useMemo(() => {
+    const mine = cat.custom.map(m => ({ name: m.name, times: m.times || DEFAULT_CUSTOM.times, days: m.days === "" || m.days == null ? DEFAULT_CUSTOM.days : m.days,
+      when: m.when || "", note: m.note || "", cat: m.category || MY_CATEGORY, mine: true }));
+    const mineNames = new Set(mine.map(m => lower(m.name)));
+    return [...MEDICINES.filter(m => !mineNames.has(lower(m.name))), ...mine]
+      .sort((a, b) => a.name.localeCompare(b.name, "en", { sensitivity: "base" }));
+  }, [cat.custom]);
+  const known = (name) => all.some(m => lower(m.name) === lower(name));
+  const frequent = useMemo(() => Object.entries(cat.usage || {}).sort((a, b) => b[1] - a[1]).slice(0, 12)
+    .map(([key, n]) => ({ ...(all.find(m => lower(m.name) === key) || { name: key.replace(/\b\w/g, c => c.toUpperCase()), ...DEFAULT_CUSTOM }), uses: n })), [cat.usage, all]);
+
+  const has = name => medicines.some(m => lower(m.name) === lower(name));
+  const q = lower(query);
+  const pool = group === "All" ? all : group === "Frequently used" ? frequent : group === MY_CATEGORY ? all.filter(m => m.mine) : all.filter(m => m.cat === group);
+  const shown = q ? all.filter(m => lower(m.name).includes(q)) : pool;
+  const exact = all.find(m => lower(m.name) === q);
 
   const add = (m) => {
     if (has(m.name)) return;
-    onChange([...medicines, { name: m.name, times: m.times, days: m.days, when: "", note: "" }]);
+    onChange([...medicines, { name: m.name, times: m.times, days: m.days, when: m.when || "", note: m.note || "" }]);
   };
   const toggle = (m) => {
-    if (has(m.name)) onChange(medicines.filter(x => x.name.trim().toLowerCase() !== m.name.toLowerCase()));
+    if (has(m.name)) onChange(medicines.filter(x => lower(x.name) !== lower(m.name)));
     else add(m);
     setQuery("");
   };
   const addTyped = () => {
-    const name = query.trim();
+    const name = query.trim().replace(/\s+/g, " ");
     if (!name || has(name)) return;
     add(exact || { name, ...DEFAULT_CUSTOM });
     setQuery("");
@@ -751,10 +986,23 @@ function MedicineEditor({ medicines, onChange, allergies = [] }) {
   const update = (i, field, value) =>
     onChange(medicines.map((m, j) => j === i ? { ...m, [field]: field === "days" ? (value === "" ? "" : Number(value)) : value } : m));
   const remove = i => onChange(medicines.filter((_, j) => j !== i));
+  const saveToList = async (m) => {
+    setSavingName(m.name); setSaveNote(null);
+    try {
+      await api.post("/prescription-medicines", { name: m.name.trim(), category: MY_CATEGORY, times: m.times, when: m.when, days: m.days === "" ? "" : m.days, note: m.note });
+      await loadCatalogue(true);
+      setSaveNote({ ok: true, text: `⭐ “${m.name.trim()}” is saved in My medicines — it will be in the list next time.` });
+    } catch (err) {
+      setSaveNote({ ok: false, text: saveError(err, "Not saved — please try again.") });
+    } finally { setSavingName(""); }
+  };
+
+  const groups = ["All", ...(Object.keys(cat.usage || {}).length ? ["Frequently used"] : []), MY_CATEGORY, ...MED_CATEGORIES];
+  const countOf = g => g === "All" ? all.length : g === "Frequently used" ? frequent.length : g === MY_CATEGORY ? all.filter(m => m.mine).length : all.filter(m => m.cat === g).length;
 
   return (
     <div>
-      {/* ── add ── */}
+      {/* ── find / add ── */}
       <div className="presc-add-row">
         <input className="presc-filter-inp" value={query} onChange={e => setQuery(e.target.value)}
           onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); addTyped(); } }}
@@ -763,36 +1011,56 @@ function MedicineEditor({ medicines, onChange, allergies = [] }) {
         <button type="button" className="presc-btn-add" onClick={addTyped} disabled={!query.trim() || has(query)}>
           {has(query) && query.trim() ? "Already added" : exact || !query.trim() ? "+ Add" : `+ Add “${query.trim()}”`}
         </button>
+        <button type="button" className="presc-btn-my" onClick={() => setManager({ startWith: null })} title="Medicines you add yourself, saved for every prescription">
+          ⭐ My medicines{cat.custom.length ? ` (${cat.custom.length})` : ""}
+        </button>
       </div>
+
+      {!q && (
+        <div className="presc-groups" role="group" aria-label="Medicine groups">
+          {groups.map(g => (
+            <button key={g} type="button" className="presc-group" aria-pressed={group === g} onClick={() => setGroup(g)}>
+              {g === MY_CATEGORY ? "⭐ " : g === "Frequently used" ? "🔁 " : ""}{g} <span>{countOf(g)}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
       <div className="presc-chip-grid" role="group" aria-label="Common medicines, A to Z">
         {shown.map(m => {
           const on = has(m.name);
           const risk = allergyMatches(m.name, allergies).length > 0;
           return (
-            <button key={m.name} type="button" className={`presc-chip${on ? " on" : ""}${risk ? " risk" : ""}`}
-              aria-pressed={on} title={risk ? "Check: matches a recorded allergy" : undefined}
+            <button key={m.name} type="button" className={`presc-chip${on ? " on" : ""}${risk ? " risk" : ""}${m.mine ? " mine" : ""}`}
+              aria-pressed={on} title={risk ? "Check: matches a recorded allergy" : m.mine ? "From My medicines" : undefined}
               onClick={() => toggle(m)}>
               <span className="presc-chip-box" aria-hidden="true">{on ? "✓" : ""}</span>
               <span className="presc-chip-lbl">{m.name}</span>
+              {m.mine && <span className="presc-chip-star" aria-label="My medicine">⭐</span>}
+              {m.uses ? <span className="presc-chip-uses" title={`Prescribed ${m.uses} times`}>{m.uses}×</span> : null}
               {risk && <span aria-hidden="true">⚠️</span>}
             </button>
           );
         })}
         {shown.length === 0 && (
           <div style={{ gridColumn:"1 / -1", fontSize:12.5, color:"#64748b", padding:"4px 2px" }}>
-            Not in the list — press “+ Add” to prescribe “{query.trim()}”.
+            {q ? <>Not in the list — press “+ Add” to prescribe “{query.trim()}”, or <button type="button" className="presc-linkbtn" onClick={() => setManager({ startWith: { name: query.trim() } })}>save it to My medicines</button> first.</>
+              : group === MY_CATEGORY ? <>No medicines saved yet. <button type="button" className="presc-linkbtn" onClick={() => setManager({ startWith: null })}>Add one</button>.</>
+              : "Nothing here yet."}
           </div>
         )}
       </div>
 
       <datalist id={listId}>{FREQUENCY_OPTIONS.map(o => <option key={o} value={o} />)}</datalist>
+      {saveNote && <div className={`presc-msg ${saveNote.ok ? "success" : "error"}`} role={saveNote.ok ? "status" : "alert"} style={{ margin: "0 0 8px" }}>{saveNote.text}</div>}
 
       {/* ── prescribed ── */}
       <div style={{ display:"flex", flexDirection:"column", gap:7 }}>
         {medicines.length === 0
-          ? <div style={{ fontSize:12.5, color:"#94a3b8", fontStyle:"italic", padding:"8px 0" }}>No medicines added yet.</div>
+          ? <div className="presc-empty-meds">No medicines added yet — tick them above, or type a name and press “+ Add”.</div>
           : medicines.map((m, i) => {
             const hits = allergyMatches(m.name, allergies);
+            const isNew = m.name.trim() && !known(m.name);
             return (
               <div key={i} className={`presc-rx${hits.length ? " risk" : ""}`} role="group" aria-label={`Medicine ${i + 1}: ${m.name}`}>
                 <div className="presc-rx-top">
@@ -823,6 +1091,14 @@ function MedicineEditor({ medicines, onChange, allergies = [] }) {
                   <input value={m.note || ""} onChange={e => update(i, "note", e.target.value)}
                     aria-label="Instructions" placeholder="Instructions for the patient (optional)" />
                 </div>
+                {isNew && (
+                  <div className="presc-rx-new">
+                    <span>New medicine — not in your list yet.</span>
+                    <button type="button" className="presc-rowbtn presc-save-mine" disabled={savingName === m.name} onClick={() => saveToList(m)}>
+                      {savingName === m.name ? "Saving…" : "☆ Save to My medicines"}
+                    </button>
+                  </div>
+                )}
                 {hits.length > 0 && (
                   <div className="presc-rx-warn" role="alert">⚠️ Please check: {hits.join("; ")}.</div>
                 )}
@@ -830,6 +1106,7 @@ function MedicineEditor({ medicines, onChange, allergies = [] }) {
             );
           })}
       </div>
+      {manager && <MyMedicinesWindow startWith={manager.startWith} onClose={() => setManager(null)} />}
     </div>
   );
 }
