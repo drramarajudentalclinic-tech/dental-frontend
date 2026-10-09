@@ -141,6 +141,8 @@ function buildVisit(v, billing) {
   const treatmentDone = distinct(v.treatment_done, consultations.map((c) => c.treatment_done_today), prescriptions.map((p) => p.treatment_done || p.treatment_done_today));
   const plan = distinct(v.treatment_plan, consultations.map((c) => c.treatment_plan));
   const advice = distinct(v.advice, consultations.map((c) => c.advice), prescriptions.map((p) => p.advice)).filter((a) => !plan.some((x) => norm(x) === norm(a)));
+  // plan and advice shown together: "Dmls Crown" and "Dmls Crown IRT 47" become one line
+  const planAdvice = distinct(plan, advice);
   const followUps = distinct(
     v.next_appointment ? fmtDate(v.next_appointment) : "",
     consultations.map((c) => (c.follow_up_date ? `${fmtDate(c.follow_up_date)}${c.follow_up_time ? ` at ${fmtTime(c.follow_up_time)}` : ""}` : "")),
@@ -171,7 +173,7 @@ function buildVisit(v, billing) {
   return {
     id: v.visit_id, date: v.visit_date, status: clean(v.status), complaint: clean(v.chief_complaint),
     followupTreatment: clean(v.followup_treatment), billingNote: clean(v.billing_note),
-    diagnosis, treatmentDone, plan, advice, followUps, doctors, chart, findings, prescriptions, images, cbct, receipts, charges,
+    diagnosis, treatmentDone, plan, advice, planAdvice, followUps, doctors, chart, findings, prescriptions, images, cbct, receipts, charges,
   };
 }
 
@@ -272,13 +274,16 @@ function Fields({ rows }) {
   );
 }
 function Table({ headers, rows, align = {} }) {
-  const kept = rows.filter((r) => r.some((c) => c !== null && c !== undefined && c !== ""));
+  const has = (c) => c !== null && c !== undefined && c !== "";
+  const kept = rows.filter((r) => r.some(has));
   if (!kept.length) return null;
+  // a column that is empty in every row is left out (no columns full of "—")
+  const cols = headers.map((h, j) => j).filter((j) => j === 0 || !headers[j] || kept.some((r) => has(r[j])));
   return (
     <div className="pch-table-wrap">
       <table className="pch-table">
-        <thead><tr>{headers.map((h) => <th key={h} style={{ textAlign: align[h] || "left" }}>{h}</th>)}</tr></thead>
-        <tbody>{kept.map((r, i) => <tr key={i}>{r.map((c, j) => <td key={j} style={{ textAlign: align[headers[j]] || "left" }}>{c === null || c === undefined || c === "" ? "—" : c}</td>)}</tr>)}</tbody>
+        <thead><tr>{cols.map((j) => <th key={j} style={{ textAlign: align[headers[j]] || "left" }}>{headers[j]}</th>)}</tr></thead>
+        <tbody>{kept.map((r, i) => <tr key={i}>{cols.map((j) => <td key={j} style={{ textAlign: align[headers[j]] || "left" }}>{has(r[j]) ? r[j] : "—"}</td>)}</tr>)}</tbody>
       </table>
     </div>
   );
@@ -469,99 +474,116 @@ export default function PatientCompleteHistory({ patientId, onBack, onCreateVisi
                   <button type="button" className="pch-link" onClick={() => setOpen(new Set(visits.map((v) => v.id)))}>Open all</button>
                   <button type="button" className="pch-link" onClick={() => setOpen(new Set())}>Close all</button>
                 </div>
-                <ol className="pch-timeline">
+                <div className="pch-reg-head" aria-hidden="true">
+                  <span>Date</span><span>Teeth</span><span>Diagnosis</span><span>Treatment done</span><span>Records</span>
+                </div>
+                <ol className="pch-register">
                   {visits.map((v) => {
                     const isOpen = open.has(v.id);
                     const paid = v.receipts.reduce((s, r) => s + (Number(r.amount_paid) || 0), 0);
                     const statusLc = v.status.toLowerCase();
+                    const closed = statusLc === "closed" || statusLc === "completed";
+                    const teeth = [...new Set(v.chart.map((d) => String(d.tooth_number)))];
+                    const doctors = v.doctors.map((d) => (/^dr\.?\s/i.test(d) ? d : `Dr. ${d}`));
+                    let n = 0;
+                    const step = (title, body, cls = "") => (
+                      <div className={`pch-step ${cls}`}>
+                        <div className="pch-step-n">{++n}</div>
+                        <div className="pch-step-c"><div className="pch-step-t">{title}</div>{body}</div>
+                      </div>
+                    );
+                    const lines = (arr) => (arr.length === 1 ? <div className="pch-step-v">{arr[0]}</div>
+                      : <ul className="pch-step-list">{arr.map((x) => <li key={x}>{x}</li>)}</ul>);
+                    const nothing = !v.complaint && !v.followupTreatment && !v.diagnosis.length && !v.treatmentDone.length && !v.planAdvice.length
+                      && !v.chart.length && !v.findings.length && !v.prescriptions.length && !v.images.length && !v.cbct.length;
                     return (
-                      <li key={v.id} className="pch-visit" data-visit={v.id}>
-                        <span className={`pch-dot ${statusLc === "closed" || statusLc === "completed" ? "" : "pch-dot-live"}`} aria-hidden="true" />
-                        <div className="pch-visit-card">
-                          <button type="button" className="pch-visit-h" aria-expanded={isOpen} onClick={() => toggle(v.id)}>
-                            <div style={{ minWidth: 0, textAlign: "left" }}>
-                              <div className="pch-visit-date">{fmtDate(v.date)}
-                                <span className={`pch-status ${statusLc === "closed" || statusLc === "completed" ? "" : "pch-status-live"}`}>{statusLc === "closed" || statusLc === "completed" ? "Closed" : statusLc === "in_progress" ? "With doctor" : statusLc === "created" ? "Waiting" : v.status || "—"}</span>
+                      <li key={v.id} className={`pch-visit ${isOpen ? "is-open" : ""}`} data-visit={v.id}>
+                        <button type="button" className="pch-row" aria-expanded={isOpen} onClick={() => toggle(v.id)}>
+                          <span className="pch-c-date">
+                            <b>{fmtDate(v.date)}</b>
+                            <span className={`pch-status ${closed ? "" : "pch-status-live"}`}>{closed ? "Closed" : statusLc === "in_progress" ? "With doctor" : statusLc === "created" ? "Waiting" : v.status || "—"}</span>
+                          </span>
+                          <span className="pch-c-teeth" data-label="Teeth">{teeth.length ? teeth.map((t) => <span key={t} className="pch-tooth">{t}</span>) : <span className="pch-muted pch-none">—</span>}</span>
+                          <span className="pch-c-text" data-label="Diagnosis">{v.diagnosis.join("; ") || <span className="pch-muted">{v.complaint || "—"}</span>}</span>
+                          <span className="pch-c-text pch-c-done" data-label="Treatment done">{v.treatmentDone.join("; ") || <span className="pch-muted">—</span>}</span>
+                          <span className="pch-c-rec">
+                            {v.prescriptions.length > 0 && <span title="Prescription">💊</span>}
+                            {v.images.length > 0 && <span title="X-rays & photos">🩻 {v.images.length}</span>}
+                            {v.receipts.length > 0 && <span title="Paid at this visit">₹{Math.round(paid).toLocaleString("en-IN")}</span>}
+                            <span className={`pch-chev ${isOpen ? "open" : ""}`} aria-hidden="true">▾</span>
+                          </span>
+                        </button>
+                        {isOpen && (
+                          <div className="pch-sheet">
+                            {nothing && <Empty>Nothing was recorded for this visit.</Empty>}
+                            {(v.complaint || v.followupTreatment) && step("Complaint", (
+                              <>
+                                {v.complaint && <div className="pch-step-v">{v.complaint}</div>}
+                                {v.followupTreatment && <div className="pch-step-v"><span className="pch-k">Follow-up of:</span> <span>{v.followupTreatment}</span></div>}
+                              </>
+                            ))}
+                            {(v.chart.length > 0 || v.findings.length > 0) && step("Examination", (
+                              <>
+                                {v.chart.length > 0 && (
+                                  <div className="pch-exam">
+                                    {v.chart.map((d, i) => (
+                                      <div key={i} className="pch-exam-row">
+                                        <span className="pch-tooth pch-tooth-lg">{d.tooth_number}</span>
+                                        <span><b>{toothCondition(d)}</b>{[d.surface && `surface ${d.surface}`, d.severity, d.notes].filter(Boolean).map((x) => <span key={x} className="pch-muted"> · {x}</span>)}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                                {v.findings.length > 0 && (
+                                  <ul className="pch-step-list">{v.findings.map((f, i) => <li key={i}><b>{f.finding_type}</b>{f.value ? `: ${f.value}` : ""}{f.notes ? <span className="pch-muted"> · {f.notes}</span> : null}</li>)}</ul>
+                                )}
+                              </>
+                            ))}
+                            {v.diagnosis.length > 0 && step("Diagnosis", lines(v.diagnosis))}
+                            {(v.planAdvice.length > 0 || v.followUps.length > 0) && step("Advice & plan", (
+                              <>
+                                {v.planAdvice.length > 0 && lines(v.planAdvice)}
+                                {v.followUps.length > 0 && <div className="pch-step-v"><span className="pch-k">Next appointment:</span> <span>{v.followUps.join(", ")}</span></div>}
+                              </>
+                            ))}
+                            {v.treatmentDone.length > 0 && step("Treatment done", lines(v.treatmentDone), "pch-step-done")}
+                            {v.prescriptions.length > 0 && step("Prescription", v.prescriptions.map((p) => (
+                              <div key={p.id} className="pch-rx">
+                                {p.meds.length ? <MedTable meds={p.meds} /> : <div className="pch-muted">No medicines — advice only.</div>}
                               </div>
-                              <div className="pch-visit-sum">
-                                {v.treatmentDone[0] || v.diagnosis[0] || v.complaint || "No notes recorded"}
-                              </div>
-                            </div>
-                            <div className="pch-visit-icons">
-                              {v.chart.length > 0 && <span title="Teeth charted">🦷 {v.chart.length}</span>}
-                              {v.prescriptions.length > 0 && <span title="Prescriptions">💊 {v.prescriptions.length}</span>}
-                              {v.images.length > 0 && <span title="X-rays & photos">🩻 {v.images.length}</span>}
-                              {v.receipts.length > 0 && <span title="Paid at this visit">🧾 {inr(paid)}</span>}
-                              <span className={`pch-chev ${isOpen ? "open" : ""}`} aria-hidden="true">▾</span>
-                            </div>
-                          </button>
-                          {isOpen && (
-                            <div className="pch-visit-b">
-                              <Fields rows={[
-                                ["Chief complaint", v.complaint],
-                                ["Follow-up of", v.followupTreatment],
-                                ["Diagnosis", v.diagnosis],
-                                ["Treatment done", v.treatmentDone],
-                                ["Treatment plan", v.plan],
-                                ["Advice", v.advice],
-                                ["Next appointment", v.followUps],
-                                ["Doctor", v.doctors.map((d) => (/^dr\.?\s/i.test(d) ? d : `Dr. ${d}`))],
-                                ["Billing instructions", v.billingNote],
-                              ]} />
-                              {!v.complaint && !v.diagnosis.length && !v.treatmentDone.length && !v.plan.length && !v.chart.length && !v.prescriptions.length && !v.images.length && (
-                                <Empty>Nothing was recorded for this visit.</Empty>
-                              )}
-                              {v.chart.length > 0 && (
-                                <Block title="Dental chart" icon="🦷">
-                                  <Table headers={["Tooth", "Condition", "Surface", "Severity", "Notes"]}
-                                    rows={v.chart.map((d) => [<b key="t">{d.tooth_number}</b>, toothCondition(d), d.surface, d.severity, d.notes])} />
-                                </Block>
-                              )}
-                              {v.findings.length > 0 && (
-                                <Block title="Other findings" icon="🔍">
-                                  <Table headers={["Finding", "Value", "Notes"]} rows={v.findings.map((f) => [f.finding_type, f.value, f.notes])} />
-                                </Block>
-                              )}
-                              {v.prescriptions.length > 0 && (
-                                <Block title="Prescription" icon="💊">
-                                  {v.prescriptions.map((p) => (
-                                    <div key={p.id} className="pch-rx">
-                                      {p.meds.length ? <MedTable meds={p.meds} /> : <div className="pch-muted">No medicines — advice only.</div>}
-                                    </div>
-                                  ))}
-                                </Block>
-                              )}
-                              {v.images.length > 0 && (
-                                <Block title="X-rays & photos" icon="🩻">
-                                  <div className="pch-thumbs">{v.images.map((img) => <Thumb key={img.id} img={img} onOpen={() => openImages(v.images, img)} />)}</div>
-                                </Block>
-                              )}
-                              {v.cbct.length > 0 && (
-                                <Block title="CBCT scans" icon="🧊">
-                                  <Table headers={["Study date", "Modality", "Institution", "Slices", "Notes"]} rows={v.cbct.map((c) => [c.study_date, c.modality, c.institution, c.num_slices, c.notes])} />
-                                  <div className="pch-muted">Open the CBCT viewer from the visit to see the slices.</div>
-                                </Block>
-                              )}
-                              {(v.charges.length > 0 || v.receipts.length > 0) && (
-                                <Block title="Bills of this visit" icon="🧾">
-                                  {v.charges.length > 0 && (
-                                    <Table headers={["Treatment", "Charge", "Discount", "Paid", "Balance"]} align={{ Charge: "right", Discount: "right", Paid: "right", Balance: "right" }}
-                                      rows={v.charges.map((c) => [<span key="n"><b>{c.treatment}</b>{c.description ? ` (${c.description})` : ""}</span>, inr(c.fee), c.discount ? inr(c.discount) : "", inr(c.paid), c.balance > 0.004 ? <b key="b" style={{ color: "#b91c1c" }}>{inr(c.balance)}</b> : "Nil"])} />
-                                  )}
-                                  {v.receipts.length > 0 && (
-                                    <div className="pch-receipts">
-                                      {v.receipts.map((r) => (
-                                        <button key={r.id} type="button" className="pch-receipt" onClick={() => openReceipt(r, v.receipts)}>
-                                          🧾 Receipt #{r.receipt_no} · {fmtDate(r.date)} · <b>{inr(r.amount_paid)}</b>
-                                        </button>
-                                      ))}
-                                    </div>
-                                  )}
-                                </Block>
-                              )}
-                            </div>
-                          )}
-                        </div>
+                            )))}
+                            {(v.images.length > 0 || v.cbct.length > 0) && step("X-rays & photos", (
+                              <>
+                                {v.images.length > 0 && <div className="pch-thumbs">{v.images.map((img) => <Thumb key={img.id} img={img} onOpen={() => openImages(v.images, img)} />)}</div>}
+                                {v.cbct.length > 0 && (
+                                  <>
+                                    <Table headers={["CBCT study date", "Modality", "Institution", "Slices", "Notes"]} rows={v.cbct.map((c) => [c.study_date, c.modality, c.institution, c.num_slices, c.notes])} />
+                                    <div className="pch-muted">Open the CBCT viewer from the visit to see the slices.</div>
+                                  </>
+                                )}
+                              </>
+                            ))}
+                            {(v.billingNote || v.charges.length > 0 || v.receipts.length > 0) && step("Billing", (
+                              <>
+                                {v.billingNote && <div className="pch-step-v"><span className="pch-k">Doctor's instructions:</span> <span>{v.billingNote}</span></div>}
+                                {v.charges.length > 0 && (
+                                  <Table headers={["Treatment", "Charge", "Discount", "Paid", "Balance"]} align={{ Charge: "right", Discount: "right", Paid: "right", Balance: "right" }}
+                                    rows={v.charges.map((c) => [<span key="n"><b>{c.treatment}</b>{c.description ? ` (${c.description})` : ""}</span>, inr(c.fee), c.discount ? inr(c.discount) : "", inr(c.paid), c.balance > 0.004 ? <b key="b" style={{ color: "#b91c1c" }}>{inr(c.balance)}</b> : "Nil"])} />
+                                )}
+                                {v.receipts.length > 0 && (
+                                  <div className="pch-receipts">
+                                    {v.receipts.map((r) => (
+                                      <button key={r.id} type="button" className="pch-receipt" onClick={() => openReceipt(r, v.receipts)}>
+                                        🧾 Receipt #{r.receipt_no} · {fmtDate(r.date)} · <b>{inr(r.amount_paid)}</b>
+                                      </button>
+                                    ))}
+                                  </div>
+                                )}
+                              </>
+                            ))}
+                            {doctors.length > 0 && <div className="pch-sheet-foot">Treated by {doctors.join(", ")}</div>}
+                          </div>
+                        )}
                       </li>
                     );
                   })}
@@ -745,22 +767,45 @@ function Styles() {
       .pch-toolbar { display: flex; justify-content: flex-end; gap: 14px; margin: -4px 0 8px; }
       .pch-link { background: none; border: 0; padding: 0; font: inherit; font-size: 12.5px; font-weight: 700; color: #1e4f8a; cursor: pointer; }
       .pch-link:hover { text-decoration: underline; }
-      .pch-timeline { list-style: none; margin: 0; padding: 0 0 0 18px; position: relative; }
-      .pch-timeline::before { content: ""; position: absolute; left: 5px; top: 8px; bottom: 8px; width: 2px; background: #dbe3ee; }
-      .pch-visit { position: relative; margin-bottom: 12px; }
-      .pch-dot { position: absolute; left: -18px; top: 18px; width: 12px; height: 12px; border-radius: 50%; background: #94a3b8; border: 2px solid #f4f6fa; }
-      .pch-dot-live { background: #16a34a; }
-      .pch-visit-card { background: #fff; border: 1px solid #e5e9f0; border-radius: 12px; overflow: hidden; }
-      .pch-visit-h { width: 100%; display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 16px; background: none; border: 0; cursor: pointer; font: inherit; color: inherit; }
-      .pch-visit-h:hover { background: #fafbfd; }
-      .pch-visit-date { font-size: 14.5px; font-weight: 800; color: #0b2d4e; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .pch-reg-head, .pch-row { display: grid; grid-template-columns: 128px 104px minmax(0, 1fr) minmax(0, 1.2fr) 150px; gap: 14px; align-items: center; }
+      .pch-reg-head { padding: 0 16px 6px; font-size: 10.5px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: #64748b; }
+      .pch-reg-head span:last-child { text-align: right; }
+      .pch-register { list-style: none; margin: 0; padding: 0; }
+      .pch-visit { background: #fff; border: 1px solid #e5e9f0; border-radius: 12px; margin-bottom: 8px; overflow: hidden; }
+      .pch-visit.is-open { border-color: #b9cde6; box-shadow: 0 2px 10px rgba(30,79,138,.08); }
+      .pch-row { width: 100%; padding: 12px 16px; background: none; border: 0; cursor: pointer; font: inherit; color: inherit; text-align: left; }
+      .pch-row:hover { background: #fafbfd; }
+      .pch-visit.is-open .pch-row { background: #f3f7fc; border-bottom: 1px solid #e3eaf3; }
+      .pch-c-date { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; }
+      .pch-c-date .pch-status { align-self: flex-start; }
+      .pch-c-date b { font-size: 14px; font-weight: 800; color: #0b2d4e; white-space: nowrap; }
+      .pch-c-teeth { display: flex; gap: 4px; flex-wrap: wrap; }
+      .pch-tooth { display: inline-flex; align-items: center; justify-content: center; min-width: 30px; height: 24px; padding: 0 6px; border-radius: 7px; background: #eef4fb; border: 1px solid #c9daee; color: #1e4f8a; font-size: 12.5px; font-weight: 800; }
+      .pch-tooth-lg { min-width: 38px; height: 28px; font-size: 13.5px; }
+      .pch-c-text { font-size: 13px; color: #1e293b; overflow-wrap: anywhere; }
+      .pch-c-done { font-weight: 700; color: #14532d; }
+      .pch-c-rec { display: flex; gap: 10px; align-items: center; justify-content: flex-end; font-size: 12px; color: #475569; font-weight: 700; white-space: nowrap; }
       .pch-status { font-size: 10.5px; font-weight: 700; padding: 1px 8px; border-radius: 6px; background: #f1f5f9; color: #475569; }
       .pch-status-live { background: #dcfce7; color: #166534; }
-      .pch-visit-sum { font-size: 12.5px; color: #64748b; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 560px; }
-      .pch-visit-icons { display: flex; gap: 10px; align-items: center; font-size: 12px; color: #475569; font-weight: 600; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
       .pch-chev { font-size: 14px; color: #94a3b8; transition: transform .15s; }
       .pch-chev.open { transform: rotate(180deg); }
-      .pch-visit-b { padding: 4px 16px 16px; border-top: 1px solid #f1f4f8; }
+      .pch-sheet { padding: 6px 18px 14px; }
+      .pch-step { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 12px; padding: 12px 0; border-bottom: 1px dashed #e3e9f1; }
+      .pch-step:last-of-type { border-bottom: 0; }
+      .pch-step-n { width: 26px; height: 26px; border-radius: 50%; background: #e8eff8; color: #1e4f8a; font-size: 12px; font-weight: 800; display: flex; align-items: center; justify-content: center; }
+      .pch-step-t { font-size: 11.5px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: #5b6b8c; margin: 3px 0 6px; }
+      .pch-step-v { font-size: 14px; color: #0f172a; white-space: pre-wrap; overflow-wrap: anywhere; }
+      .pch-step-v + .pch-step-v, .pch-step-list + .pch-step-v { margin-top: 5px; }
+      .pch-step-list { margin: 0; padding-left: 18px; font-size: 14px; color: #0f172a; }
+      .pch-step-list li + li { margin-top: 3px; }
+      .pch-step-done .pch-step-n { background: #dcfce7; color: #166534; }
+      .pch-step-done .pch-step-v, .pch-step-done .pch-step-list { font-weight: 700; color: #14532d; }
+      .pch-k { font-size: 12.5px; font-weight: 700; color: #64748b; }
+      .pch-exam { display: flex; flex-direction: column; gap: 6px; }
+      .pch-exam-row { display: flex; align-items: center; gap: 10px; font-size: 14px; }
+      .pch-exam + .pch-step-list { margin-top: 8px; }
+      .pch-step .pch-table-wrap + .pch-receipts, .pch-step-v + .pch-table-wrap { margin-top: 8px; }
+      .pch-sheet-foot { margin-top: 6px; padding-top: 10px; border-top: 1px solid #eef2f7; font-size: 12.5px; color: #64748b; text-align: right; }
       .pch-fields { margin: 10px 0 0; display: grid; grid-template-columns: 170px minmax(0, 1fr); border: 1px solid #edf1f6; border-radius: 10px; overflow: hidden; }
       .pch-field { display: contents; }
       .pch-field dt { background: #f7f9fc; padding: 8px 12px; font-size: 11.5px; font-weight: 700; color: #5b6b8c; text-transform: uppercase; letter-spacing: .03em; border-bottom: 1px solid #edf1f6; }
@@ -769,7 +814,6 @@ function Styles() {
       .pch-field:last-child dt, .pch-field:last-child dd { border-bottom: 0; }
       .pch-block { background: #fff; border: 1px solid #e5e9f0; border-radius: 12px; padding: 12px 14px; margin-top: 12px; }
       .pch-body > .pch-block:first-child, .pch-body > .pch-chips + .pch-block, .pch-body > .pch-summary-in + .pch-block { margin-top: 0; }
-      .pch-visit-b .pch-block { border-color: #edf1f6; background: #fcfdfe; }
       .pch-block-h { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
       .pch-block-h h4 { margin: 0; font-size: 13px; font-weight: 800; color: #0b2d4e; text-transform: uppercase; letter-spacing: .04em; }
       .pch-table-wrap { overflow-x: auto; border: 1px solid #e7edf5; border-radius: 9px; }
@@ -781,7 +825,7 @@ function Styles() {
       .pch-ok { display: inline-block; font-size: 12.5px; font-weight: 700; color: #166534; background: #dcfce7; padding: 5px 11px; border-radius: 20px; }
       .pch-note { font-size: 13px; color: #475569; margin-top: 8px; background: #f7f9fc; padding: 8px 10px; border-radius: 8px; }
       .pch-empty { text-align: center; color: #94a3b8; font-size: 13.5px; padding: 30px 10px; background: #fff; border: 1px dashed #dbe3ee; border-radius: 12px; }
-      .pch-visit-b .pch-empty { margin-top: 10px; padding: 14px; }
+      .pch-sheet .pch-empty { margin-top: 10px; padding: 14px; }
       .pch-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
       .pch-chip { font-family: inherit; font-size: 12.5px; font-weight: 700; padding: 5px 12px; border-radius: 20px; background: #fff; color: #334155; border: 1px solid #dbe3ee; cursor: pointer; }
       .pch-chip span { color: #94a3b8; margin-left: 3px; }
@@ -815,8 +859,13 @@ function Styles() {
         .pch-body { padding: 14px 12px 24px; }
         .pch-fields { grid-template-columns: minmax(0, 1fr); }
         .pch-field dt { border-bottom: 0; padding-bottom: 2px; }
-        .pch-visit-h { flex-wrap: wrap; }
-        .pch-visit-sum { white-space: normal; }
+        .pch-reg-head { display: none; }
+        .pch-row { grid-template-columns: minmax(0, 1fr) auto; gap: 6px 10px; }
+        .pch-c-date { flex-direction: row; align-items: center; gap: 8px; }
+        .pch-c-rec { grid-column: 2; grid-row: 1; }
+        .pch-c-teeth, .pch-c-text { grid-column: 1 / -1; }
+        .pch-c-teeth:has(.pch-none) { display: none; }
+        .pch-sheet { padding: 4px 12px 12px; }
       }
     `}</style>
   );
