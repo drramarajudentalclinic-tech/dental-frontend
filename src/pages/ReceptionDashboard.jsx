@@ -1550,24 +1550,8 @@ const PrescriptionsSection = ({
                           onMouseEnter={e => e.currentTarget.style.background="#dcfce7"}
                           onMouseLeave={e => e.currentTarget.style.background="#f0fdf4"}
                         >👁 View</button>
-                        <button onClick={() => setEditPresc(p)} style={{
-                          padding:"6px 14px", borderRadius:8, fontSize:12.5, fontWeight:600, cursor:"pointer",
-                          background:"#eff4ff", color:"#1d4ed8", border:"1.5px solid #c7d9fc",
-                          fontFamily:"'Plus Jakarta Sans',sans-serif",
-                          transition:"all 0.15s",
-                        }}
-                          onMouseEnter={e => e.currentTarget.style.background="#ddeaff"}
-                          onMouseLeave={e => e.currentTarget.style.background="#eff4ff"}
-                        >✏️ Edit</button>
-                        <button onClick={() => setDeletePresc(p)} style={{
-                          padding:"6px 14px", borderRadius:8, fontSize:12.5, fontWeight:600, cursor:"pointer",
-                          background:"#fff1f2", color:"#dc2626", border:"1.5px solid #fca5a5",
-                          fontFamily:"'Plus Jakarta Sans',sans-serif",
-                          transition:"all 0.15s",
-                        }}
-                          onMouseEnter={e => e.currentTarget.style.background="#ffe4e6"}
-                          onMouseLeave={e => e.currentTarget.style.background="#fff1f2"}
-                        >🗑 Delete</button>
+                        {/* Prescriptions are clinical records: Reception can view and print them;
+                            only the doctor changes them (Doctor's screen). */}
                       </div>
                     </div>
                   </div>
@@ -1580,8 +1564,7 @@ const PrescriptionsSection = ({
 
       {/* Modals */}
       {viewPresc   && <PrescriptionViewModal   presc={viewPresc}   onClose={() => setViewPresc(null)} />}
-      {editPresc   && <PrescriptionEditModal   presc={editPresc}   onSave={handleSave} onClose={() => setEditPresc(null)}   saving={saving} />}
-      {deletePresc && <PrescriptionDeleteModal presc={deletePresc} onConfirm={handleDelete} onCancel={() => setDeletePresc(null)} loading={deleting} />}
+
     </>
   );
 };
@@ -1859,7 +1842,7 @@ export default function ReceptionDashboard() {
       const visitId = res.data?.id || res.data?.visit_id || res.data?.visit?.id || null;
 
       setVisitPatient(null);
-      setVisitCreatedFor({ name, visitId });
+      setVisitCreatedFor({ name, visitId, patientId: visitPatient.id });
       setTimeout(() => setVisitCreatedFor(null), 8000);
     } catch (err) {
       console.error("[ReceptionDashboard] Visit creation failed:", err);
@@ -1884,9 +1867,9 @@ export default function ReceptionDashboard() {
                 : <>Visit created for <strong>{visitCreatedFor.name}</strong> — now live on Doctor's Dashboard</>}
             </div>
           </div>
-          {visitCreatedFor.visitId && (
+          {visitCreatedFor.patientId && (
             <button
-              onClick={() => navigate(`/doctor/visit/${visitCreatedFor.visitId}`)}
+              onClick={() => { setHistoryPatientId(visitCreatedFor.patientId); setVisitCreatedFor(null); }}
               style={{
                 marginLeft:12, padding:"6px 14px", borderRadius:8,
                 background:"rgba(255,255,255,0.22)", border:"1.5px solid rgba(255,255,255,0.4)",
@@ -1897,7 +1880,7 @@ export default function ReceptionDashboard() {
               onMouseEnter={e => e.currentTarget.style.background="rgba(255,255,255,0.32)"}
               onMouseLeave={e => e.currentTarget.style.background="rgba(255,255,255,0.22)"}
             >
-              View Patient Record →
+              📋 View Complete History
             </button>
           )}
           <button
@@ -2310,7 +2293,6 @@ export default function ReceptionDashboard() {
               compact
               onOpenHistory={(pid) => setHistoryPatientId(pid)}
               onCreateVisit={(p) => setVisitPatient(p)}
-              onOpenVisit={(vid) => navigate(`/doctor/visit/${vid}`)}
               onOpenAll={() => navigate("/reception/appointments")}
             />
           </div>

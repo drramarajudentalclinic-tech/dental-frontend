@@ -59,7 +59,6 @@ export default function AppointmentsPage() {
           <AppointmentsBoard
             role="reception"
             onOpenHistory={(pid) => setHistoryId(pid)}
-            onOpenVisit={(vid) => navigate(`/doctor/visit/${vid}`)}
           />
         </div>
       </div>

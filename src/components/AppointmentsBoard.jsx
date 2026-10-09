@@ -12,7 +12,7 @@ import api from "../api/api";
   Shows        Today · Tomorrow · Upcoming · Past · any date
   Each row     time, patient (case no.), treatment, who booked it, status
                (Scheduled / Visit open / Completed / Cancelled)
-  Actions      Create visit · Open visit · History · Change date/time ·
+  Actions      Create visit · Open visit (doctor) / View history (reception) · Change date/time ·
                Completed · Cancel · Link to patient (bookings from the
                Appointments app that could not be matched automatically)
   New          ＋ New appointment — choose the patient (or type a name for
@@ -139,9 +139,14 @@ function ApptForm({ initial, onSaved, onClose }) {
   const [search, setSearch] = useState({ q: "", count: 0, busy: false });
   const [f, setF] = useState({
     date: initial?.date || today(), time: initial?.time || nextQuarter(), treatment: initial?.treatment || "", notes: initial?.notes || "",
+    doctor: initial?.doctor_name || "",
     name: "", mobile: "", age: "",
   });
   const [typed, setTyped] = useState({ name: false, mobile: false });
+  const [doctors, setDoctors] = useState([]);
+  useEffect(() => {
+    api.get("/appointments/doctors").then((r) => setDoctors(Array.isArray(r.data) ? r.data : [])).catch(() => {});
+  }, []);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const set = (k, v) => setF((x) => ({ ...x, [k]: v }));
@@ -164,11 +169,11 @@ function ApptForm({ initial, onSaved, onClose }) {
     try {
       let res;
       if (editing) {
-        res = await api.put(`/appointments/${initial.id}`, { date: f.date, time: f.time, treatment: f.treatment, notes: f.notes });
+        res = await api.put(`/appointments/${initial.id}`, { date: f.date, time: f.time, treatment: f.treatment, notes: f.notes, doctor_name: f.doctor });
       } else {
         res = await api.post("/appointments", {
           ...(patient ? { patient_id: patient.id } : { name: newName.trim(), mobile: newMobile.trim(), age: f.age }),
-          date: f.date, time: f.time, treatment: f.treatment, notes: f.notes, source: "clinic",
+          date: f.date, time: f.time, treatment: f.treatment, notes: f.notes, doctor_name: f.doctor, source: "clinic",
         });
       }
       onSaved(res.data);
@@ -211,6 +216,10 @@ function ApptForm({ initial, onSaved, onClose }) {
       <div className="apb-grid" style={{ marginTop: 12 }}>
         <label className="apb-f"><span>Date *</span><input className="apb-in" type="date" min={editing ? undefined : today()} value={f.date} onChange={(e) => set("date", e.target.value)} /></label>
         <label className="apb-f"><span>Time *</span><input className="apb-in" type="time" value={f.time} onChange={(e) => set("time", e.target.value)} /></label>
+        <label className="apb-f apb-wide"><span>Doctor <i className="apb-opt">(optional)</i></span>
+          <input className="apb-in" list="apb-doctors" placeholder="e.g. Dr Rama Raju" value={f.doctor} onChange={(e) => set("doctor", e.target.value)} aria-label="Doctor" />
+          <datalist id="apb-doctors">{doctors.map((d) => <option key={d} value={d} />)}</datalist>
+        </label>
         <label className="apb-f apb-wide"><span>Treatment</span><input className="apb-in" placeholder="e.g. RCT IRT 47 – 2nd sitting" value={f.treatment} onChange={(e) => set("treatment", e.target.value)} /></label>
         <label className="apb-f apb-wide"><span>Notes</span><input className="apb-in" value={f.notes} onChange={(e) => set("notes", e.target.value)} /></label>
       </div>
@@ -400,8 +409,11 @@ export default function AppointmentsBoard({ role = "reception", compact = false,
                       {st.key === "scheduled" && a.date === today() && a.linked && role === "reception" && (
                         <button type="button" className="apb-btn apb-main apb-sm" disabled={busy} onClick={() => (onCreateVisit ? onCreateVisit(patientOf(a)) : setVisitFor(a))}>Create visit</button>
                       )}
-                      {st.key === "inclinic" && onOpenVisit && (
+                      {st.key === "inclinic" && role === "doctor" && onOpenVisit && (
                         <button type="button" className="apb-btn apb-sm" onClick={() => onOpenVisit(a.in_clinic_visit_id)}>Open visit</button>
+                      )}
+                      {a.linked && role === "reception" && onOpenHistory && (
+                        <button type="button" className="apb-btn apb-sm" onClick={() => onOpenHistory(a.patient_id)}>📋 View history</button>
                       )}
                       {!a.linked && <button type="button" className="apb-btn apb-sm" disabled={busy} onClick={() => setLinking(a)}>🔗 Link</button>}
                       {a.state === "SCHEDULED" && (
@@ -529,6 +541,7 @@ function Styles() {
       .apb-picks button { width: 100%; text-align: left; background: #fff; border: 0; border-bottom: 1px solid #f1f4f8; padding: 9px 12px; font: inherit; font-size: 13.5px; cursor: pointer; }
       .apb-picks button:hover { background: #f3f7fc; }
       .apb-picks span { color: #64748b; font-size: 12.5px; }
+      .apb-opt { font-style: normal; font-weight: 500; text-transform: none; letter-spacing: 0; color: #94a3b8; }
       .apb-why { margin-right: auto; align-self: center; font-size: 12.5px; color: #92400e; }
       .apb-newperson { margin-top: 10px; border: 1px dashed #fcd34d; background: #fffbeb; border-radius: 10px; padding: 10px 12px; }
       .apb-newperson-h { font-size: 12.5px; font-weight: 800; color: #92400e; margin-bottom: 8px; }
