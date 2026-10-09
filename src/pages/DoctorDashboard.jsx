@@ -709,6 +709,31 @@ const resolveFollowup = (v) =>
   v.notes?.trim()              ||
   "";
 
+/* Doctor of the visit: the one assigned on the visit, else the appointment's doctor */
+const resolveDoctor = (v) => {
+  const real = (x) => { const t = String(x || "").trim(); return /^(dr\.?\s*)?doctor$/i.test(t) ? "" : t; };   // "Doctor" is only a placeholder
+  return real(v.assigned_doctor) || real(v.doctor_name) || real(v.appt_doctor);
+};
+
+/* Treatment: the follow-up notes, plus the booked treatment when it says something else */
+const resolveTreatment = (v) => {
+  const parts = [resolveFollowup(v), String(v.appt_treatment || "").trim()]
+    .filter(p => p && !/^(visit|appointment|first visit)$/i.test(p));            // placeholders say nothing
+  const out = [];
+  parts.forEach(p => {
+    const lp = p.toLowerCase();
+    const i = out.findIndex(o => o.toLowerCase().includes(lp) || lp.includes(o.toLowerCase()));
+    if (i < 0) out.push(p);
+    else if (p.length > out[i].length) out[i] = p;                                // keep the fuller wording
+  });
+  return out.join(" · ");
+};
+const fmtApptTime = (t) => {
+  if (!t) return "";
+  const [h, m] = String(t).split(":").map(Number);
+  return `${h % 12 || 12}:${String(m || 0).padStart(2, "0")} ${h >= 12 ? "PM" : "AM"}`;
+};
+
 const Field = ({ label, value, full = false, children }) => (
   <div className={`pld-field${full ? " full" : ""}`}>
     <div className="pld-field-label">{label}</div>
@@ -1134,7 +1159,27 @@ export default function DoctorDashboard() {
       // Backend returns patient_name — normalize to `name` since the rest
       // of this component (avatar initials, search filter, confirm
       // dialog) reads v.name.
-      const data = (res.data || []).map(v => ({ ...v, name: v.patient_name || v.name }));
+      let data = (res.data || []).map(v => ({ ...v, name: v.patient_name || v.name }));
+      // Doctor + booked treatment + time come from the appointment of each visit
+      // (Supabase — also the Appointments app's bookings). Missing → the visit's own fields.
+      if (data.length) {
+        try {
+          const pad = (n) => String(n).padStart(2, "0");
+          const iso = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+          const oldest = data.reduce((m, v) => { const d = new Date(v.visit_date || Date.now()); return d < m ? d : m; }, new Date());
+          oldest.setDate(oldest.getDate() - 1);
+          const ap = await api.get("/appointments", { params: { from: iso(oldest), to: iso(new Date()) } });
+          const byVisit = {};
+          (Array.isArray(ap.data) ? ap.data : []).forEach(a => {
+            const vid = a.visit_id || a.in_clinic_visit_id;
+            if (vid && a.state !== "CANCELLED" && !byVisit[vid]) byVisit[vid] = a;
+          });
+          data = data.map(v => {
+            const a = byVisit[v.visit_id];
+            return { ...v, appt_doctor: a?.doctor_name || "", appt_treatment: a?.treatment || "", appt_time: a?.time || "" };
+          });
+        } catch { /* appointments not connected: the table still works */ }
+      }
       setVisits(data);
 
       /* ── FIX: Log first visit raw object to console so you can see
@@ -1209,7 +1254,9 @@ export default function DoctorDashboard() {
       (v.name        || "").toLowerCase().includes(q) ||
       (v.case_number || "").toLowerCase().includes(q) ||
       (v.mobile      || "").includes(q)               ||
-      complaint.toLowerCase().includes(q)
+      complaint.toLowerCase().includes(q)             ||
+      resolveDoctor(v).toLowerCase().includes(q)      ||
+      resolveTreatment(v).toLowerCase().includes(q)
     );
   });
 
@@ -1402,7 +1449,8 @@ export default function DoctorDashboard() {
                   <th style={{ width:40 }}>#</th>
                   <th>Patient</th>
                   <th>Chief Complaint</th>
-                  <th>Followup Notes</th>
+                  <th>Treatment</th>
+                  <th>Doctor</th>
                   <th>Visit Date</th>
                   <th>Status</th>
                   <th style={{ textAlign:"center" }}>Actions</th>
@@ -1411,7 +1459,8 @@ export default function DoctorDashboard() {
               <tbody>
                 {filtered.map((v, idx) => {
                   const complaint = resolveComplaint(v);
-                  const followup  = resolveFollowup(v);
+                  const followup  = resolveTreatment(v);
+                  const doctor    = resolveDoctor(v);
                   return (
                     <tr key={v.visit_id} style={{ animationDelay:`${idx * 0.04}s` }}>
                       <td style={{ color:"#b0bad0", fontWeight:700, fontSize:12 }}>{idx + 1}</td>
@@ -1435,7 +1484,7 @@ export default function DoctorDashboard() {
                         }
                       </td>
 
-                      {/* ── Followup Notes cell ── */}
+                      {/* ── Treatment cell (follow-up notes / booked treatment) ── */}
                       <td style={{ maxWidth:180 }}>
                         {followup
                           ? <span style={{ fontSize:12.5, display:"block", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", maxWidth:170, color:"#92400e", fontWeight:600 }} title={followup}>{followup}</span>
@@ -1443,7 +1492,17 @@ export default function DoctorDashboard() {
                         }
                       </td>
 
-                      <td style={{ fontWeight:600, color:"#1a2540" }}>{formatDate(v.visit_date)}</td>
+                      {/* ── Doctor cell ── */}
+                      <td style={{ maxWidth:150 }}>
+                        {doctor
+                          ? <span style={{ fontSize:12.5, fontWeight:700, color:"#1d4d7a", display:"block", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", maxWidth:145 }} title={doctor}>👨‍⚕️ {doctor}</span>
+                          : <span style={{ color:"#c0cce0", fontSize:12, fontStyle:"italic" }}>—</span>}
+                      </td>
+
+                      <td style={{ fontWeight:600, color:"#1a2540" }}>
+                        {formatDate(v.visit_date)}
+                        {v.appt_time && <div style={{ fontSize:11.5, color:"#64748b", fontWeight:600 }}>🕐 {fmtApptTime(v.appt_time)}</div>}
+                      </td>
                       <td>
                         <span className="dd-chip" style={{ background:"#f0fdf4", color:"#166534", border:"1px solid #86efac" }}>
                           🟢 Open
