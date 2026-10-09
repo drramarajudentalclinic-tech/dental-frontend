@@ -144,7 +144,8 @@ function medDuration(m) {
 }
 
 /* ─── Allergy check ────────────────────────────────────────────
-   The patient's recorded allergies (Medical History) are always shown above the
+   The patient's recorded allergies, medical conditions (and pregnancy) and the
+   medicines they already take (Medical History) are always shown above the
    medicines. On top of that, a medicine is flagged when its name matches a
    recorded allergy directly, or belongs to the same well-known family
    (penicillins; NSAID painkillers). This is a reminder to double-check — it is
@@ -265,6 +266,14 @@ const injectStyles = () => {
     .presc-allergy-list { display:flex; flex-wrap:wrap; gap:6px; }
     .presc-allergy-chip { background:#fff; border:1px solid #fca5a5; color:#7f1d1d; border-radius:6px; padding:3px 9px; font-size:12.5px; font-weight:700; }
     .presc-allergy-chip span { font-weight:500; color:#991b1b; }
+    .presc-cond { border-color:#fcd34d; background:#fffbeb; }
+    .presc-cond .presc-allergy-title { color:#92400e; }
+    .presc-cond-chip { border-color:#fcd34d !important; color:#78350f !important; }
+    .presc-cond-chip span { color:#92400e !important; }
+    .presc-meds { border-color:#bfdbfe; background:#eff6ff; }
+    .presc-meds .presc-allergy-title { color:#1e40af; }
+    .presc-meds-chip { border-color:#bfdbfe !important; color:#1e3a8a !important; }
+    .presc-meds-chip span { color:#1e40af !important; }
     .presc-allergy-none { font-size:12px; color:#475569; background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:6px 10px; margin-bottom:10px; }
 
     /* ── v2: medicine picker ── */
@@ -776,25 +785,61 @@ function PopWindow({ label, onClose, maxWidth = 680, busy = false, background = 
   );
 }
 
-/* ─── Recorded allergies (always shown above the medicines) ───── */
-function AllergyBanner({ allergies, noneKnown }) {
+/* ─── Recorded allergies and medical conditions (always shown above the medicines) ───── */
+const NOT_CURRENT = /^(resolved|past|stopped|completed|inactive|discontinued)$/i;
+function healthFrom(data) {
+  const live = (r) => r && !NOT_CURRENT.test(String(r.status || "").trim());
+  return {
+    conditions: (Array.isArray(data?.conditions) ? data.conditions : []).filter(live)
+      .map(c => ({ id: c.id, name: c.condition_name || c.label || "", extra: [c.details, c.status && !/^current$/i.test(c.status) ? c.status : ""].filter(Boolean).join(", ") }))
+      .filter(c => c.name),
+    medications: (Array.isArray(data?.medications) ? data.medications : []).filter(m => live(m) && m.active !== false)
+      .map(m => ({ id: m.id, name: m.medicine_name || m.label || "", extra: [m.dosage, m.frequency].filter(Boolean).join(" ") }))
+      .filter(m => m.name),
+    womens: data?.womens_health_applicable === false ? [] : (Array.isArray(data?.womens_health) ? data.womens_health : []).filter(live)
+      .map(w => ({ id: w.id, name: w.label || w.record_type || "" })).filter(w => w.name),
+    noneKnownConditions: !!data?.none_known?.conditions,
+  };
+}
+function AllergyBanner({ allergies, noneKnown, health }) {
+  const h = health || { conditions: [], medications: [], womens: [], noneKnownConditions: false };
+  const chips = (list, cls) => (
+    <div className="presc-allergy-list">
+      {list.map(x => (
+        <span key={x.id ?? x.name} className={`presc-allergy-chip ${cls || ""}`}>
+          {x.name}{x.extra && <span> — {x.extra}</span>}
+        </span>
+      ))}
+    </div>
+  );
+  const rows = [];
   if (allergies.length > 0) {
-    return (
-      <div className="presc-allergy" role="alert">
+    rows.push(
+      <div key="a" className="presc-allergy" role="alert">
         <div className="presc-allergy-title">⚠️ Allergies on record — check before prescribing</div>
-        <div className="presc-allergy-list">
-          {allergies.map(a => (
-            <span key={a.id ?? a.allergen} className="presc-allergy-chip">
-              {a.allergen}
-              {(a.reaction || a.severity) && <span> — {[a.reaction, a.severity].filter(Boolean).join(", ")}</span>}
-            </span>
-          ))}
-        </div>
+        {chips(allergies.map(a => ({ id: a.id, name: a.allergen, extra: [a.reaction, a.severity].filter(Boolean).join(", ") })))}
       </div>
     );
   }
-  if (noneKnown) return <div className="presc-allergy-none">✓ Medical history says: no known allergies.</div>;
-  return null;
+  if (h.conditions.length > 0 || h.womens.length > 0) {
+    rows.push(
+      <div key="c" className="presc-allergy presc-cond" role="note">
+        <div className="presc-allergy-title">🩺 Medical conditions — consider before prescribing</div>
+        {chips([...h.womens, ...h.conditions], "presc-cond-chip")}
+      </div>
+    );
+  }
+  if (h.medications.length > 0) {
+    rows.push(
+      <div key="m" className="presc-allergy presc-meds" role="note">
+        <div className="presc-allergy-title">💊 Already taking — check for interactions</div>
+        {chips(h.medications, "presc-meds-chip")}
+      </div>
+    );
+  }
+  const ok = [noneKnown && allergies.length === 0 && "no known allergies", h.noneKnownConditions && h.conditions.length === 0 && "no known medical conditions"].filter(Boolean);
+  if (ok.length) rows.push(<div key="n" className="presc-allergy-none">✓ Medical history says: {ok.join(", ")}.</div>);
+  return rows.length ? <>{rows}</> : null;
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -1115,7 +1160,7 @@ function MedicineEditor({ medicines, onChange, allergies = [] }) {
 /* ═══════════════════════════════════════════════════════════════
    EDIT MODAL for previously saved prescriptions
 ═══════════════════════════════════════════════════════════════ */
-function EditModal({ presc, onSave, onClose, saving, error = "", allergies = [] }) {
+function EditModal({ presc, onSave, onClose, saving, error = "", allergies = [], health = null }) {
   const [form, setForm] = useState({
     patient_name:   presc.patient_name  || "",
     patient_age:    presc.patient_age   || "",
@@ -1187,7 +1232,7 @@ function EditModal({ presc, onSave, onClose, saving, error = "", allergies = [] 
         {/* Medicines */}
         <div style={box}>
           <div style={{ fontSize:13, fontWeight:700, color:"#1e293b", marginBottom:10 }}>🧾 Medicines</div>
-          <AllergyBanner allergies={allergies} noneKnown={false} />
+          <AllergyBanner allergies={allergies} noneKnown={false} health={health} />
           <MedicineEditor medicines={form.medicines} onChange={list=>set("medicines",list)} allergies={allergies} />
         </div>
         {/* Follow-up */}
@@ -1221,7 +1266,7 @@ function EditModal({ presc, onSave, onClose, saving, error = "", allergies = [] 
 function PreviousPrescriptions({
   visitId, refreshTrigger,
   patientName: defaultPatientName = "", caseNumber: defaultCaseNumber = "", patientMobile = "",
-  disabled = false, allergies = [],
+  disabled = false, allergies = [], health = null,
   onRows = null,            // told about the loaded list (used for the "already has a prescription" notice)
   editRequest = null,       // { id, n } → open the Edit window for that prescription
   onUseMedicines = null,    // (medicines) → copy them into the prescription being written
@@ -1467,7 +1512,7 @@ function PreviousPrescriptions({
       })()}
 
       {/* ── Edit modal ── */}
-      {editP && <EditModal presc={editP} onSave={doEditSave} onClose={()=>setEditP(null)} saving={saving} error={editError} allergies={allergies} />}
+      {editP && <EditModal presc={editP} onSave={doEditSave} onClose={()=>setEditP(null)} saving={saving} error={editError} allergies={allergies} health={health} />}
 
       {/* ── Delete confirm ── */}
       {delId && (
@@ -1526,6 +1571,7 @@ export default function Prescription({ visitId, patient = null, consultationData
   const [copiedNote,    setCopiedNote]    = useState("");
   const [allergies,     setAllergies]     = useState([]);
   const [noneKnown,     setNoneKnown]     = useState(false);
+  const [health,        setHealth]        = useState(null);
 
   useEffect(() => {
     if (patientInfo || !visitId) return;
@@ -1558,6 +1604,7 @@ export default function Prescription({ visitId, patient = null, consultationData
         const list = Array.isArray(res.data.allergies) ? res.data.allergies : [];
         setAllergies(list.filter(a => a && a.allergen && String(a.status || "Active").toLowerCase() !== "resolved"));
         setNoneKnown(!!res.data.none_known?.allergies);
+        setHealth(healthFrom(res.data));
       })
       .catch(() => {});
     return () => { cancelled = true; };
@@ -1686,7 +1733,7 @@ export default function Prescription({ visitId, patient = null, consultationData
   const pastList = (
     <PreviousPrescriptions visitId={visitId} refreshTrigger={refreshKey}
       patientName={patientName} caseNumber={caseNumber} patientMobile={patientMobile}
-      disabled={disabled} allergies={allergies}
+      disabled={disabled} allergies={allergies} health={health}
       onRows={setHistory} editRequest={editRequest}
       onUseMedicines={disabled ? null : useMedicinesFrom} />
   );
@@ -1820,7 +1867,7 @@ export default function Prescription({ visitId, patient = null, consultationData
           <div style={{ ...S.cardTitle, marginBottom:0 }}>🧾 Prescribe Medicines</div>
           {cleanMeds.length > 0 && <span style={{ fontSize:11, fontWeight:700, background:"#eff6ff", color:"#1d4ed8", border:"1px solid #bfdbfe", borderRadius:20, padding:"1px 9px" }}>{cleanMeds.length} added</span>}
         </div>
-        <AllergyBanner allergies={allergies} noneKnown={noneKnown} />
+        <AllergyBanner allergies={allergies} noneKnown={noneKnown} health={health} />
         {copiedNote && <div className="presc-msg ok" role="status">{copiedNote}<button type="button" onClick={()=>setCopiedNote("")}>OK</button></div>}
         <MedicineEditor medicines={medicines} onChange={list => { setMedicines(list); setCopiedNote(""); }} allergies={allergies} />
         {unnamed > 0 && <div style={{ fontSize:12, color:"#b45309", marginTop:8 }}>A medicine without a name will be left out.</div>}
