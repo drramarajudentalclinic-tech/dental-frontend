@@ -68,9 +68,10 @@ const MEDICINES = [
 // Shown alphabetically on screen.
 const MEDICINES_AZ = [...MEDICINES].sort((a, b) => a.name.localeCompare(b.name, "en", { sensitivity: "base" }));
 const MED_CATEGORIES = ["Antibiotics", "Painkillers", "Antacids", "Mouthwash & gels", "Vitamins & others"];
-const MY_CATEGORY = "My medicines";
+const MY_CATEGORY = "Custom medicines";
+const groupOf = (m) => (!m.category || m.category === "My medicines" ? MY_CATEGORY : m.category);   // "My medicines" = the earlier name
 
-/* ─── My medicines: the clinic's own list, saved on the server ────
+/* ─── Custom medicines: the clinic's own list, saved on the server ────
    GET/POST/PUT/DELETE /prescription-medicines (prescription.py). Loaded once
    and shared by every medicine editor on the page.                         */
 const catalogue = { custom: [], usage: {}, loaded: false, error: "", listeners: new Set(), loading: null };
@@ -85,8 +86,8 @@ function loadCatalogue(force = false) {
     })
     .catch(err => {
       catalogue.error = err?.response?.status === 404 && !err?.response?.data?.error
-        ? "My medicines needs the new prescription.py on the server."
-        : (err?.response?.data?.error || "My medicines could not be loaded.");
+        ? "Custom medicines needs the new prescription.py on the server."
+        : (err?.response?.data?.error || "Custom medicines could not be loaded.");
     })
     .finally(() => { catalogue.loaded = true; notifyCatalogue(); });
   return catalogue.loading;
@@ -306,7 +307,7 @@ const injectStyles = () => {
     .presc-window-body { overflow-y:auto; flex:1 1 auto; min-height:0; padding:18px 22px; }
     .presc-window-foot { padding:12px 22px; border-top:1px solid #f0f0f0; display:flex; gap:10px; flex-shrink:0; }
     .presc-x { width:30px; height:30px; border-radius:7px; border:1.5px solid rgba(255,255,255,0.25); background:rgba(255,255,255,0.12); color:#fff; font-size:15px; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
-    /* ── v3: medicine groups, My medicines ── */
+    /* ── v3: medicine groups, Custom medicines ── */
     .presc-msg.success { background:#ecfdf5; border:1px solid #a7f3d0; color:#065f46; }
     .presc-btn-my { padding:8px 14px; border-radius:8px; font-weight:700; font-size:13px; font-family:inherit; cursor:pointer; background:#fffbeb; color:#92400e; border:1.5px solid #fcd34d; white-space:nowrap; }
     .presc-btn-my:hover { background:#fef3c7; }
@@ -804,8 +805,8 @@ function AllergyBanner({ allergies, noneKnown }) {
 let editorSeq = 0;
 const lower = (x) => String(x || "").trim().toLowerCase();
 
-/* ── My medicines: add / change / remove (opened from the medicine editor) ── */
-function MyMedicinesWindow({ onClose, startWith = null }) {
+/* ── Custom medicines: add / change / remove (opened from the medicine editor) ── */
+function CustomMedicinesWindow({ onClose, startWith = null }) {
   const cat = useCatalogue();
   const blank = { name: "", category: MY_CATEGORY, times: "2 times/day", when: "", days: 3, note: "" };
   const [form, setForm] = useState(startWith ? { ...blank, ...startWith } : blank);
@@ -827,7 +828,7 @@ function MyMedicinesWindow({ onClose, startWith = null }) {
       if (editingId) await api.put(`/prescription-medicines/${editingId}`, body);
       else await api.post("/prescription-medicines", body);
       await loadCatalogue(true);
-      setMsg({ ok: true, text: `${editingId ? "Updated" : "Added to My medicines"}: ${body.name}` });
+      setMsg({ ok: true, text: `${editingId ? "Updated" : "Added to Custom medicines"}: ${body.name}` });
       setForm(blank); setEditingId(null);
     } catch (err) {
       setMsg({ ok: false, text: saveError(err, "Not saved — please try again.") });
@@ -838,7 +839,7 @@ function MyMedicinesWindow({ onClose, startWith = null }) {
     try {
       await api.delete(`/prescription-medicines/${m.id}`);
       await loadCatalogue(true);
-      setMsg({ ok: true, text: `Removed from My medicines: ${m.name}. Prescriptions already written keep it.` });
+      setMsg({ ok: true, text: `Removed from Custom medicines: ${m.name}. Prescriptions already written keep it.` });
       if (editingId === m.id) { setForm(blank); setEditingId(null); }
     } catch (err) {
       setMsg({ ok: false, text: saveError(err, "Not removed — please try again.") });
@@ -847,10 +848,10 @@ function MyMedicinesWindow({ onClose, startWith = null }) {
   const shown = cat.custom.filter(m => !filter.trim() || lower(m.name).includes(lower(filter)));
 
   return (
-    <PopWindow label="My medicines" onClose={onClose} busy={busy} maxWidth={820}>
+    <PopWindow label="Custom medicines" onClose={onClose} busy={busy} maxWidth={820}>
       <div className="presc-window-head" style={{ background: "linear-gradient(135deg,#1d4d7a,#1d6fa4)" }}>
         <div>
-          <div style={{ fontSize: 14, fontWeight: 800, color: "#fff" }}>⭐ My medicines</div>
+          <div style={{ fontSize: 14, fontWeight: 800, color: "#fff" }}>⭐ Custom medicines</div>
           <div style={{ fontSize: 11, color: "rgba(255,255,255,0.7)" }}>Medicines not in the built-in list — saved once, offered on every prescription</div>
         </div>
         <button type="button" className="presc-x" onClick={onClose} disabled={busy} aria-label="Close">✕</button>
@@ -892,7 +893,7 @@ function MyMedicinesWindow({ onClose, startWith = null }) {
             </div>
           </div>
           <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
-            <button type="button" className="presc-btn-add" disabled={busy || !form.name.trim()} onClick={save}>{busy ? "Saving…" : editingId ? "💾 Save changes" : "⭐ Add to My medicines"}</button>
+            <button type="button" className="presc-btn-add" disabled={busy || !form.name.trim()} onClick={save}>{busy ? "Saving…" : editingId ? "💾 Save changes" : "⭐ Add to Custom medicines"}</button>
             {editingId && <button type="button" className="presc-rowbtn" style={{ border: "1.5px solid #e2e8f0", background: "#fff", color: "#475569" }} onClick={() => { setForm(blank); setEditingId(null); }}>Cancel</button>}
           </div>
         </div>
@@ -900,11 +901,11 @@ function MyMedicinesWindow({ onClose, startWith = null }) {
 
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, margin: "18px 0 8px", flexWrap: "wrap" }}>
           <div style={{ fontSize: 13, fontWeight: 800, color: "#1e293b" }}>Saved ({cat.custom.length})</div>
-          {cat.custom.length > 6 && <input className="presc-filter-inp" style={{ maxWidth: 260 }} value={filter} onChange={e => setFilter(e.target.value)} placeholder="Find…" aria-label="Find in My medicines" />}
+          {cat.custom.length > 6 && <input className="presc-filter-inp" style={{ maxWidth: 260 }} value={filter} onChange={e => setFilter(e.target.value)} placeholder="Find…" aria-label="Find in Custom medicines" />}
         </div>
         {cat.error && <div className="presc-msg error" role="alert">⚠️ {cat.error}</div>}
         {!cat.loaded ? <div style={{ fontSize: 12.5, color: "#94a3b8" }}>Loading…</div>
-          : cat.custom.length === 0 ? <div style={{ fontSize: 12.5, color: "#94a3b8", fontStyle: "italic" }}>Nothing saved yet. Add a medicine above, or press “☆ Save to My medicines” on a medicine typed into a prescription.</div>
+          : cat.custom.length === 0 ? <div style={{ fontSize: 12.5, color: "#94a3b8", fontStyle: "italic" }}>Nothing saved yet. Add a medicine above, or press “☆ Save to Custom medicines” on a medicine typed into a prescription.</div>
           : (
             <div className="presc-mm-list">
               {shown.map(m => (
@@ -912,7 +913,7 @@ function MyMedicinesWindow({ onClose, startWith = null }) {
                   <div style={{ minWidth: 0 }}>
                     <div style={{ fontWeight: 800, fontSize: 13.5, overflowWrap: "anywhere" }}>⭐ {m.name}</div>
                     <div style={{ fontSize: 12, color: "#64748b" }}>
-                      {[m.category, m.times, m.when, m.days !== "" && m.days != null ? `${m.days} day${Number(m.days) !== 1 ? "s" : ""}` : "", m.note].filter(Boolean).join(" · ")}
+                      {[groupOf(m), m.times, m.when, m.days !== "" && m.days != null ? `${m.days} day${Number(m.days) !== 1 ? "s" : ""}` : "", m.note].filter(Boolean).join(" · ")}
                       {cat.usage[lower(m.name)] ? ` · prescribed ${cat.usage[lower(m.name)]}×` : ""}
                     </div>
                   </div>
@@ -925,7 +926,7 @@ function MyMedicinesWindow({ onClose, startWith = null }) {
                   ) : (
                     <div style={{ display: "flex", gap: 6 }}>
                       <button type="button" className="presc-rowbtn" style={{ border: "1.5px solid #fde68a", background: "#fef9c3", color: "#713f12" }} aria-label={`Change ${m.name}`}
-                        onClick={() => { setEditingId(m.id); setForm({ name: m.name, category: m.category || MY_CATEGORY, times: m.times || "", when: m.when || "", days: m.days ?? "", note: m.note || "" }); setMsg(null); }}>Edit</button>
+                        onClick={() => { setEditingId(m.id); setForm({ name: m.name, category: groupOf(m), times: m.times || "", when: m.when || "", days: m.days ?? "", note: m.note || "" }); setMsg(null); }}>Edit</button>
                       <button type="button" className="presc-rowbtn" style={{ border: "1.5px solid #fecaca", background: "#fff1f2", color: "#b91c1c" }} aria-label={`Remove ${m.name}`} onClick={() => setConfirmId(m.id)}>Remove</button>
                     </div>
                   )}
@@ -950,10 +951,10 @@ function MedicineEditor({ medicines, onChange, allergies = [] }) {
   const [saveNote, setSaveNote] = useState(null);
   const listId = useRef(`presc-freq-${++editorSeq}`).current;
 
-  // everything that can be ticked: the built-in list + My medicines
+  // everything that can be ticked: the built-in list + Custom medicines
   const all = useMemo(() => {
     const mine = cat.custom.map(m => ({ name: m.name, times: m.times || DEFAULT_CUSTOM.times, days: m.days === "" || m.days == null ? DEFAULT_CUSTOM.days : m.days,
-      when: m.when || "", note: m.note || "", cat: m.category || MY_CATEGORY, mine: true }));
+      when: m.when || "", note: m.note || "", cat: groupOf(m), mine: true }));
     const mineNames = new Set(mine.map(m => lower(m.name)));
     return [...MEDICINES.filter(m => !mineNames.has(lower(m.name))), ...mine]
       .sort((a, b) => a.name.localeCompare(b.name, "en", { sensitivity: "base" }));
@@ -991,7 +992,7 @@ function MedicineEditor({ medicines, onChange, allergies = [] }) {
     try {
       await api.post("/prescription-medicines", { name: m.name.trim(), category: MY_CATEGORY, times: m.times, when: m.when, days: m.days === "" ? "" : m.days, note: m.note });
       await loadCatalogue(true);
-      setSaveNote({ ok: true, text: `⭐ “${m.name.trim()}” is saved in My medicines — it will be in the list next time.` });
+      setSaveNote({ ok: true, text: `⭐ “${m.name.trim()}” is saved in Custom medicines — it will be in the list next time.` });
     } catch (err) {
       setSaveNote({ ok: false, text: saveError(err, "Not saved — please try again.") });
     } finally { setSavingName(""); }
@@ -1012,7 +1013,7 @@ function MedicineEditor({ medicines, onChange, allergies = [] }) {
           {has(query) && query.trim() ? "Already added" : exact || !query.trim() ? "+ Add" : `+ Add “${query.trim()}”`}
         </button>
         <button type="button" className="presc-btn-my" onClick={() => setManager({ startWith: null })} title="Medicines you add yourself, saved for every prescription">
-          ⭐ My medicines{cat.custom.length ? ` (${cat.custom.length})` : ""}
+          ⭐ Custom medicines{cat.custom.length ? ` (${cat.custom.length})` : ""}
         </button>
       </div>
 
@@ -1032,11 +1033,11 @@ function MedicineEditor({ medicines, onChange, allergies = [] }) {
           const risk = allergyMatches(m.name, allergies).length > 0;
           return (
             <button key={m.name} type="button" className={`presc-chip${on ? " on" : ""}${risk ? " risk" : ""}${m.mine ? " mine" : ""}`}
-              aria-pressed={on} title={risk ? "Check: matches a recorded allergy" : m.mine ? "From My medicines" : undefined}
+              aria-pressed={on} title={risk ? "Check: matches a recorded allergy" : m.mine ? "From Custom medicines" : undefined}
               onClick={() => toggle(m)}>
               <span className="presc-chip-box" aria-hidden="true">{on ? "✓" : ""}</span>
               <span className="presc-chip-lbl">{m.name}</span>
-              {m.mine && <span className="presc-chip-star" aria-label="My medicine">⭐</span>}
+              {m.mine && <span className="presc-chip-star" aria-label="Custom medicine">⭐</span>}
               {m.uses ? <span className="presc-chip-uses" title={`Prescribed ${m.uses} times`}>{m.uses}×</span> : null}
               {risk && <span aria-hidden="true">⚠️</span>}
             </button>
@@ -1044,7 +1045,7 @@ function MedicineEditor({ medicines, onChange, allergies = [] }) {
         })}
         {shown.length === 0 && (
           <div style={{ gridColumn:"1 / -1", fontSize:12.5, color:"#64748b", padding:"4px 2px" }}>
-            {q ? <>Not in the list — press “+ Add” to prescribe “{query.trim()}”, or <button type="button" className="presc-linkbtn" onClick={() => setManager({ startWith: { name: query.trim() } })}>save it to My medicines</button> first.</>
+            {q ? <>Not in the list — press “+ Add” to prescribe “{query.trim()}”, or <button type="button" className="presc-linkbtn" onClick={() => setManager({ startWith: { name: query.trim() } })}>save it to Custom medicines</button> first.</>
               : group === MY_CATEGORY ? <>No medicines saved yet. <button type="button" className="presc-linkbtn" onClick={() => setManager({ startWith: null })}>Add one</button>.</>
               : "Nothing here yet."}
           </div>
@@ -1095,7 +1096,7 @@ function MedicineEditor({ medicines, onChange, allergies = [] }) {
                   <div className="presc-rx-new">
                     <span>New medicine — not in your list yet.</span>
                     <button type="button" className="presc-rowbtn presc-save-mine" disabled={savingName === m.name} onClick={() => saveToList(m)}>
-                      {savingName === m.name ? "Saving…" : "☆ Save to My medicines"}
+                      {savingName === m.name ? "Saving…" : "☆ Save to Custom medicines"}
                     </button>
                   </div>
                 )}
@@ -1106,7 +1107,7 @@ function MedicineEditor({ medicines, onChange, allergies = [] }) {
             );
           })}
       </div>
-      {manager && <MyMedicinesWindow startWith={manager.startWith} onClose={() => setManager(null)} />}
+      {manager && <CustomMedicinesWindow startWith={manager.startWith} onClose={() => setManager(null)} />}
     </div>
   );
 }
