@@ -443,15 +443,25 @@ const Tag = ({ label, color, bg }) => (
 const VisitCreateModal = ({ patient, onConfirm, onCancel, loading }) => {
   const [chiefComplaint,    setChiefComplaint]    = useState("");
   const [followupTreatment, setFollowupTreatment] = useState("");
+  // Date + time of the visit: today / now by default. A later date books an
+  // appointment instead — the visit is then made automatically on that day.
+  const nowLocal = new Date();
+  const p2 = (n) => String(n).padStart(2, "0");
+  const todayIso = `${nowLocal.getFullYear()}-${p2(nowLocal.getMonth() + 1)}-${p2(nowLocal.getDate())}`;
+  const [visitDate, setVisitDate] = useState(todayIso);
+  const [visitTime, setVisitTime] = useState(`${p2(nowLocal.getHours())}:${p2(nowLocal.getMinutes())}`);
+  const later = visitDate > todayIso;
 
   // At least one field must have content
-  const canSubmit = chiefComplaint.trim() || followupTreatment.trim();
+  const canSubmit = (chiefComplaint.trim() || followupTreatment.trim()) && visitDate >= todayIso && visitTime;
 
   const handleSubmit = () => {
     if (!canSubmit) return;
     const payload = {
       chief_complaint:    chiefComplaint.trim(),
       followup_treatment: followupTreatment.trim(),
+      visit_date:         visitDate,
+      visit_time:         visitTime,
     };
     console.log("[VisitCreateModal] Submitting visit payload:", payload);
     onConfirm(payload);
@@ -503,6 +513,23 @@ const VisitCreateModal = ({ patient, onConfirm, onCancel, loading }) => {
         }}>
           ⚠️ Fill in at least one field below — <strong>Chief Complaint</strong> for a new problem, or <strong>Followup Notes</strong> for a continuing treatment (e.g. 2nd sitting RCT).
         </div>
+
+        {/* Date + time */}
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, marginBottom:16 }}>
+          <div>
+            <label className="appt-input-label">Date</label>
+            <input className="appt-input" type="date" min={todayIso} value={visitDate} onChange={e => setVisitDate(e.target.value)} aria-label="Visit date" />
+          </div>
+          <div>
+            <label className="appt-input-label">Time</label>
+            <input className="appt-input" type="time" value={visitTime} onChange={e => setVisitTime(e.target.value)} aria-label="Visit time" />
+          </div>
+        </div>
+        {later && (
+          <div style={{ background:"#eff6ff", border:"1px solid #bfdbfe", borderRadius:8, padding:"8px 12px", marginBottom:16, fontSize:12, color:"#1e40af" }}>
+            📅 A later date books an <strong>appointment</strong> (also shown in the Appointments app). The visit is created automatically on that day.
+          </div>
+        )}
 
         {/* Chief Complaint — optional */}
         <div style={{ marginBottom:16 }}>
@@ -574,7 +601,7 @@ const VisitCreateModal = ({ patient, onConfirm, onCancel, loading }) => {
             }}>
             {loading
               ? <><span className="rdb-spinner" style={{marginRight:6}}/> Creating…</>
-              : "🩺 Create Visit for Doctor"}
+              : later ? "📅 Book Appointment" : "🩺 Create Visit for Doctor"}
           </button>
         </div>
       </div>
@@ -1788,14 +1815,38 @@ export default function ReceptionDashboard() {
     setVisitPatient(pt);
   };
 
-  const handleCreateVisit = async ({ chief_complaint, followup_treatment }) => {
+  const handleCreateVisit = async ({ chief_complaint, followup_treatment, visit_date, visit_time }) => {
     if (!visitPatient) return;
     setCreatingVisit(true);
+    const p2 = (n) => String(n).padStart(2, "0");
+    const d = new Date();
+    const todayIso = `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
+    if (visit_date && visit_date > todayIso) {
+      // a later day: book the appointment; the visit is created on that day automatically
+      try {
+        await api.post("/appointments", {
+          patient_id: visitPatient.id, date: visit_date, time: visit_time, source: "clinic",
+          treatment: (followup_treatment || chief_complaint || "").trim(),
+          notes: chief_complaint && followup_treatment ? `Complaint: ${chief_complaint}` : "",
+        });
+        const name = visitPatient.name;
+        setVisitPatient(null);
+        setVisitCreatedFor({ name, visitId: null, apptOn: `${visit_date.split("-").reverse().join("-")} ${visit_time}` });
+        setTimeout(() => setVisitCreatedFor(null), 8000);
+      } catch (err) {
+        console.error("[ReceptionDashboard] Appointment booking failed:", err);
+        alert(err?.response?.data?.error || "Failed to book the appointment. Please try again.");
+      } finally {
+        setCreatingVisit(false);
+      }
+      return;
+    }
     try {
       const payload = {
         patient_id:         visitPatient.id,
         chief_complaint:    chief_complaint    || "",
         followup_treatment: followup_treatment || "",
+        visit_time:         visit_time         || undefined,   // also books / links today's appointment
       };
 
       console.log("[ReceptionDashboard] Creating visit with payload:", payload);
@@ -1828,7 +1879,9 @@ export default function ReceptionDashboard() {
           <span className="rdb-toast-icon">✅</span>
           <div>
             <div>
-              Visit created for <strong>{visitCreatedFor.name}</strong> — now live on Doctor's Dashboard
+              {visitCreatedFor.apptOn
+                ? <>Appointment booked for <strong>{visitCreatedFor.name}</strong> on {visitCreatedFor.apptOn} — the visit is created that day</>
+                : <>Visit created for <strong>{visitCreatedFor.name}</strong> — now live on Doctor's Dashboard</>}
             </div>
           </div>
           {visitCreatedFor.visitId && (

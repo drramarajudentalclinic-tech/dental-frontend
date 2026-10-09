@@ -11,16 +11,17 @@ import api from "../api/api";
 
   Shows        Today · Tomorrow · Upcoming · Past · any date
   Each row     time, patient (case no.), treatment, who booked it, status
-               (Scheduled / In clinic / Completed / Cancelled)
+               (Scheduled / Visit open / Completed / Cancelled)
   Actions      Create visit · Open visit · History · Change date/time ·
                Completed · Cancel · Link to patient (bookings from the
                Appointments app that could not be matched automatically)
   New          ＋ New appointment — choose the patient (or type a name for
                someone not registered yet)
 
-  The doctor's follow-up dates (consultation / prescription) are booked by
-  the server automatically; closing a visit marks today's appointment
-  Completed. The list refreshes itself every minute, so bookings made in
+  Kept in step by the server: on the appointment day every booking gets its
+  visit (at the booked time) on the Doctor's and Reception's lists; a visit
+  created here appears in the Appointments app; the doctor's follow-up dates
+  are booked automatically; closing a visit marks the appointment Completed. The list refreshes itself every minute, so bookings made in
   the Appointments app appear here on their own.
 
   Props
@@ -58,7 +59,7 @@ const errText = (e, fb) => e?.response?.data?.error || e?.response?.data?.messag
 function stateOf(a) {
   if (a.state === "CANCELLED") return { key: "cancelled", label: "Cancelled" };
   if (a.state === "COMPLETED") return { key: "completed", label: "Completed" };
-  if (a.in_clinic_visit_id) return { key: "inclinic", label: "In clinic" };
+  if (a.in_clinic_visit_id) return { key: "inclinic", label: "Visit open" };
   if (a.date < today()) return { key: "missed", label: "Not attended" };
   return { key: "scheduled", label: "Scheduled" };
 }
@@ -202,7 +203,7 @@ function CreateVisitDialog({ appt, onDone, onClose }) {
   const save = async () => {
     setBusy(true); setErr("");
     try {
-      const res = await api.post("/visits", { patient_id: appt.patient_id, chief_complaint: complaint.trim(), followup_treatment: followup.trim() });
+      const res = await api.post("/visits", { patient_id: appt.patient_id, chief_complaint: complaint.trim(), followup_treatment: followup.trim(), visit_time: appt.time });
       onDone(res.data?.id || res.data?.visit_id || res.data?.visit?.id || null);
     } catch (e) { setErr(errText(e, "The visit could not be created. Please try again.")); setBusy(false); }
   };
@@ -316,7 +317,7 @@ export default function AppointmentsBoard({ role = "reception", compact = false,
         <div>
           <h3 className="apb-title">📅 {compact ? "Today's appointments" : "Appointments"}</h3>
           <div className="apb-sub">
-            {loading ? "Loading…" : error ? "" : `${counts.total} booked · ${counts.waiting} to come · ${counts.inclinic} in clinic · ${counts.done} completed`}
+            {loading ? "Loading…" : error ? "" : `${counts.total} booked · ${counts.waiting} to come · ${counts.inclinic} visit open · ${counts.done} completed`}
           </div>
         </div>
         <div className="apb-head-actions">
