@@ -413,6 +413,85 @@ const ConsentSection = ({ patientName, patientAge, consent, setConsent }) => {
 /* ═══════════════════════════════════════════
    MAIN FORM
 ═══════════════════════════════════════════ */
+/* ══════════════════════════════════════════
+   WHEN IS THE VISIT?  (asked once, after "Register Patient")
+   • Now  — the patient is here: visit today at the time shown (editable)
+   • Later — booked by phone: appointment on that day; the visit is created
+     automatically on the appointment day. Both appear in the Appointments app.
+══════════════════════════════════════════ */
+function VisitWhenDialog({ name, saving, onCancel, onConfirm }) {
+  const pad = (n) => String(n).padStart(2, "0");
+  const now = new Date();
+  const todayIso = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  const nowTime = `${pad(now.getHours())}:${pad(now.getMinutes())}`;
+  const [mode, setMode] = useState("now");
+  const [date, setDate] = useState(todayIso);
+  const [time, setTime] = useState(nowTime);
+  const later = mode === "later";
+  const d = later ? date : todayIso;
+  const valid = d && time && d >= todayIso && (!later || d > todayIso);
+  const fmt = (iso, t) => {
+    const [y, m, dd] = iso.split("-").map(Number);
+    const dt = new Date(y, m - 1, dd);
+    const [h, mi] = t.split(":").map(Number);
+    return `${dt.toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short", year: "numeric" })}, ${h % 12 || 12}:${pad(mi)} ${h >= 12 ? "PM" : "AM"}`;
+  };
+  const pick = (m) => {
+    setMode(m);
+    if (m === "later" && date <= todayIso) { const t = new Date(); t.setDate(t.getDate() + 1); setDate(`${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(t.getDate())}`); setTime("11:00"); }
+    if (m === "now") { setTime(nowTime); }
+  };
+  const box = (on) => ({
+    flex: "1 1 200px", textAlign: "left", cursor: "pointer", borderRadius: 12, padding: "12px 14px",
+    border: on ? "2px solid #1d6fa4" : "1.5px solid #dbe3ee", background: on ? "#eff6ff" : "#fff", fontFamily: "inherit",
+  });
+  return (
+    <div role="dialog" aria-modal="true" aria-label="When is the visit?" onClick={onCancel}
+      style={{ position: "fixed", inset: 0, zIndex: 2000, background: "rgba(10,25,55,0.45)", display: "flex", alignItems: "center", justifyContent: "center", padding: 16, fontFamily: "'Plus Jakarta Sans', sans-serif" }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, width: "100%", maxWidth: 480, padding: "22px 22px 18px", boxShadow: "0 20px 60px rgba(10,25,55,0.25)" }}>
+        <div style={{ fontSize: 17, fontWeight: 800, color: "#0b2d4e" }}>When is the visit?</div>
+        <div style={{ fontSize: 12.5, color: "#64748b", marginTop: 2, marginBottom: 14 }}>For <strong>{name}</strong></div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+          <button type="button" style={box(!later)} onClick={() => pick("now")} aria-pressed={!later}>
+            <div style={{ fontWeight: 800, color: "#0b2d4e" }}>🩺 Now — patient is here</div>
+            <div style={{ fontSize: 12, color: "#64748b", marginTop: 3 }}>Visit today → goes to the Doctor's dashboard</div>
+          </button>
+          <button type="button" style={box(later)} onClick={() => pick("later")} aria-pressed={later}>
+            <div style={{ fontWeight: 800, color: "#0b2d4e" }}>📅 Later — book appointment</div>
+            <div style={{ fontSize: 12, color: "#64748b", marginTop: 3 }}>The visit is created on that day</div>
+          </button>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: later ? "1fr 1fr" : "1fr", gap: 12 }}>
+          {later && (
+            <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 11, fontWeight: 700, color: "#475569", textTransform: "uppercase" }}>
+              Date
+              <input type="date" min={todayIso} value={date} onChange={(e) => setDate(e.target.value)} aria-label="Appointment date"
+                style={{ padding: "9px 11px", border: "1.5px solid #dbe3ee", borderRadius: 9, fontSize: 14, fontFamily: "inherit" }} />
+            </label>
+          )}
+          <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 11, fontWeight: 700, color: "#475569", textTransform: "uppercase" }}>
+            Time
+            <input type="time" value={time} onChange={(e) => setTime(e.target.value)} aria-label="Visit time"
+              style={{ padding: "9px 11px", border: "1.5px solid #dbe3ee", borderRadius: 9, fontSize: 14, fontFamily: "inherit" }} />
+          </label>
+        </div>
+        <div style={{ marginTop: 12, fontSize: 13, color: valid ? "#166534" : "#b45309", background: valid ? "#f0fdf4" : "#fffbeb", borderRadius: 9, padding: "8px 12px" }}>
+          {!valid ? (later ? "Choose a date after today." : "Choose the time.")
+            : later ? <>📅 Appointment on <strong>{fmt(d, time)}</strong> — shown in Appointments and in the Appointments app.</>
+            : <>🩺 Visit <strong>today, {fmt(d, time).split(", ").pop()}</strong> — shown in Today's appointments and on the Doctor's dashboard.</>}
+        </div>
+        <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+          <button type="button" onClick={onCancel} style={{ flex: 1, padding: 11, borderRadius: 10, border: "1.5px solid #e2e8f4", background: "#fff", color: "#64748b", fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>Back</button>
+          <button type="button" disabled={!valid || saving} onClick={() => onConfirm({ date: d, time, later, label: later ? fmt(d, time) : fmt(d, time).split(", ").pop() })}
+            style={{ flex: 2, padding: 11, borderRadius: 10, border: "none", background: "linear-gradient(135deg,#1d4d7a,#1d6fa4)", color: "#fff", fontWeight: 700, cursor: "pointer", opacity: !valid || saving ? 0.5 : 1, fontFamily: "inherit" }}>
+            {saving ? "Saving…" : later ? "Register & book appointment" : "Register & create visit"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function ReceptionPatientForm() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -500,7 +579,10 @@ export default function ReceptionPatientForm() {
      re-send whole sections on every save, which is how one screen could
      overwrite what the other had entered.
      ══════════════════════════════════════════ */
-  const savePatient = async () => {
+  // New patient: after the checks, "When is the visit?" is asked (today now, or a later day).
+  const [askWhen, setAskWhen] = useState(false);
+
+  const savePatient = async (when = null) => {
     // ==========================
     // Required Validation
     // ==========================
@@ -562,6 +644,12 @@ export default function ReceptionPatientForm() {
       return;
     }
 
+    if (!savedId && !when) {          // new patient → ask the date & time first
+      setAskWhen(true);
+      return;
+    }
+    setAskWhen(false);
+
     setSaving(true);
 
     try {
@@ -583,6 +671,8 @@ export default function ReceptionPatientForm() {
         const res = await api.post("/patients", {
           ...patientPayload,
           medical_history: historyRef.current.getDrafts(),
+          visit_date: when?.date,          // today → visit now; later → appointment that day
+          visit_time: when?.time,
         });
         patientId = res.data.patient_id;
         setCreatedId(patientId);
@@ -598,7 +688,13 @@ export default function ReceptionPatientForm() {
       // ==========================
       await api.put(`/consent/${patientId}`, consent);
 
-      alert("Patient record saved successfully.");
+      if (when && when.later) {
+        alert(`Patient registered (case ${personal.case_number}).\n\nAppointment booked for ${when.label}. The visit will be created automatically on that day.`);
+      } else if (when) {
+        alert(`Patient registered (case ${personal.case_number}).\n\nVisit created for today at ${when.label} — now on the Doctor's dashboard.`);
+      } else {
+        alert("Patient record saved successfully.");
+      }
 
       navigate("/reception");
     } catch (err) {
@@ -830,7 +926,7 @@ export default function ReceptionPatientForm() {
             </button>
             <button
               className="rpf-save-btn"
-              onClick={savePatient}
+              onClick={() => savePatient()}
               disabled={saving || !consent.agreed || !personal.name || !personal.case_number || !personal.age || !personal.gender || !personal.mobile}
               style={(!consent.agreed || !personal.name || !personal.case_number || !personal.age || !personal.gender || !personal.mobile) ? { opacity: 0.55, cursor: "not-allowed" } : {}}
             >
@@ -852,6 +948,14 @@ export default function ReceptionPatientForm() {
 
         </div>
       </div>
+      {askWhen && (
+        <VisitWhenDialog
+          name={personal.name}
+          saving={saving}
+          onCancel={() => setAskWhen(false)}
+          onConfirm={(when) => savePatient(when)}
+        />
+      )}
     </>
   );
 }

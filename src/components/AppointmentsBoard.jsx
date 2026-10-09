@@ -70,7 +70,7 @@ function sourceLabel(a) {
 }
 
 /* ── patient picker (search existing patients) ── */
-function PatientPicker({ onPick, autoFocus }) {
+function PatientPicker({ onPick, autoFocus, onState }) {
   const [q, setQ] = useState("");
   const [list, setList] = useState([]);
   const [busy, setBusy] = useState(false);
@@ -88,6 +88,7 @@ function PatientPicker({ onPick, autoFocus }) {
     }, 250);
     return () => { stop = true; clearTimeout(t); };
   }, [q]);
+  useEffect(() => { if (onState) onState({ q: q.trim(), count: list.length, busy }); }, [q, list.length, busy]); // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <div>
       <input className="apb-in" placeholder="Search patient by name, case no. or mobile…" value={q} autoFocus={autoFocus}
@@ -104,7 +105,7 @@ function PatientPicker({ onPick, autoFocus }) {
           ))}
         </ul>
       )}
-      {!busy && q.trim().length >= 2 && list.length === 0 && <div className="apb-hint">No patient found.</div>}
+      {!busy && q.trim().length >= 2 && list.length === 0 && !onState && <div className="apb-hint">No patient found.</div>}
     </div>
   );
 }
@@ -128,18 +129,36 @@ function Dialog({ title, onClose, children, footer, width = 520 }) {
 }
 
 /* ── new / change appointment ── */
+function nextQuarter() {
+  const d = new Date(); d.setMinutes(Math.ceil((d.getMinutes() + 1) / 15) * 15, 0, 0);
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
 function ApptForm({ initial, onSaved, onClose }) {
   const editing = Boolean(initial?.id);
   const [patient, setPatient] = useState(initial?.patient || null);
-  const [walkIn, setWalkIn] = useState(false);
+  const [search, setSearch] = useState({ q: "", count: 0, busy: false });
   const [f, setF] = useState({
-    date: initial?.date || today(), time: initial?.time || "", treatment: initial?.treatment || "", notes: initial?.notes || "",
+    date: initial?.date || today(), time: initial?.time || nextQuarter(), treatment: initial?.treatment || "", notes: initial?.notes || "",
     name: "", mobile: "", age: "",
   });
+  const [typed, setTyped] = useState({ name: false, mobile: false });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const set = (k, v) => setF((x) => ({ ...x, [k]: v }));
-  const ready = f.date && f.time && (editing || patient || (walkIn && f.name.trim()));
+  // nobody found → the search text becomes the new person's name (or mobile, when it is a number)
+  // "nobody found" is kept while a new search is running, so the boxes do not flicker
+  const [settledNoMatch, setSettledNoMatch] = useState(false);
+  useEffect(() => { if (!search.busy) setSettledNoMatch(search.q.length >= 2 && search.count === 0); }, [search]);
+  const noMatch = !patient && search.q.length >= 2 && settledNoMatch;
+  const isNumber = /^[+\d\s-]{6,}$/.test(search.q);
+  const newName = typed.name ? f.name : (isNumber ? "" : search.q);
+  const newMobile = typed.mobile ? f.mobile : (isNumber ? search.q.replace(/[^\d+]/g, "") : "");
+  const why = editing ? (!f.date ? "Choose the date." : !f.time ? "Choose the time." : "")
+    : patient || (noMatch && newName.trim()) ? (!f.date ? "Choose the date." : !f.time ? "Choose the time." : "")
+    : search.count > 0 ? "Choose the patient from the list."
+    : noMatch ? "Type the patient's name."
+    : "Search the patient by name, case no. or mobile.";
+  const ready = !why;
   const save = async () => {
     setBusy(true); setErr("");
     try {
@@ -148,7 +167,7 @@ function ApptForm({ initial, onSaved, onClose }) {
         res = await api.put(`/appointments/${initial.id}`, { date: f.date, time: f.time, treatment: f.treatment, notes: f.notes });
       } else {
         res = await api.post("/appointments", {
-          ...(patient ? { patient_id: patient.id } : { name: f.name, mobile: f.mobile, age: f.age }),
+          ...(patient ? { patient_id: patient.id } : { name: newName.trim(), mobile: newMobile.trim(), age: f.age }),
           date: f.date, time: f.time, treatment: f.treatment, notes: f.notes, source: "clinic",
         });
       }
@@ -159,6 +178,7 @@ function ApptForm({ initial, onSaved, onClose }) {
   return (
     <Dialog title={editing ? `Change appointment — ${initial.name}` : "New appointment"} onClose={onClose}
       footer={<>
+        {why && <span className="apb-why" role="status">{why}</span>}
         <button type="button" className="apb-btn" onClick={onClose}>Cancel</button>
         <button type="button" className="apb-btn apb-main" disabled={!ready || busy} onClick={save}>{busy ? "Saving…" : editing ? "Save changes" : "Book appointment"}</button>
       </>}>
@@ -168,23 +188,28 @@ function ApptForm({ initial, onSaved, onClose }) {
             <div><b>{patient.name}</b> <span>#{patient.case_number}{patient.mobile ? ` · ${patient.mobile}` : ""}</span></div>
             <button type="button" className="apb-link" onClick={() => setPatient(null)}>Change</button>
           </div>
-        ) : walkIn ? (
-          <div className="apb-grid">
-            <label className="apb-f apb-wide"><span>Name *</span><input className="apb-in" value={f.name} onChange={(e) => set("name", e.target.value)} autoFocus /></label>
-            <label className="apb-f"><span>Mobile</span><input className="apb-in" inputMode="tel" value={f.mobile} onChange={(e) => set("mobile", e.target.value)} /></label>
-            <label className="apb-f"><span>Age</span><input className="apb-in" inputMode="numeric" value={f.age} onChange={(e) => set("age", e.target.value.replace(/\D/g, "").slice(0, 3))} /></label>
-            <div className="apb-wide apb-hint">Not registered yet — link the booking to the patient after registration (🔗 Link).
-              {" "}<button type="button" className="apb-link" onClick={() => setWalkIn(false)}>Search registered patients instead</button></div>
-          </div>
         ) : (
           <>
-            <PatientPicker onPick={setPatient} autoFocus />
-            <div className="apb-hint" style={{ marginTop: 8 }}>New patient, not registered yet? <button type="button" className="apb-link" onClick={() => setWalkIn(true)}>Type the name</button></div>
+            <label className="apb-f"><span>Patient *</span></label>
+            <PatientPicker onPick={setPatient} autoFocus onState={setSearch} />
+            {noMatch && (
+              <div className="apb-newperson">
+                <div className="apb-newperson-h">🆕 Not registered yet — book with name and mobile</div>
+                <div className="apb-grid">
+                  <label className="apb-f apb-wide"><span>Name *</span><input className="apb-in" value={newName}
+                    onChange={(e) => { setTyped((t) => ({ ...t, name: true })); set("name", e.target.value); }} /></label>
+                  <label className="apb-f"><span>Mobile</span><input className="apb-in" inputMode="tel" value={newMobile}
+                    onChange={(e) => { setTyped((t) => ({ ...t, mobile: true })); set("mobile", e.target.value); }} /></label>
+                  <label className="apb-f"><span>Age</span><input className="apb-in" inputMode="numeric" value={f.age} onChange={(e) => set("age", e.target.value.replace(/\D/g, "").slice(0, 3))} /></label>
+                </div>
+                <div className="apb-hint" style={{ marginTop: 6 }}>When the patient comes, register them — the booking is linked by mobile and gets the case number.</div>
+              </div>
+            )}
           </>
         )
       )}
       <div className="apb-grid" style={{ marginTop: 12 }}>
-        <label className="apb-f"><span>Date *</span><input className="apb-in" type="date" value={f.date} onChange={(e) => set("date", e.target.value)} /></label>
+        <label className="apb-f"><span>Date *</span><input className="apb-in" type="date" min={editing ? undefined : today()} value={f.date} onChange={(e) => set("date", e.target.value)} /></label>
         <label className="apb-f"><span>Time *</span><input className="apb-in" type="time" value={f.time} onChange={(e) => set("time", e.target.value)} /></label>
         <label className="apb-f apb-wide"><span>Treatment</span><input className="apb-in" placeholder="e.g. RCT IRT 47 – 2nd sitting" value={f.treatment} onChange={(e) => set("treatment", e.target.value)} /></label>
         <label className="apb-f apb-wide"><span>Notes</span><input className="apb-in" value={f.notes} onChange={(e) => set("notes", e.target.value)} /></label>
@@ -504,6 +529,9 @@ function Styles() {
       .apb-picks button { width: 100%; text-align: left; background: #fff; border: 0; border-bottom: 1px solid #f1f4f8; padding: 9px 12px; font: inherit; font-size: 13.5px; cursor: pointer; }
       .apb-picks button:hover { background: #f3f7fc; }
       .apb-picks span { color: #64748b; font-size: 12.5px; }
+      .apb-why { margin-right: auto; align-self: center; font-size: 12.5px; color: #92400e; }
+      .apb-newperson { margin-top: 10px; border: 1px dashed #fcd34d; background: #fffbeb; border-radius: 10px; padding: 10px 12px; }
+      .apb-newperson-h { font-size: 12.5px; font-weight: 800; color: #92400e; margin-bottom: 8px; }
       .apb-chosen { display: flex; justify-content: space-between; align-items: center; gap: 10px; background: #f3f7fc; border: 1px solid #c9daee; border-radius: 9px; padding: 9px 12px; font-size: 14px; }
       .apb-chosen span { color: #64748b; font-size: 12.5px; }
       @media (max-width: 680px) {
