@@ -710,51 +710,27 @@ function toLetterData(p) {
 }
 
 /* ─── Follow-up appointment ───────────────────────────────────────
-   Consultation already books the follow-up when it is saved. Booking it again
-   here used to put the same patient in the appointment list twice for the same
-   day. Now: if this patient already has a follow-up on that date it is reused
-   (only its time is updated when a time was given); otherwise one is created.
-   Returns "none" | "kept" | "updated" | "created" | "failed".                   */
-async function bookFollowUp({ name, mobile, caseNumber, date, time, diagnosis }) {
+   Appointments live in Supabase (the same list as the Appointments app).
+   Saving the prescription already books / moves / cancels the follow-up on the
+   server (one booking per patient per day). This call only makes sure it is
+   there and tells the doctor when the booking could not be made.
+   Returns "none" | "kept" | "updated" | "moved" | "created" | "failed".          */
+async function bookFollowUp({ visitId, name, mobile, caseNumber, date, time, diagnosis, treatment }) {
   if (!date) return "none";
   try {
-    const res = await api.get(`/appointments`);
-    const appts = Array.isArray(res.data) ? res.data : [];
-    const samePatient = a =>
-      (caseNumber && a.case_number && a.case_number === caseNumber) ||
-      (!caseNumber && name && a.name && a.name === name);
-    const existing = appts.find(a =>
-      a.date === date && samePatient(a) &&
-      (a.source === "prescription" || a.source === "consultation"));
-
-    if (existing) {
-      if (!time || existing.time === time) return "kept";
-      await api.put(`/appointments/${existing.id}`, {
-        source:      existing.source || "prescription",
-        name:        existing.name || name || "Patient",
-        mobile:      existing.mobile || mobile || "",
-        case_number: existing.case_number || caseNumber || "",
-        date,
-        time,
-        treatment:   existing.treatment || "Follow-up",
-        notes:       existing.notes || (diagnosis ? `Follow-up for: ${diagnosis}` : "Follow-up appointment"),
-        status:      existing.status || "pending",
-      });
-      return "updated";
-    }
-
-    await api.post(`/appointments`, {
+    const res = await api.post(`/appointments`, {
       source:      "prescription",
+      visit_id:    visitId || undefined,
       name:        name || "Patient",
       mobile:      mobile || "",
       case_number: caseNumber || "",
       date,
-      time:        time || "09:00",
-      treatment:   "Follow-up",
+      time:        time || "11:00",
+      treatment:   treatment || "Follow-up",
       notes:       diagnosis ? `Follow-up for: ${diagnosis}` : "Follow-up appointment",
       status:      "pending",
     });
-    return "created";
+    return res.data?.result || "created";
   } catch (apptErr) {
     console.warn("Could not create/update follow-up appointment:", apptErr);
     return "failed";
@@ -1345,6 +1321,7 @@ function PreviousPrescriptions({
 
       // Book/update appointment if follow-up date is set
       const booked = await bookFollowUp({
+        visitId:    editP.visit_id,
         name:       payload.patient_name || editP.patient_name,
         mobile:     editP.patient_mobile || editP.mobile || patientMobile,
         caseNumber: payload.case_number || editP.case_number,
@@ -1716,7 +1693,7 @@ export default function Prescription({ visitId, patient = null, consultationData
       setSavedData(previewData);
 
       // Book appointment if follow-up date is set (re-uses the one Consultation booked)
-      const booked = await bookFollowUp({ name: patientName.trim(), mobile: patientMobile, caseNumber, date: followUpDate, time: followUpTime, diagnosis });
+      const booked = await bookFollowUp({ visitId, name: patientName.trim(), mobile: patientMobile, caseNumber, date: followUpDate, time: followUpTime, diagnosis });
       setBookingNote(booked === "failed" ? "The follow-up appointment could not be booked — please add it in Appointments." : "");
 
       setConfirmed(true); setShowPreview(false); setCopiedNote("");

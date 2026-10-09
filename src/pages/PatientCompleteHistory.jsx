@@ -25,6 +25,8 @@ import api from "../api/api";
                            intra-oral …), opened in a viewer
         💊 Prescriptions – every prescription (a prescription saved twice is
                            shown once), with its medicines
+        📅 Appointments  – upcoming and past appointments (Supabase, the same list
+                           as the Appointments app; hidden when not connected)
         🧾 Bills         – treatments charged, discount, paid, balance; every
                            receipt (opens the PDF)
         📋 Medical       – demographics, medical history, allergies, habits,
@@ -311,6 +313,7 @@ export default function PatientCompleteHistory({ patientId, onBack, onCreateVisi
   const [history, setHistory] = useState(null);
   const [billing, setBilling] = useState(null);          // null = not loaded / not available
   const [billingState, setBillingState] = useState("loading"); // loading | ok | none
+  const [appts, setAppts] = useState(null);            // {upcoming, past} from Supabase; null = not available
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [creating, setCreating] = useState(false);
@@ -321,7 +324,7 @@ export default function PatientCompleteHistory({ patientId, onBack, onCreateVisi
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true); setError(null); setHistory(null); setBilling(null); setBillingState("loading");
+    setLoading(true); setError(null); setHistory(null); setBilling(null); setBillingState("loading"); setAppts(null);
     (async () => {
       try {
         const [res, mh] = await Promise.all([
@@ -345,6 +348,9 @@ export default function PatientCompleteHistory({ patientId, onBack, onCreateVisi
     api.get(`/clinic-billing/patients/${patientId}/account`)
       .then((res) => { if (!cancelled) { setBilling(res.data); setBillingState("ok"); } })
       .catch(() => { if (!cancelled) setBillingState("none"); });
+    api.get(`/patients/${patientId}/appointments`)
+      .then((res) => { if (!cancelled && res.data && Array.isArray(res.data.upcoming)) setAppts(res.data); })
+      .catch(() => {});
     return () => { cancelled = true; };
   }, [patientId]);
 
@@ -405,6 +411,7 @@ export default function PatientCompleteHistory({ patientId, onBack, onCreateVisi
     ["images", "🩻 X-rays & photos", allImages.length],
     ["prescriptions", "💊 Prescriptions", allPrescriptions.length],
     ...(billingState === "ok" ? [["bills", "🧾 Bills", billing?.receipts?.length || 0]] : []),
+    ...(appts ? [["appointments", "📅 Appointments", appts.upcoming.length + appts.past.length]] : []),
     ["medical", "📋 Medical", null],
   ];
 
@@ -451,6 +458,10 @@ export default function PatientCompleteHistory({ patientId, onBack, onCreateVisi
           <div className="pch-stat"><span>Treatments done</span><b>{treatmentVisits.length}</b><small>{treatmentVisits[0] ? `last: ${fmtDate(treatmentVisits[0].date)}` : ""}</small></div>
           <div className="pch-stat"><span>X-rays &amp; photos</span><b>{allImages.length}</b><small>{IMAGE_GROUPS.map((g) => [g.short, allImages.filter((i) => groupOfImage(i).key === g.key).length]).filter(([, n]) => n).map(([l, n]) => `${n} ${l}`).join(" · ")}</small></div>
           <div className="pch-stat"><span>Prescriptions</span><b>{allPrescriptions.length}</b><small>{allPrescriptions[0] ? `last: ${fmtDate(allPrescriptions[0].date || allPrescriptions[0].visit.date)}` : ""}</small></div>
+          {appts && (
+            <div className="pch-stat"><span>Next appointment</span><b>{appts.upcoming[0] ? fmtDate(appts.upcoming[0].date) : "—"}</b>
+              <small>{appts.upcoming[0] ? [fmtTime(appts.upcoming[0].time), appts.upcoming[0].treatment].filter(Boolean).join(" · ") : "none booked"}</small></div>
+          )}
           {billingState === "ok" && t && (
             <div className={`pch-stat ${t.balance > 0.004 ? "pch-stat-due" : ""}`}><span>Balance due</span><b>{t.balance > 0.004 ? inr(t.balance) : "Nil"}</b><small>paid {inr(t.received ?? t.paid)}</small></div>
           )}
@@ -678,6 +689,32 @@ export default function PatientCompleteHistory({ patientId, onBack, onCreateVisi
             </>
           )}
 
+          {/* ───── APPOINTMENTS (Supabase — shared with the Appointments app) ───── */}
+          {tab === "appointments" && appts && (() => {
+            const STATE = { SCHEDULED: "Scheduled", COMPLETED: "Completed", CANCELLED: "Cancelled" };
+            const n = new Date(); const today = `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}-${String(n.getDate()).padStart(2, "0")}`;
+            const row = (a) => [
+              <span key="d" style={{ whiteSpace: "nowrap" }}><b>{fmtDate(a.date)}</b></span>,
+              fmtTime(a.time),
+              a.treatment,
+              a.doctor_name,
+              <span key="s" className={`pch-ap pch-ap-${a.state === "SCHEDULED" && a.date < today ? "missed" : a.state.toLowerCase()}`}>{a.state === "SCHEDULED" && a.date < today ? "Not attended" : STATE[a.state] || a.state}</span>,
+              a.notes,
+            ];
+            return (
+              <>
+                <Block title={`Upcoming (${appts.upcoming.length})`} icon="📅">
+                  {appts.upcoming.length ? <Table headers={["Date", "Time", "Treatment", "Doctor", "Status", "Notes"]} rows={appts.upcoming.map(row)} />
+                    : <div className="pch-muted">No upcoming appointment.</div>}
+                </Block>
+                <Block title={`Past (${appts.past.length})`} icon="🗂">
+                  {appts.past.length ? <Table headers={["Date", "Time", "Treatment", "Doctor", "Status", "Notes"]} rows={appts.past.map(row)} />
+                    : <div className="pch-muted">No past appointments.</div>}
+                </Block>
+              </>
+            );
+          })()}
+
           {/* ───── MEDICAL ───── */}
           {tab === "medical" && (
             <>
@@ -841,6 +878,11 @@ function Styles() {
       .pch-receipts { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
       .pch-receipt { font-family: inherit; font-size: 12.5px; padding: 6px 11px; border-radius: 8px; border: 1px solid #a7f3d0; background: #ecfdf5; color: #065f46; cursor: pointer; }
       .pch-receipt:hover { background: #d1fae5; }
+      .pch-ap { font-size: 11.5px; font-weight: 800; border-radius: 20px; padding: 2px 9px; white-space: nowrap; }
+      .pch-ap-scheduled { background: #eff6ff; color: #1d4ed8; }
+      .pch-ap-completed { background: #dcfce7; color: #166534; }
+      .pch-ap-cancelled { background: #fee2e2; color: #991b1b; }
+      .pch-ap-missed { background: #fef3c7; color: #92400e; }
       .pch-viewer { position: fixed; inset: 0; z-index: 3000; background: rgba(2,6,23,.9); display: flex; flex-direction: column; padding: 14px; color: #fff;
         font-family: 'Plus Jakarta Sans', 'DM Sans', system-ui, sans-serif; }
       .pch-viewer-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }

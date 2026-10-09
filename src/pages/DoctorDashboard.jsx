@@ -2,6 +2,7 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import api from "../api/api";
 import PatientCompleteHistory from "./PatientCompleteHistory";
+import AppointmentsBoard from "../components/AppointmentsBoard";
 
 /* ─── inject styles once ─── */
 const injectStyles = () => {
@@ -1079,279 +1080,11 @@ const ConfirmModal = ({ visit, onConfirm, onCancel, closing }) => (
     </div>
   </div>
 );
-/* helpers for diary */
-const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
-const formatDateLabel = (dateStr) => {
-  if (!dateStr) return "—";
-  try {
-    const d = new Date(dateStr);
-    const today = new Date(); today.setHours(0,0,0,0);
-    const tomorrow = new Date(); tomorrow.setDate(today.getDate()+1);
-    const yesterday = new Date(); yesterday.setDate(today.getDate()-1);
-    if (d.toDateString()===today.toDateString()) return "Today";
-    if (d.toDateString()===tomorrow.toDateString()) return "Tomorrow";
-    if (d.toDateString()===yesterday.toDateString()) return "Yesterday";
-    return d.toLocaleDateString("en-IN",{weekday:"short",day:"numeric",month:"short",year:"numeric"});
-  } catch { return dateStr; }
-};
-const formatTime = (t) => {
-  if (!t) return "";
-  try { const [h,m]=t.split(":"); const hr=parseInt(h); return `${hr%12||12}:${m} ${hr>=12?"PM":"AM"}`; }
-  catch { return t; }
-};
-const EMPTY_APPT = { name:"", date:"", time:"", mobile:"", case_number:"", treatment:"", notes:"" };
-
-const AppointmentModal = ({ initial, onSave, onClose, saving }) => {
-  const [form, setForm] = useState(initial || EMPTY_APPT);
-  const set = (k,v) => setForm(p=>({...p,[k]:v}));
-  const isEdit = !!initial?.appt_id;
-  return (
-    <div className="appt-overlay" onClick={onClose}>
-      <div className="appt-modal" onClick={e=>e.stopPropagation()}>
-        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:22}}>
-          <div>
-            <div style={{fontSize:17,fontWeight:800,color:"#0b2d4e"}}>{isEdit?"✏️ Edit Appointment":"📅 New Appointment"}</div>
-            <div style={{fontSize:12,color:"#94a3b8",marginTop:2}}>{isEdit?"Update appointment details":"Book a new patient appointment"}</div>
-          </div>
-          <button onClick={onClose} style={{width:32,height:32,borderRadius:8,border:"1.5px solid #e2e8f4",background:"#f7f9fe",fontSize:16,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>✕</button>
-        </div>
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"14px 16px"}}>
-          <div style={{gridColumn:"1/-1"}}>
-            <label className="appt-input-label">Patient Name *</label>
-            <input className="appt-input" placeholder="Full name" value={form.name} onChange={e=>set("name",e.target.value)}/>
-          </div>
-          <div>
-            <label className="appt-input-label">Date *</label>
-            <input className="appt-input" type="date" value={form.date} onChange={e=>set("date",e.target.value)}/>
-          </div>
-          <div>
-            <label className="appt-input-label">Time *</label>
-            <input className="appt-input" type="time" value={form.time} onChange={e=>set("time",e.target.value)}/>
-          </div>
-          <div>
-            <label className="appt-input-label">Mobile Number *</label>
-            <input className="appt-input" placeholder="10-digit mobile" value={form.mobile} onChange={e=>set("mobile",e.target.value)}/>
-          </div>
-          <div>
-            <label className="appt-input-label">Case Number (optional)</label>
-            <input className="appt-input" placeholder="e.g. C-1023" value={form.case_number} onChange={e=>set("case_number",e.target.value)}/>
-          </div>
-          <div style={{gridColumn:"1/-1"}}>
-            <label className="appt-input-label">Treatment / Purpose (optional)</label>
-            <input className="appt-input" placeholder="e.g. Root canal, cleaning…" value={form.treatment} onChange={e=>set("treatment",e.target.value)}/>
-          </div>
-          <div style={{gridColumn:"1/-1"}}>
-            <label className="appt-input-label">Notes (optional)</label>
-            <textarea className="appt-input" rows={2} placeholder="Any additional notes…" value={form.notes} onChange={e=>set("notes",e.target.value)} style={{resize:"vertical",minHeight:60}}/>
-          </div>
-        </div>
-        <div style={{display:"flex",gap:10,marginTop:22}}>
-          <button onClick={onClose} style={{flex:1,padding:12,borderRadius:10,background:"transparent",color:"#64748b",border:"1.5px solid #e2e8f4",fontFamily:"'Plus Jakarta Sans',sans-serif",fontSize:14,fontWeight:600,cursor:"pointer"}}>Cancel</button>
-          <button disabled={saving||!form.name.trim()||!form.date||!form.time||!form.mobile.trim()} onClick={()=>onSave(form)}
-            style={{flex:2,padding:12,borderRadius:10,background:"linear-gradient(135deg,#1d4d7a,#1d6fa4)",color:"#fff",border:"none",fontFamily:"'Plus Jakarta Sans',sans-serif",fontSize:14,fontWeight:700,cursor:"pointer",opacity:(saving||!form.name.trim()||!form.date||!form.time||!form.mobile.trim())?0.55:1}}>
-            {saving?<><span className="appt-rdb-spinner" style={{marginRight:6}}/> Saving…</>:(isEdit?"✔ Update":"✔ Book Appointment")}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-const DeleteConfirmModal = ({ appt, onConfirm, onCancel, loading }) => (
-  <div className="appt-overlay" onClick={onCancel}>
-    <div className="visit-modal" onClick={e=>e.stopPropagation()}>
-      <div style={{width:52,height:52,borderRadius:14,background:"linear-gradient(135deg,#fff1f2,#ffe4e6)",border:"1.5px solid #fca5a5",display:"flex",alignItems:"center",justifyContent:"center",fontSize:24,marginBottom:18}}>🗑️</div>
-      <div style={{fontSize:17,fontWeight:800,color:"#0b2d4e",marginBottom:8}}>Delete Appointment?</div>
-      <div style={{fontSize:13.5,color:"#64748b",lineHeight:1.65,marginBottom:24}}>
-        Delete appointment for <strong style={{color:"#0b2d4e"}}>{appt?.name}</strong> on <strong style={{color:"#0b2d4e"}}>{formatDateLabel(appt?.date)}</strong>? This cannot be undone.
-      </div>
-      <div style={{display:"flex",gap:10}}>
-        <button onClick={onCancel} style={{flex:1,padding:12,borderRadius:10,background:"transparent",color:"#64748b",border:"1.5px solid #e2e8f4",fontFamily:"'Plus Jakarta Sans',sans-serif",fontSize:14,fontWeight:600,cursor:"pointer"}}>Cancel</button>
-        <button onClick={onConfirm} disabled={loading} style={{flex:1,padding:12,borderRadius:10,background:"linear-gradient(135deg,#dc2626,#ef4444)",color:"#fff",border:"none",fontFamily:"'Plus Jakarta Sans',sans-serif",fontSize:14,fontWeight:700,cursor:"pointer",opacity:loading?0.65:1}}>
-          {loading?"Deleting…":"🗑️ Delete"}
-        </button>
-      </div>
-    </div>
-  </div>
-);
-
-const ApptCard = ({ appt, onEdit, onDelete, onToggle }) => {
-  const done = appt.status === "completed";
-  return (
-    <div className={`appt-card ${done?"completed":"pending"}`}>
-      <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:12}}>
-        <div style={{flex:1,minWidth:0}}>
-          <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",marginBottom:6}}>
-            <span style={{fontSize:14.5,fontWeight:800,color:done?"#374151":"#0b2d4e",textDecoration:done?"line-through":"none"}}>{appt.name}</span>
-            <span className={`appt-status-badge ${done?"completed":"pending"}`}>{done?"✔ Completed":"⏳ Pending"}</span>
-          </div>
-          <div style={{display:"flex",flexWrap:"wrap",gap:"6px 16px",fontSize:12.5,color:"#64748b"}}>
-            <span>🕐 {formatTime(appt.time)}</span>
-            {appt.mobile      && <span>📱 {appt.mobile}</span>}
-            {appt.case_number && <span>📁 {appt.case_number}</span>}
-            {appt.treatment   && <span>🦷 {appt.treatment}</span>}
-          </div>
-          {appt.notes && <div style={{marginTop:8,fontSize:12,color:"#94a3b8",fontStyle:"italic",background:"#f8faff",borderRadius:7,padding:"5px 10px",display:"inline-block"}}>📝 {appt.notes}</div>}
-        </div>
-        <div style={{display:"flex",gap:6,flexShrink:0}}>
-          <button className={`appt-icon-btn ${done?"":"success"}`} title={done?"Mark Pending":"Mark Complete"} onClick={()=>onToggle(appt)}>{done?"↩":"✔"}</button>
-          {!done && <button className="appt-icon-btn" title="Edit" onClick={()=>onEdit(appt)}>✏️</button>}
-          <button className="appt-icon-btn danger" title="Delete" onClick={()=>onDelete(appt)}>🗑</button>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-const AppointmentsSection = () => {
-  const [appointments, setAppointments] = useState([]);
-  const [loadingAppts, setLoadingAppts] = useState(true);
-  const [activeTab,    setActiveTab]    = useState("upcoming");
-  const [showModal,    setShowModal]    = useState(false);
-  const [editAppt,     setEditAppt]     = useState(null);
-  const [deleteAppt,   setDeleteAppt]   = useState(null);
-  const [saving,       setSaving]       = useState(false);
-  const [deleting,     setDeleting]     = useState(false);
-  const now = new Date();
-  const [filterMonth, setFilterMonth]   = useState(now.getMonth()+1);
-  const [filterYear,  setFilterYear]    = useState(now.getFullYear());
-  const [filterDate,  setFilterDate]    = useState("");
-
-  useEffect(()=>{ loadAppts(); },[]);
-
-  const loadAppts = async () => {
-    setLoadingAppts(true);
-    try { const r = await api.get("/appointments"); setAppointments(r.data||[]); }
-    catch(e){ console.error(e); setAppointments([]); }
-    finally { setLoadingAppts(false); }
-  };
-
-  const filtered = appointments.filter(a=>{
-    if (!a.date) return false;
-    const d = new Date(a.date);
-    const today = new Date(); today.setHours(0,0,0,0);
-    if (activeTab==="upcoming"){ const ad=new Date(a.date); ad.setHours(0,0,0,0); if(a.status==="completed"||ad<today) return false; }
-    if (activeTab==="completed" && a.status!=="completed") return false;
-    if (filterDate) return a.date===filterDate;
-    if (filterMonth&&filterYear) return d.getMonth()+1===filterMonth && d.getFullYear()===filterYear;
-    return true;
-  }).sort((a,b)=>{
-    const da=new Date(`${a.date}T${a.time||"00:00"}`), db=new Date(`${b.date}T${b.time||"00:00"}`);
-    return activeTab==="completed" ? db-da : da-db;
-  });
-
-  const grouped = filtered.reduce((acc,a)=>{ if(!acc[a.date])acc[a.date]=[]; acc[a.date].push(a); return acc; },{});
-  const groupedKeys = Object.keys(grouped).sort((a,b)=> activeTab==="completed"?new Date(b)-new Date(a):new Date(a)-new Date(b));
-
-  const handleSave = async (form) => {
-    setSaving(true);
-    try {
-      if (form.appt_id){ const r=await api.put(`/appointments/${form.appt_id}`,form); setAppointments(p=>p.map(a=>a.appt_id===form.appt_id?r.data:a)); }
-      else              { const r=await api.post("/appointments",form);               setAppointments(p=>[r.data,...p]); }
-      setShowModal(false); setEditAppt(null);
-    } catch(e){ console.error(e); alert("Failed to save."); } finally { setSaving(false); }
-  };
-
-  const handleDelete = async () => {
-    if (!deleteAppt) return;
-    setDeleting(true);
-    try { await api.delete(`/appointments/${deleteAppt.appt_id}`); setAppointments(p=>p.filter(a=>a.appt_id!==deleteAppt.appt_id)); setDeleteAppt(null); }
-    catch(e){ console.error(e); alert("Failed to delete."); } finally { setDeleting(false); }
-  };
-
-  const handleToggle = async (appt) => {
-    const newStatus = appt.status==="completed"?"pending":"completed";
-    try { const r=await api.put(`/appointments/${appt.appt_id}`,{...appt,status:newStatus}); setAppointments(p=>p.map(a=>a.appt_id===appt.appt_id?r.data:a)); }
-    catch(e){ console.error(e); alert("Failed to update."); }
-  };
-
-  const pendingCount   = appointments.filter(a=>a.status!=="completed").length;
-  const completedCount = appointments.filter(a=>a.status==="completed").length;
-  const todayAppts     = appointments.filter(a=>a.date&&new Date(a.date).toDateString()===new Date().toDateString()&&a.status!=="completed").length;
-  const yearOptions    = []; for(let y=now.getFullYear()-2;y<=now.getFullYear()+2;y++) yearOptions.push(y);
-
-  return (
-    <div style={{background:"#fff",borderRadius:16,border:"1px solid rgba(226,232,244,0.9)",boxShadow:"0 2px 8px rgba(29,77,122,0.05),0 8px 24px rgba(29,77,122,0.07)",marginBottom:22,overflow:"hidden"}}>
-      {/* Header */}
-      <div style={{background:"linear-gradient(135deg,#0f4270,#1059a0)",padding:"20px 28px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-        <div style={{display:"flex",alignItems:"center",gap:12}}>
-          <div style={{width:38,height:38,borderRadius:10,background:"rgba(255,255,255,0.15)",border:"1px solid rgba(255,255,255,0.22)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18}}>📅</div>
-          <div>
-            <div style={{fontSize:15,fontWeight:800,color:"#fff"}}>Appointments Diary</div>
-            <div style={{fontSize:11.5,color:"rgba(255,255,255,0.6)",marginTop:1}}>{pendingCount} pending · {todayAppts} today · {completedCount} completed</div>
-          </div>
-        </div>
-        <button onClick={()=>{setEditAppt(null);setShowModal(true);}}
-          style={{display:"inline-flex",alignItems:"center",gap:7,padding:"9px 20px",borderRadius:10,background:"rgba(255,255,255,0.18)",border:"1.5px solid rgba(255,255,255,0.3)",color:"#fff",fontFamily:"'Plus Jakarta Sans',sans-serif",fontSize:13,fontWeight:700,cursor:"pointer"}}>
-          <span style={{fontSize:16}}>+</span> New Appointment
-        </button>
-      </div>
-
-      <div style={{padding:"20px 28px 28px"}}>
-        {/* Tabs */}
-        <div style={{display:"flex",gap:4,borderBottom:"2px solid #f0f4fb",marginBottom:20}}>
-          {[
-            {key:"upcoming", label:"Upcoming", count:appointments.filter(a=>{const d=new Date(a.date);d.setHours(0,0,0,0);const t=new Date();t.setHours(0,0,0,0);return a.status!=="completed"&&d>=t;}).length},
-            {key:"all",      label:"All",      count:appointments.length},
-            {key:"completed",label:"Completed",count:completedCount},
-          ].map(tab=>(
-            <button key={tab.key} className={`appt-tab ${activeTab===tab.key?"active":""}`} onClick={()=>setActiveTab(tab.key)}>
-              {tab.label}
-              <span style={{marginLeft:6,fontSize:10.5,fontWeight:700,background:activeTab===tab.key?"#1d4d7a":"#f0f4fb",color:activeTab===tab.key?"#fff":"#94a3b8",padding:"1px 7px",borderRadius:20}}>{tab.count}</span>
-            </button>
-          ))}
-        </div>
-
-        {/* Filters */}
-        <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap",marginBottom:20}}>
-          <span style={{fontSize:11.5,fontWeight:700,color:"#8899bb",letterSpacing:"0.7px",textTransform:"uppercase"}}>Filter:</span>
-          <input type="date" className="appt-filter-select" value={filterDate} onChange={e=>setFilterDate(e.target.value)}/>
-          <select className="appt-filter-select" value={filterMonth} onChange={e=>{setFilterMonth(Number(e.target.value));setFilterDate("");}}>
-            {MONTHS.map((m,i)=><option key={m} value={i+1}>{m}</option>)}
-          </select>
-          <select className="appt-filter-select" value={filterYear} onChange={e=>{setFilterYear(Number(e.target.value));setFilterDate("");}}>
-            {yearOptions.map(y=><option key={y} value={y}>{y}</option>)}
-          </select>
-          {filterDate && <button onClick={()=>setFilterDate("")} style={{padding:"7px 12px",borderRadius:8,border:"1.5px solid #e2e8f4",background:"#f7f9fe",color:"#64748b",cursor:"pointer",fontFamily:"'Plus Jakarta Sans',sans-serif",fontSize:12,fontWeight:600}}>✕ Clear</button>}
-          <span style={{marginLeft:"auto",fontSize:12,color:"#94a3b8",fontWeight:600}}>{filtered.length} appointment{filtered.length!==1?"s":""}</span>
-        </div>
-
-        {/* Content */}
-        {loadingAppts ? (
-          <div style={{textAlign:"center",padding:"40px 0",color:"#94a3b8"}}>
-            <span className="appt-rdb-spinner" style={{marginRight:8}}/> Loading…
-          </div>
-        ) : groupedKeys.length===0 ? (
-          <div className="appt-empty">
-            <div className="appt-empty-icon">📅</div>
-            <div style={{fontWeight:700,color:"#475569",marginBottom:6}}>No appointments found</div>
-            <div>Try adjusting the filters or book a new appointment.</div>
-            <button onClick={()=>{setEditAppt(null);setShowModal(true);}} style={{marginTop:16,display:"inline-flex",alignItems:"center",gap:7,padding:"10px 22px",borderRadius:10,background:"linear-gradient(135deg,#1d4d7a,#1d6fa4)",color:"#fff",border:"none",fontFamily:"'Plus Jakarta Sans',sans-serif",fontSize:13,fontWeight:700,cursor:"pointer"}}>
-              <span>+</span> Book Appointment
-            </button>
-          </div>
-        ) : (
-          <div style={{display:"flex",flexDirection:"column",gap:0}}>
-            {groupedKeys.map(dk=>(
-              <div key={dk}>
-                <div className="appt-date-group-header">
-                  {formatDateLabel(dk)}
-                  <span style={{fontSize:10.5,fontWeight:700,background:"#f0f4fb",color:"#8899bb",padding:"1px 8px",borderRadius:20}}>{grouped[dk].length}</span>
-                </div>
-                <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:8}}>
-                  {grouped[dk].map(a=><ApptCard key={a.appt_id} appt={a} onEdit={a=>{setEditAppt(a);setShowModal(true);}} onDelete={setDeleteAppt} onToggle={handleToggle}/>)}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {showModal  && <AppointmentModal initial={editAppt} onSave={handleSave} onClose={()=>{setShowModal(false);setEditAppt(null);}} saving={saving}/>}
-      {deleteAppt && <DeleteConfirmModal appt={deleteAppt} onConfirm={handleDelete} onCancel={()=>setDeleteAppt(null)} loading={deleting}/>}
-    </div>
-  );
-};
+/* ══════════════════════════════════════════
+   APPOINTMENTS — kept in Supabase, the same list as the Appointments app,
+   each booking linked to the patient (the old diary of this app is gone).
+══════════════════════════════════════════ */
+const AppointmentsSection = (props) => <AppointmentsBoard role="doctor" {...props} />;
 
 export default function DoctorDashboard() {
   const [visits,      setVisits]      = useState([]);
@@ -1364,6 +1097,7 @@ export default function DoctorDashboard() {
   const [showDebug,   setShowDebug]   = useState(false);
   const [rawSample,   setRawSample]   = useState(null);
   const navigate = useNavigate();
+  const [apptHistoryId, setApptHistoryId] = useState(null);   // history opened from Appointments
 
   useEffect(() => {
     injectStyles();
@@ -1537,8 +1271,8 @@ export default function DoctorDashboard() {
               <div style={{display:"flex",alignItems:"center",gap:12}}>
                 <div style={{width:38,height:38,borderRadius:10,background:"rgba(255,255,255,0.15)",border:"1px solid rgba(255,255,255,0.22)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18}}>📅</div>
                 <div>
-                  <div style={{fontSize:15,fontWeight:800,color:"#fff"}}>Appointments Diary</div>
-                  <div style={{fontSize:11.5,color:"rgba(255,255,255,0.6)",marginTop:1}}>Manage all patient appointments</div>
+                  <div style={{fontSize:15,fontWeight:800,color:"#fff"}}>Appointments</div>
+                  <div style={{fontSize:11.5,color:"rgba(255,255,255,0.6)",marginTop:1}}>Same list as the Appointments app · linked to patients</div>
                 </div>
               </div>
               <button
@@ -1547,10 +1281,20 @@ export default function DoctorDashboard() {
               >✕</button>
             </div>
             <div style={{padding:"24px 28px 28px"}}>
-              <AppointmentsSection />
+              <AppointmentsSection
+                onOpenVisit={(vid) => { setApptOpen(false); handleOpenVisit(vid); }}
+                onOpenHistory={(pid) => setApptHistoryId(pid)}
+              />
             </div>
           </div>
         </div>
+      )}
+      {apptHistoryId && (
+        <PatientCompleteHistory
+          patientId={apptHistoryId}
+          readOnlyLabel="Doctor — Read Only"
+          onBack={() => setApptHistoryId(null)}
+        />
       )}
 
       {/* ══ HEADER ══ */}
@@ -1582,7 +1326,7 @@ export default function DoctorDashboard() {
           <button
             className="dd-appt-nav-btn"
             onClick={() => setApptOpen(true)}
-            title="View Appointments Diary"
+            title="View appointments"
           >
             📅 Appointments
           </button>
@@ -1748,7 +1492,7 @@ export function AppointmentsPage() {
           <div className="dd-header-logo">🦷</div>
           <div>
             <p className="dd-header-clinic">Sri Satya Sai Oral Health Center &amp; Dental Clinic</p>
-            <p className="dd-header-sub">Dr. Rama Raju · MDS &nbsp;|&nbsp; Appointments Diary</p>
+            <p className="dd-header-sub">Dr. Rama Raju · MDS &nbsp;|&nbsp; Appointments</p>
           </div>
         </div>
         <div className="dd-header-right">
