@@ -133,7 +133,8 @@ function buildVisit(v, billing) {
   prescriptionsRaw.forEach((p) => {
     const meds = parseMeds(p.medicines);
     const key = [clean(p.date).slice(0, 10), norm(p.diagnosis), norm(p.advice),
-      meds.map((m) => [norm(m.name), norm(m.times), m.days, norm(m.when), norm(m.note)].join("|")).join("~")].join("#");
+      meds.map((m) => [norm(m.name), norm(m.times), m.days, norm(m.when), norm(m.note)].join("|")).join("~"),
+      (p.investigations || []).map((i) => `${norm(i.name)}:${norm(i.note)}`).join("~")].join("#");
     if (prescMap.has(key)) prescMap.get(key).copies += 1;
     else prescMap.set(key, { ...p, meds, copies: 1 });
   });
@@ -298,6 +299,16 @@ function Block({ title, icon, children, right }) {
     </section>
   );
 }
+function InvestigationList({ items }) {
+  const list = (Array.isArray(items) ? items : []).filter((i) => i && clean(i.name));
+  if (!list.length) return null;
+  return (
+    <div className="pch-inv">
+      <div className="pch-inv-h">🔬 Investigations advised</div>
+      <ul>{list.map((i, k) => <li key={k}><b>{i.name}</b>{i.group ? <span className="pch-muted"> · {i.group === "Radiograph" ? "X-ray / scan" : i.group}</span> : null}{i.note ? ` — ${i.note}` : ""}</li>)}</ul>
+    </div>
+  );
+}
 function MedTable({ meds }) {
   return (
     <Table headers={["Medicine", "Frequency", "Days", "Instructions"]}
@@ -333,6 +344,16 @@ export default function PatientCompleteHistory({ patientId, onBack, onCreateVisi
         ]);
         if (cancelled) return;
         setHistory(mh?.data || null);
+        // investigations advised are kept with each prescription (prescription addresses)
+        const anyVisit = res.data?.visits?.[0]?.visit_id;
+        if (anyVisit && (res.data.visits || []).some((v) => (v.prescriptions || []).length)) {
+          try {
+            const rx = await api.get(`/visits/${anyVisit}/prescriptions/history`);
+            const inv = new Map((Array.isArray(rx.data) ? rx.data : []).map((p) => [p.id, p.investigations || []]));
+            res.data.visits.forEach((v) => (v.prescriptions || []).forEach((p) => { if (inv.has(p.id)) p.investigations = inv.get(p.id); }));
+          } catch { /* shown without the investigations */ }
+          if (cancelled) return;
+        }
         setData(res.data);
         // the latest visit is opened; when that is today's visit still in progress, the one before it too
         const vs = res.data?.visits || [];
@@ -560,7 +581,8 @@ export default function PatientCompleteHistory({ patientId, onBack, onCreateVisi
                             {v.treatmentDone.length > 0 && step("Treatment done", lines(v.treatmentDone), "pch-step-done")}
                             {v.prescriptions.length > 0 && step("Prescription", v.prescriptions.map((p) => (
                               <div key={p.id} className="pch-rx">
-                                {p.meds.length ? <MedTable meds={p.meds} /> : <div className="pch-muted">No medicines — advice only.</div>}
+                                {p.meds.length ? <MedTable meds={p.meds} /> : !(p.investigations || []).length && <div className="pch-muted">No medicines — advice only.</div>}
+                <InvestigationList items={p.investigations} />
                               </div>
                             )))}
                             {(v.images.length > 0 || v.cbct.length > 0) && step("X-rays & photos", (
@@ -655,7 +677,8 @@ export default function PatientCompleteHistory({ patientId, onBack, onCreateVisi
                 right={<span className="pch-muted">{p.doctor ? (/^dr\.?\s/i.test(p.doctor) ? p.doctor : `Dr. ${p.doctor}`) : ""}</span>}>
                 <Fields rows={[["Diagnosis", clean(p.diagnosis)], ["Advice", clean(p.advice)],
                   ["Follow-up", p.follow_up_date ? `${fmtDate(p.follow_up_date)}${p.follow_up_time ? ` at ${fmtTime(p.follow_up_time)}` : ""}` : ""]]} />
-                {p.meds.length ? <MedTable meds={p.meds} /> : <div className="pch-muted">No medicines — advice only.</div>}
+                {p.meds.length ? <MedTable meds={p.meds} /> : !(p.investigations || []).length && <div className="pch-muted">No medicines — advice only.</div>}
+                <InvestigationList items={p.investigations} />
               </Block>
             ))
           )}
@@ -858,6 +881,9 @@ function Styles() {
       .pch-table th { background: #f1f5fa; color: #334155; font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; padding: 8px 12px; white-space: nowrap; }
       .pch-table td { padding: 8px 12px; border-top: 1px solid #eef2f7; vertical-align: top; color: #1e293b; }
       .pch-rx + .pch-rx { margin-top: 10px; }
+      .pch-inv { margin-top: 8px; background: #f5f3ff; border: 1px solid #ddd6fe; border-radius: 9px; padding: 8px 12px; }
+      .pch-inv-h { font-size: 11.5px; font-weight: 800; color: #6d28d9; text-transform: uppercase; letter-spacing: .04em; margin-bottom: 4px; }
+      .pch-inv ul { margin: 0; padding-left: 18px; font-size: 13.5px; color: #0f172a; }
       .pch-muted { font-size: 12.5px; color: #94a3b8; }
       .pch-ok { display: inline-block; font-size: 12.5px; font-weight: 700; color: #166534; background: #dcfce7; padding: 5px 11px; border-radius: 20px; }
       .pch-note { font-size: 13px; color: #475569; margin-top: 8px; background: #f7f9fc; padding: 8px 10px; border-radius: 8px; }

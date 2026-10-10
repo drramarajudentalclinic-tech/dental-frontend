@@ -277,6 +277,24 @@ const injectStyles = () => {
     .presc-allergy-none { font-size:12px; color:#475569; background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:6px 10px; margin-bottom:10px; }
 
     /* ── v2: medicine picker ── */
+    .presc-inv { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(300px,100%),1fr)); gap:12px; }
+    .presc-inv-group { border:1.5px solid #e9eef4; border-radius:11px; padding:10px 12px; background:#fcfdff; }
+    .presc-inv-title { font-size:12.5px; font-weight:800; color:#1e293b; margin-bottom:8px; display:flex; align-items:center; gap:6px; }
+    .presc-inv-n { font-size:10.5px; background:#1d6fa4; color:#fff; border-radius:10px; padding:0 7px; }
+    .presc-inv-chips { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px; }
+    .presc-inv-chip { font-family:inherit; font-size:12.5px; font-weight:700; padding:6px 11px; border-radius:20px; border:1.5px solid #cbd5e1; background:#fff; color:#334155; cursor:pointer; }
+    .presc-inv-chip:hover { border-color:#60a5fa; }
+    .presc-inv-chip.on { background:#1d6fa4; border-color:#1d6fa4; color:#fff; }
+    .presc-inv-other { display:flex; gap:6px; }
+    .presc-inv-other input { flex:1; min-width:0; padding:7px 10px; border:1.5px solid #e2e8f0; border-radius:8px; font-family:inherit; font-size:12.5px; background:#f8fafc; }
+    .presc-inv-other button { font-family:inherit; font-size:12.5px; font-weight:700; padding:7px 12px; border-radius:8px; border:1.5px solid #bfdbfe; background:#eff6ff; color:#1d4ed8; cursor:pointer; white-space:nowrap; }
+    .presc-inv-other button:disabled { opacity:.5; cursor:not-allowed; }
+    .presc-inv-list { list-style:none; margin:10px 0 0; padding:0; display:flex; flex-direction:column; gap:8px; }
+    .presc-inv-list li { background:#fff; border:1px solid #e2e8f0; border-left:3px solid #1d6fa4; border-radius:8px; padding:7px 9px; }
+    .presc-inv-name { display:flex; align-items:center; gap:6px; font-size:12.5px; color:#0f172a; margin-bottom:5px; }
+    .presc-inv-name span { color:#64748b; font-size:11.5px; flex:1; min-width:0; }
+    .presc-inv-name button { margin-left:auto; border:0; background:#fee2e2; color:#b91c1c; border-radius:6px; width:22px; height:22px; cursor:pointer; font-size:11px; flex-shrink:0; }
+    .presc-inv-list textarea { width:100%; box-sizing:border-box; min-height:32px; resize:vertical; padding:6px 9px; border:1.5px solid #e2e8f0; border-radius:7px; font-family:inherit; font-size:12.5px; background:#f8fafc; }
     .presc-chip-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(185px,1fr)); gap:6px; margin-bottom:10px; }
     .presc-chip { display:flex; align-items:center; gap:7px; min-width:0; padding:7px 10px; border-radius:8px; border:1.5px solid #e2e8f0; background:#f8fafc; font-family:inherit; font-size:12.5px; font-weight:500; color:#334155; text-align:left; cursor:pointer; }
     .presc-chip:hover { border-color:#60a5fa; background:#fff; }
@@ -434,6 +452,7 @@ function LetterheadHeader() {
 function LetterheadCard({ data }) {
   const { patientName, patientAge, patientGender, caseNumber, date, diagnosis, advice, treatmentDone, medicines, followUpDate, followUpTime } = data;
   const medsArr = parseMedicines(medicines);
+  const invArr = parseInvestigations(data.investigations);
   const showInstructions = medsArr.some(m => medInstructions(m));
 
   return (
@@ -518,10 +537,30 @@ function LetterheadCard({ data }) {
           </table>
         </div>}
 
+        {/* Investigations advised */}
+        {invArr.length > 0 && <div style={{ marginBottom:16 }}>
+          <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:5 }}><span style={{ fontSize:10, fontWeight:800, textTransform:"uppercase", letterSpacing:"1.2px", color:"#7c3aed", borderBottom:"2px solid #7c3aed", paddingBottom:1 }}>5. Investigations Advised</span></div>
+          {["Radiograph", "Blood test", "Other"].map(gr => {
+            const items = invArr.filter(i => (gr === "Other" ? !["Radiograph", "Blood test"].includes(i.group) : i.group === gr));
+            if (!items.length) return null;
+            return (
+              <div key={gr} style={{ marginTop:4 }}>
+                <div style={{ fontSize:10.5, fontWeight:700, color:"#6b7280", marginBottom:2 }}>{gr === "Radiograph" ? "X-rays / Scans" : gr === "Blood test" ? "Blood tests" : "Other"}</div>
+                {items.map((i, k) => (
+                  <div key={k} style={{ display:"flex", gap:7, marginBottom:3, fontSize:13, color:"#111" }}>
+                    <span style={{ color:"#7c3aed", fontWeight:700, flexShrink:0 }}>•</span>
+                    <span><strong>{i.name}</strong>{i.note ? <span style={{ color:"#374151" }}> — {i.note}</span> : null}</span>
+                  </div>
+                ))}
+              </div>
+            );
+          })}
+        </div>}
+
         {/* Follow-up */}
         {followUpDate && (
           <div style={{ marginTop:14, padding:"10px 14px", background:"#f0fdf4", border:"1px solid #86efac", borderRadius:7 }}>
-            <div style={{ fontSize:10, fontWeight:800, textTransform:"uppercase", letterSpacing:"1.2px", color:"#166534", borderBottom:"2px solid #86efac", paddingBottom:4, marginBottom:8 }}>5. Next Follow-up</div>
+            <div style={{ fontSize:10, fontWeight:800, textTransform:"uppercase", letterSpacing:"1.2px", color:"#166534", borderBottom:"2px solid #86efac", paddingBottom:4, marginBottom:8 }}>{invArr.length > 0 ? "6" : "5"}. Next Follow-up</div>
             <div style={{ display:"flex", alignItems:"center", gap:14 }}>
               <div>
                 <div style={{ fontSize:9.5, color:"#4ade80", fontWeight:600, textTransform:"uppercase", letterSpacing:"0.8px" }}>Date</div>
@@ -564,7 +603,14 @@ function LetterheadCard({ data }) {
 function buildPrintHtml(data) {
   const { patientName, patientAge, patientGender, caseNumber, date, diagnosis, advice, treatmentDone, medicines, followUpDate, followUpTime } = data;
   const meds = parseMedicines(medicines);
+  const inv = parseInvestigations(data.investigations);
   const showInstructions = meds.some(m => medInstructions(m));
+  const invHtml = !inv.length ? "" : `<div class="sblk"><span class="slbl" style="color:#7c3aed;border-bottom:2px solid #7c3aed">5. INVESTIGATIONS ADVISED</span>${
+    [["Radiograph", "X-rays / Scans"], ["Blood test", "Blood tests"], ["Other", "Other"]].map(([gr, title]) => {
+      const items = inv.filter(i => (gr === "Other" ? !["Radiograph", "Blood test"].includes(i.group) : i.group === gr));
+      return items.length ? `<div style="font-size:10px;font-weight:700;color:#6b7280;margin:4px 0 2px">${title}</div>` +
+        items.map(i => `<div class="bul"><span class="bdot" style="color:#7c3aed">•</span><span><strong>${esc(i.name)}</strong>${i.note ? ` — ${esc(i.note)}` : ""}</span></div>`).join("") : "";
+    }).join("")}</div>`;
   const bullets = (text, color) => String(text).split(";").map(s => s.trim()).filter(Boolean)
     .map(s => `<div class="bul"><span class="bdot" style="color:${color}">•</span><span>${esc(s)}</span></div>`).join("");
 
@@ -679,7 +725,8 @@ function buildPrintHtml(data) {
       ${advice?`<div class="sblk"><span class="slbl" style="color:#059669;border-bottom:2px solid #059669">2. ADVICE &amp; TREATMENT PLAN</span>${bullets(advice,"#059669")}</div>`:""}
       ${treatmentDone?`<div class="sblk"><span class="slbl" style="color:#d97706;border-bottom:2px solid #d97706">3. TREATMENT DONE TODAY</span>${bullets(treatmentDone,"#d97706")}</div>`:""}
       ${meds.length>0?`<div class="sblk"><span class="slbl" style="color:#1d4ed8;border-bottom:2px solid #1d4ed8">4. PRESCRIBED MEDICINES</span><table><thead><tr><th>#</th><th>Medicine</th><th>Frequency</th><th>Duration</th>${showInstructions?"<th>Instructions</th>":""}</tr></thead><tbody>${meds.map((m,i)=>`<tr><td style="color:#aaa">${i+1}</td><td style="font-weight:600">${esc(m.name)}</td><td>${esc(m.times)}</td><td>${esc(medDuration(m))}</td>${showInstructions?`<td>${esc(medInstructions(m))}</td>`:""}</tr>`).join("")}</tbody></table></div>`:""}
-      ${followUpDate?`<div class="fu" style="border-radius:7px;padding:10px 14px;background:#f0fdf4;border:1px solid #86efac;margin-top:14px;"><div style="font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:1.2px;color:#166534;border-bottom:1.5px solid #86efac;padding-bottom:4px;margin-bottom:8px;">5. NEXT FOLLOW-UP</div><div style="display:flex;gap:20px;align-items:center;"><div><div style="font-size:8px;color:#4ade80;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;margin-bottom:2px;">Date</div><div style="font-family:monospace;font-size:14px;font-weight:700;color:#15803d;">${esc(fmtDate(followUpDate))}</div></div>${followUpTime?`<div style="border-left:1.5px solid #86efac;padding-left:14px;"><div style="font-size:8px;color:#4ade80;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;margin-bottom:2px;">Time</div><div style="font-family:monospace;font-size:14px;font-weight:700;color:#15803d;">${esc(fmtTime(followUpTime))}</div></div>`:""}</div></div>`:""}
+      ${invHtml}
+      ${followUpDate?`<div class="fu" style="border-radius:7px;padding:10px 14px;background:#f0fdf4;border:1px solid #86efac;margin-top:14px;"><div style="font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:1.2px;color:#166534;border-bottom:1.5px solid #86efac;padding-bottom:4px;margin-bottom:8px;">${inv.length ? "6" : "5"}. NEXT FOLLOW-UP</div><div style="display:flex;gap:20px;align-items:center;"><div><div style="font-size:8px;color:#4ade80;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;margin-bottom:2px;">Date</div><div style="font-family:monospace;font-size:14px;font-weight:700;color:#15803d;">${esc(fmtDate(followUpDate))}</div></div>${followUpTime?`<div style="border-left:1.5px solid #86efac;padding-left:14px;"><div style="font-size:8px;color:#4ade80;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;margin-bottom:2px;">Time</div><div style="font-family:monospace;font-size:14px;font-weight:700;color:#15803d;">${esc(fmtTime(followUpTime))}</div></div>`:""}</div></div>`:""}
       <div class="sig"><div style="text-align:center;"><img class="sigimg" src="${DOCTOR_SIGNATURE_IMG}" alt="Doctor's signature" /><div class="sigline"></div><div style="font-size:12px;font-weight:700">Dr. Rama Raju. D</div><div style="font-size:10px;color:#555">MDS (OSM)</div></div></div>
     </div>
 
@@ -706,6 +753,7 @@ function toLetterData(p) {
     caseNumber: p.case_number, date: p.date, diagnosis: p.diagnosis, advice: p.advice,
     treatmentDone: p.treatment_done || p.treatment_done_today, medicines: parseMedicines(p.medicines),
     followUpDate: p.follow_up_date, followUpTime: p.follow_up_time,
+    investigations: parseInvestigations(p.investigations),
   };
 }
 
@@ -1136,6 +1184,105 @@ function MedicineEditor({ medicines, onChange, allergies = [] }) {
 /* ═══════════════════════════════════════════════════════════════
    EDIT MODAL for previously saved prescriptions
 ═══════════════════════════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════════
+   INVESTIGATIONS ADVISED — X-rays / scans and blood tests, each with a note.
+   Saved with the prescription as  investigations: [{group, code, name, note}]
+   and printed as its own section on the prescription.
+═══════════════════════════════════════════════════════════════ */
+const INVESTIGATION_GROUPS = [
+  { group: "Radiograph", title: "🩻 X-rays & scans", other: "Other X-ray / scan (e.g. IOPA 46, Lateral ceph)",
+    items: [
+      { code: "OPG",  name: "OPG",  full: "Orthopantomogram (panoramic X-ray)", hint: "e.g. full mouth / impacted 38, 48" },
+      { code: "CBCT", name: "CBCT", full: "Cone-beam CT", hint: "Region & purpose — e.g. 36–37, implant planning" },
+      { code: "TMJ",  name: "TMJ view", full: "TMJ radiograph", hint: "Right / Left / Both — open & closed mouth" },
+    ] },
+  { group: "Blood test", title: "🩸 Blood tests", other: "Other blood test (e.g. CBP, Platelet count)",
+    items: [
+      { code: "CTBT",  name: "CT / BT", full: "Clotting time / Bleeding time", hint: "e.g. before extraction" },
+      { code: "HBA1C", name: "HbA1c", full: "Glycated haemoglobin (3-month sugar control)" },
+      { code: "FBS",   name: "FBS",   full: "Fasting blood sugar", hint: "Fasting 8–10 hours" },
+      { code: "FPG",   name: "FPG",   full: "Fasting plasma glucose", hint: "Fasting 8–10 hours" },
+      { code: "PPBS",  name: "PPBS",  full: "Post-prandial blood sugar", hint: "2 hours after food" },
+      { code: "PPBG",  name: "PPBG",  full: "Post-prandial blood glucose", hint: "2 hours after food" },
+      { code: "RBS",   name: "RBS",   full: "Random blood sugar" },
+      { code: "RPG",   name: "RPG",   full: "Random plasma glucose" },
+      { code: "OGTT",  name: "OGTT",  full: "Oral glucose tolerance test", hint: "Fasting; 75 g glucose" },
+    ] },
+];
+const INV_INDEX = Object.fromEntries(INVESTIGATION_GROUPS.flatMap(g => g.items.map(i => [`${g.group}|${i.code}`, { ...i, group: g.group }])));
+
+function parseInvestigations(raw) {
+  let list = raw;
+  if (typeof raw === "string") { try { list = JSON.parse(raw || "[]"); } catch { list = []; } }
+  return (Array.isArray(list) ? list : []).filter(i => i && typeof i === "object" && String(i.name || "").trim())
+    .map(i => ({ group: i.group || "Other", code: i.code || "", name: String(i.name).trim(), note: i.note || "" }));
+}
+const invKey = (i) => `${i.group}|${i.code || i.name.toLowerCase()}`;
+
+function InvestigationsEditor({ value, onChange }) {
+  const list = parseInvestigations(value);
+  const [other, setOther] = useState({ Radiograph: "", "Blood test": "" });
+  const has = (group, code) => list.some(i => i.group === group && i.code === code);
+  const toggle = (group, item) => {
+    if (has(group, item.code)) onChange(list.filter(i => !(i.group === group && i.code === item.code)));
+    else onChange([...list, { group, code: item.code, name: item.name, note: "" }]);
+  };
+  const addOther = (group) => {
+    const name = other[group].trim();
+    if (!name) return;
+    if (!list.some(i => i.group === group && i.name.toLowerCase() === name.toLowerCase()))
+      onChange([...list, { group, code: "", name, note: "" }]);
+    setOther(o => ({ ...o, [group]: "" }));
+  };
+  const setNote = (k, note) => onChange(list.map(i => (invKey(i) === k ? { ...i, note } : i)));
+  const remove = (k) => onChange(list.filter(i => invKey(i) !== k));
+
+  return (
+    <div className="presc-inv">
+      {INVESTIGATION_GROUPS.map(g => {
+        const chosen = list.filter(i => i.group === g.group);
+        return (
+          <div key={g.group} className="presc-inv-group" role="group" aria-label={g.title.replace(/^\S+\s/, "")}>
+            <div className="presc-inv-title">{g.title}{chosen.length > 0 && <span className="presc-inv-n">{chosen.length}</span>}</div>
+            <div className="presc-inv-chips">
+              {g.items.map(item => (
+                <button key={item.code} type="button" title={item.full} aria-pressed={has(g.group, item.code)}
+                  className={`presc-inv-chip${has(g.group, item.code) ? " on" : ""}`} onClick={() => toggle(g.group, item)}>
+                  {has(g.group, item.code) ? "✓ " : "+ "}{item.name}
+                </button>
+              ))}
+            </div>
+            <div className="presc-inv-other">
+              <input value={other[g.group]} placeholder={g.other} aria-label={`Other ${g.group.toLowerCase()}`}
+                onChange={e => setOther(o => ({ ...o, [g.group]: e.target.value }))}
+                onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); addOther(g.group); } }} />
+              <button type="button" onClick={() => addOther(g.group)} disabled={!other[g.group].trim()}>+ Add</button>
+            </div>
+            {chosen.length > 0 && (
+              <ul className="presc-inv-list">
+                {chosen.map(i => {
+                  const meta = INV_INDEX[`${i.group}|${i.code}`];
+                  const k = invKey(i);
+                  return (
+                    <li key={k}>
+                      <div className="presc-inv-name">
+                        <b>{i.name}</b>{meta?.full && <span> — {meta.full}</span>}
+                        <button type="button" onClick={() => remove(k)} aria-label={`Remove ${i.name}`}>✕</button>
+                      </div>
+                      <textarea rows={1} value={i.note} placeholder={meta?.hint ? `Notes — ${meta.hint}` : "Notes (optional)"}
+                        aria-label={`Notes for ${i.name}`} onChange={e => setNote(k, e.target.value)} />
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function EditModal({ presc, onSave, onClose, saving, error = "", allergies = [], health = null }) {
   const [form, setForm] = useState({
     patient_name:   presc.patient_name  || "",
@@ -1149,6 +1296,7 @@ function EditModal({ presc, onSave, onClose, saving, error = "", allergies = [],
     follow_up_date: presc.follow_up_date ? presc.follow_up_date.split("T")[0] : "",
     follow_up_time: presc.follow_up_time || "",
     medicines:      parseMedicines(presc._medsArr || presc.medicines),
+    investigations: parseInvestigations(presc.investigations),
   });
 
   const set = (k, v) => setForm(p => ({ ...p, [k]: v }));
@@ -1164,6 +1312,7 @@ function EditModal({ presc, onSave, onClose, saving, error = "", allergies = [],
     diagnosis:form.diagnosis, advice:form.advice, treatment_done_today:form.treatment_done,
     follow_up_date:form.follow_up_date, follow_up_time:form.follow_up_time,
     medicines:JSON.stringify(medicinesForSave(form.medicines)),
+    investigations: form.investigations.map(i => ({ ...i, note: i.note.trim() })),
   });
 
   return (
@@ -1210,6 +1359,11 @@ function EditModal({ presc, onSave, onClose, saving, error = "", allergies = [],
           <div style={{ fontSize:13, fontWeight:700, color:"#1e293b", marginBottom:10 }}>🧾 Medicines</div>
           <AllergyBanner allergies={allergies} noneKnown={false} health={health} />
           <MedicineEditor medicines={form.medicines} onChange={list=>set("medicines",list)} allergies={allergies} />
+        </div>
+        {/* Investigations */}
+        <div style={box}>
+          <div style={{ fontSize:13, fontWeight:700, color:"#1e293b", marginBottom:10 }}>🔬 Investigations Advised</div>
+          <InvestigationsEditor value={form.investigations} onChange={list=>set("investigations",list)} />
         </div>
         {/* Follow-up */}
         <div style={{ ...box, marginBottom:0 }}>
@@ -1535,6 +1689,7 @@ export default function Prescription({ visitId, patient = null, consultationData
   const [followUpDate,  setFollowUpDate]  = useState("");
   const [followUpTime,  setFollowUpTime]  = useState("");
   const [medicines,     setMedicines]     = useState([]);
+  const [investigations, setInvestigations] = useState([]);
   const [showPreview,   setShowPreview]   = useState(false);
   const [confirming,    setConfirming]    = useState(false);
   const [confirmed,     setConfirmed]     = useState(false);
@@ -1668,14 +1823,15 @@ export default function Prescription({ visitId, patient = null, consultationData
   };
 
   const cleanMeds = useMemo(() => medicinesForSave(medicines), [medicines]);
-  const hasText   = !!(diagnosis.trim() || advice.trim() || treatmentDone.trim());
+  const hasText   = !!(diagnosis.trim() || advice.trim() || treatmentDone.trim() || investigations.length);
   const canPreview = !!patientName.trim() && (cleanMeds.length > 0 || hasText);
   const whyNot = !patientName.trim() ? "Enter the patient's name."
-    : (cleanMeds.length === 0 && !hasText) ? "Add at least one medicine (or a diagnosis / advice)." : "";
+    : (cleanMeds.length === 0 && !hasText) ? "Add at least one medicine (or a diagnosis / advice / investigation)." : "";
   const unnamed = medicines.length - cleanMeds.length;
   const flagged = cleanMeds.filter(m => allergyMatches(m.name, allergies).length > 0);
 
-  const previewData = { patientName, patientAge, patientGender, caseNumber, date, diagnosis, advice, treatmentDone, medicines: cleanMeds, followUpDate, followUpTime };
+  const cleanInv = investigations.map(i => ({ ...i, note: i.note.trim() }));
+  const previewData = { patientName, patientAge, patientGender, caseNumber, date, diagnosis, advice, treatmentDone, medicines: cleanMeds, investigations: cleanInv, followUpDate, followUpTime };
 
   const handleConfirm = async () => {
     if (confirming) return;
@@ -1686,7 +1842,7 @@ export default function Prescription({ visitId, patient = null, consultationData
         case_number:caseNumber, date, diagnosis, advice,
         treatment_done_today:treatmentDone,
         follow_up_date:followUpDate, follow_up_time:followUpTime,
-        medicines:JSON.stringify(cleanMeds), status:"confirmed"
+        medicines:JSON.stringify(cleanMeds), investigations: cleanInv, status:"confirmed"
       };
       const res = await api.post(`/visits/${visitId}/prescriptions`, payload);
       setSavedId(res.data?.id||res.data?.prescription_id||null);
@@ -1739,7 +1895,7 @@ export default function Prescription({ visitId, patient = null, consultationData
           {savedData && (
             <button type="button" onClick={()=>printPrescription(savedData)} style={{ padding:"10px 24px", borderRadius:10, fontSize:13, fontWeight:700, background:"#10b981", color:"#fff", border:"1.5px solid #10b981", cursor:"pointer", fontFamily:"'Plus Jakarta Sans',sans-serif" }}>🖨 Print this prescription</button>
           )}
-          <button type="button" onClick={()=>{setConfirmed(false);setMedicines([]);setShowPreview(false);setSaveProblem("");}} style={{ padding:"10px 24px", borderRadius:10, fontSize:13, fontWeight:700, background:"#eff6ff", color:"#1d4ed8", border:"1.5px solid #bfdbfe", cursor:"pointer", fontFamily:"'Plus Jakarta Sans',sans-serif" }}>+ Write Another Prescription</button>
+          <button type="button" onClick={()=>{setConfirmed(false);setMedicines([]);setInvestigations([]);setShowPreview(false);setSaveProblem("");}} style={{ padding:"10px 24px", borderRadius:10, fontSize:13, fontWeight:700, background:"#eff6ff", color:"#1d4ed8", border:"1.5px solid #bfdbfe", cursor:"pointer", fontFamily:"'Plus Jakarta Sans',sans-serif" }}>+ Write Another Prescription</button>
         </div>
       </div>
       {pastList}
@@ -1848,6 +2004,17 @@ export default function Prescription({ visitId, patient = null, consultationData
         {copiedNote && <div className="presc-msg ok" role="status">{copiedNote}<button type="button" onClick={()=>setCopiedNote("")}>OK</button></div>}
         <MedicineEditor medicines={medicines} onChange={list => { setMedicines(list); setCopiedNote(""); }} allergies={allergies} />
         {unnamed > 0 && <div style={{ fontSize:12, color:"#b45309", marginTop:8 }}>A medicine without a name will be left out.</div>}
+      </div>
+
+      {/* ── Investigations advised ── */}
+      <div style={S.card}>
+        <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10, flexWrap:"wrap" }}>
+          <div style={{ ...S.cardTitle, marginBottom:0 }}>🔬 Investigations Advised</div>
+          {investigations.length > 0
+            ? <span style={{ fontSize:11, fontWeight:700, background:"#f5f3ff", color:"#6d28d9", border:"1px solid #ddd6fe", borderRadius:20, padding:"1px 9px" }}>{investigations.length} advised</span>
+            : <span style={{ fontSize:11.5, color:"#94a3b8" }}>optional — tap a test to add it, then write a note</span>}
+        </div>
+        <InvestigationsEditor value={investigations} onChange={setInvestigations} />
       </div>
 
       {/* ── Follow-up (date + time) ── */}

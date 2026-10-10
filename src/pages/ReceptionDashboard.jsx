@@ -662,6 +662,15 @@ function escHtml(value) {
 }
 // Medicines are stored as JSON text holding a list of { name, times, days }.
 // The Doctor's screen may also add  when ("After food" …)  and  note (instructions).
+// Investigations advised (X-rays / scans, blood tests) saved with the prescription.
+function parsePrescInv(raw) {
+  let list = raw;
+  if (typeof raw === "string") { try { list = JSON.parse(raw || "[]"); } catch { list = []; } }
+  return (Array.isArray(list) ? list : []).filter(i => i && typeof i === "object" && String(i.name || "").trim());
+}
+const INV_TITLES = [["Radiograph", "X-rays / Scans"], ["Blood test", "Blood tests"], ["Other", "Other"]];
+const invOfGroup = (inv, gr) => inv.filter(i => (gr === "Other" ? !["Radiograph", "Blood test"].includes(i.group) : i.group === gr));
+
 function parsePrescMeds(raw) {
   let list = [];
   try { list = JSON.parse(raw || "[]"); } catch {}
@@ -679,6 +688,7 @@ function medDuration(m) {
 const PrescriptionViewModal = ({ presc, onClose }) => {
   if (!presc) return null;
   const meds = parsePrescMeds(presc.medicines);
+  const inv = parsePrescInv(presc.investigations);
   const showInstructions = meds.some(m => medInstructions(m));   // extra column only when there is something to show
 
   const handlePrint = () => {
@@ -783,7 +793,8 @@ const PrescriptionViewModal = ({ presc, onClose }) => {
             <table><thead><tr><th>#</th><th>Medicine</th><th>Frequency</th><th>Duration</th>${showInstructions ? "<th>Instructions</th>" : ""}</tr></thead>
             <tbody>${meds.map((m,i)=>`<tr><td style="color:#999">${i+1}</td><td><strong>${escHtml(m.name)}</strong></td><td>${escHtml(m.times)}</td><td>${escHtml(medDuration(m))}</td>${showInstructions ? `<td>${escHtml(medInstructions(m))}</td>` : ""}</tr>`).join("")}</tbody></table>
           </div>` : ""}
-          ${presc.follow_up_date ? `<div class="followup-box"><span style="font-size:18px;">📅</span><div><div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#166534;letter-spacing:0.8px;">5. NEXT FOLLOW-UP</div><div style="display:flex;gap:16px;align-items:center;margin-top:4px;"><div><div style="font-size:8px;color:#4ade80;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;">Date</div><div style="font-family:monospace;font-size:13px;font-weight:700;color:#15803d;">${escHtml(fmtDate(presc.follow_up_date))}</div></div>${presc.follow_up_time ? `<div style="border-left:1.5px solid #86efac;padding-left:12px;"><div style="font-size:8px;color:#4ade80;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;">Time</div><div style="font-family:monospace;font-size:13px;font-weight:700;color:#15803d;">${escHtml(fmtTime(presc.follow_up_time))}</div></div>` : ""}</div></div></div>` : ""}
+          ${inv.length > 0 ? `<div class="section-block"><span class="section-label">🔬 Investigations Advised</span>${INV_TITLES.map(([gr, title]) => { const items = invOfGroup(inv, gr); return items.length ? `<div style="font-size:10px;font-weight:700;color:#6b7280;margin:4px 0 2px;">${title}</div>` + items.map(i => `<div class="bullet-item"><span class="bullet-dot">•</span><span><strong>${escHtml(i.name)}</strong>${i.note ? ` — ${escHtml(i.note)}` : ""}</span></div>`).join("") : ""; }).join("")}</div>` : ""}
+          ${presc.follow_up_date ? `<div class="followup-box"><span style="font-size:18px;">📅</span><div><div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#166534;letter-spacing:0.8px;">${inv.length ? "6" : "5"}. NEXT FOLLOW-UP</div><div style="display:flex;gap:16px;align-items:center;margin-top:4px;"><div><div style="font-size:8px;color:#4ade80;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;">Date</div><div style="font-family:monospace;font-size:13px;font-weight:700;color:#15803d;">${escHtml(fmtDate(presc.follow_up_date))}</div></div>${presc.follow_up_time ? `<div style="border-left:1.5px solid #86efac;padding-left:12px;"><div style="font-size:8px;color:#4ade80;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;">Time</div><div style="font-family:monospace;font-size:13px;font-weight:700;color:#15803d;">${escHtml(fmtTime(presc.follow_up_time))}</div></div>` : ""}</div></div></div>` : ""}
           <div class="sig-area"><div class="sig-block"><img src="${DOCTOR_SIGNATURE_IMG}" alt="Doctor's signature" style="width:130px;height:auto;display:block;margin-bottom:2px;" /><div class="sig-line"></div><div style="font-size:12px;font-weight:700;">Dr. Rama Raju. D</div><div style="font-size:10px;color:#666;">MDS (OSM), Oral Health Centre</div></div></div>
         </div>
         <div class="footer">${escHtml(CLINIC_TIMINGS)}</div>
@@ -982,13 +993,34 @@ const PrescriptionViewModal = ({ presc, onClose }) => {
               </div>
             )}
 
+            {/* Investigations advised */}
+            {inv.length > 0 && (
+              <div style={{ marginBottom:16 }}>
+                <span style={{ fontSize:10, fontWeight:700, textTransform:"uppercase", letterSpacing:"1px", color:"#555", display:"block", marginBottom:6 }}>🔬 Investigations Advised</span>
+                {INV_TITLES.map(([gr, title]) => {
+                  const items = invOfGroup(inv, gr);
+                  return items.length ? (
+                    <div key={gr} style={{ marginBottom:4 }}>
+                      <div style={{ fontSize:10.5, fontWeight:700, color:"#6b7280" }}>{title}</div>
+                      {items.map((i, k) => (
+                        <div key={k} style={{ display:"flex", gap:7, fontSize:13, color:"#111", marginTop:2 }}>
+                          <span style={{ color:"#7c3aed", fontWeight:700 }}>•</span>
+                          <span><strong>{i.name}</strong>{i.note ? <span style={{ color:"#374151" }}> — {i.note}</span> : null}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null;
+                })}
+              </div>
+            )}
+
             {/* Follow up */}
             {presc.follow_up_date && (
               <div style={{
                 background:"#f0fdf4", border:"1px solid #86efac",
                 borderRadius:8, padding:"10px 14px", marginTop:4,
               }}>
-                <div style={{ fontSize:9.5, fontWeight:800, textTransform:"uppercase", letterSpacing:"1.2px", color:"#166534", borderBottom:"1.5px solid #86efac", paddingBottom:4, marginBottom:8 }}>5. Next Follow-up</div>
+                <div style={{ fontSize:9.5, fontWeight:800, textTransform:"uppercase", letterSpacing:"1.2px", color:"#166534", borderBottom:"1.5px solid #86efac", paddingBottom:4, marginBottom:8 }}>{inv.length ? "6" : "5"}. Next Follow-up</div>
                 <div style={{ display:"flex", gap:20, alignItems:"center" }}>
                   <div>
                     <div style={{ fontSize:9, color:"#4ade80", fontWeight:700, textTransform:"uppercase", letterSpacing:"0.8px", marginBottom:2 }}>Date</div>
