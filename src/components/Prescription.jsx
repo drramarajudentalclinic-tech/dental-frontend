@@ -284,6 +284,7 @@ const injectStyles = () => {
     .presc-inv-chips { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px; }
     .presc-inv-chip { font-family:inherit; font-size:12.5px; font-weight:700; padding:6px 11px; border-radius:20px; border:1.5px solid #cbd5e1; background:#fff; color:#334155; cursor:pointer; }
     .presc-inv-chip:hover { border-color:#60a5fa; }
+    .presc-inv-more { font-family:inherit; font-size:12px; font-weight:700; padding:6px 11px; border-radius:20px; border:1.5px dashed #94a3b8; background:transparent; color:#475569; cursor:pointer; }
     .presc-inv-chip.on { background:#1d6fa4; border-color:#1d6fa4; color:#fff; }
     .presc-inv-other { display:flex; gap:6px; }
     .presc-inv-other input { flex:1; min-width:0; padding:7px 10px; border:1.5px solid #e2e8f0; border-radius:8px; font-family:inherit; font-size:12.5px; background:#f8fafc; }
@@ -1189,16 +1190,30 @@ function MedicineEditor({ medicines, onChange, allergies = [] }) {
    Saved with the prescription as  investigations: [{group, code, name, note}]
    and printed as its own section on the prescription.
 ═══════════════════════════════════════════════════════════════ */
+// "more: true" items stay under "More …" until opened (a chosen one is always shown).
 const INVESTIGATION_GROUPS = [
-  { group: "Radiograph", title: "🩻 X-rays & scans", other: "Other X-ray / scan (e.g. IOPA 46, Lateral ceph)",
+  { group: "Radiograph", title: "🩻 X-rays & scans", other: "Other X-ray / scan",
     items: [
+      { code: "IOPA", name: "IOPA",  full: "Intra-oral periapical X-ray", hint: "Tooth no. — e.g. 36, 46" },
       { code: "OPG",  name: "OPG",  full: "Orthopantomogram (panoramic X-ray)", hint: "e.g. full mouth / impacted 38, 48" },
       { code: "CBCT", name: "CBCT", full: "Cone-beam CT", hint: "Region & purpose — e.g. 36–37, implant planning" },
       { code: "TMJ",  name: "TMJ view", full: "TMJ radiograph", hint: "Right / Left / Both — open & closed mouth" },
+      { code: "BW",   name: "Bitewing", full: "Bitewing X-ray (interproximal caries, bone level)", hint: "Right / Left / Both sides", more: true },
+      { code: "OCCL", name: "Occlusal view", full: "Occlusal radiograph", hint: "Maxillary / Mandibular — e.g. submandibular stone", more: true },
+      { code: "CEPH", name: "Lateral ceph", full: "Lateral cephalogram (orthodontics)", more: true },
+      { code: "PA",   name: "PA skull / PA mandible", full: "Postero-anterior view", hint: "e.g. fracture mandible", more: true },
+      { code: "PNS",  name: "PNS / Water's view", full: "Paranasal sinus view (occipitomental)", hint: "e.g. maxillary sinus", more: true },
+      { code: "CTF",  name: "CT face", full: "Computed tomography — face / jaws", hint: "e.g. trauma, pathology extent", more: true },
+      { code: "MRI",  name: "MRI TMJ", full: "Magnetic resonance imaging of TMJ", hint: "Disc position — open & closed mouth", more: true },
+      { code: "USG",  name: "USG neck / salivary", full: "Ultrasound — neck nodes / salivary glands", more: true },
+      { code: "SIAL", name: "Sialography", full: "Contrast study of salivary duct", hint: "Parotid / Submandibular", more: true },
+      { code: "HW",   name: "Hand-wrist X-ray", full: "Skeletal age (orthodontics)", more: true },
+      { code: "CXR",  name: "Chest X-ray", full: "Chest X-ray PA view", hint: "e.g. before general anaesthesia", more: true },
     ] },
-  { group: "Blood test", title: "🩸 Blood tests", other: "Other blood test (e.g. CBP, Platelet count)",
+  { group: "Blood test", title: "🩸 Blood tests", other: "Other blood / lab test",
     items: [
       { code: "CTBT",  name: "CT / BT", full: "Clotting time / Bleeding time", hint: "e.g. before extraction" },
+      { code: "CBP",   name: "CBP", full: "Complete blood picture (Hb, WBC, platelets)" },
       { code: "HBA1C", name: "HbA1c", full: "Glycated haemoglobin (3-month sugar control)" },
       { code: "FBS",   name: "FBS",   full: "Fasting blood sugar", hint: "Fasting 8–10 hours" },
       { code: "FPG",   name: "FPG",   full: "Fasting plasma glucose", hint: "Fasting 8–10 hours" },
@@ -1207,6 +1222,22 @@ const INVESTIGATION_GROUPS = [
       { code: "RBS",   name: "RBS",   full: "Random blood sugar" },
       { code: "RPG",   name: "RPG",   full: "Random plasma glucose" },
       { code: "OGTT",  name: "OGTT",  full: "Oral glucose tolerance test", hint: "Fasting; 75 g glucose" },
+      { code: "PTINR", name: "PT / INR", full: "Prothrombin time / INR", hint: "Patients on warfarin / anticoagulants", more: true },
+      { code: "APTT",  name: "aPTT", full: "Activated partial thromboplastin time", more: true },
+      { code: "PLT",   name: "Platelet count", full: "Platelet count", more: true },
+      { code: "HB",    name: "Hb%", full: "Haemoglobin", more: true },
+      { code: "ESR",   name: "ESR", full: "Erythrocyte sedimentation rate", hint: "e.g. infection / inflammation", more: true },
+      { code: "CRP",   name: "CRP", full: "C-reactive protein", hint: "e.g. space infection", more: true },
+      { code: "VIRAL", name: "HIV · HBsAg · HCV", full: "Viral markers (before surgery)", hint: "Before surgery / implants", more: true },
+      { code: "BGRP",  name: "Blood group & Rh", full: "Blood grouping and Rh typing", more: true },
+      { code: "CREAT", name: "Serum creatinine", full: "Kidney function", hint: "Before NSAIDs / antibiotics in kidney disease", more: true },
+      { code: "LFT",   name: "LFT", full: "Liver function tests", more: true },
+      { code: "TSH",   name: "Thyroid profile (T3, T4, TSH)", full: "Thyroid function", more: true },
+      { code: "CA",    name: "Serum calcium", full: "Serum calcium (with phosphorus, ALP if needed)", hint: "e.g. bone lesions", more: true },
+      { code: "VITD",  name: "Vitamin D", full: "25-OH Vitamin D", more: true },
+      { code: "B12",   name: "Vitamin B12", full: "Serum Vitamin B12", hint: "e.g. burning mouth, glossitis, ulcers", more: true },
+      { code: "IRON",  name: "Serum iron / ferritin", full: "Iron studies", hint: "e.g. pallor, angular cheilitis", more: true },
+      { code: "URINE", name: "Urine routine", full: "Complete urine examination", more: true },
     ] },
 ];
 const INV_INDEX = Object.fromEntries(INVESTIGATION_GROUPS.flatMap(g => g.items.map(i => [`${g.group}|${i.code}`, { ...i, group: g.group }])));
@@ -1222,6 +1253,7 @@ const invKey = (i) => `${i.group}|${i.code || i.name.toLowerCase()}`;
 function InvestigationsEditor({ value, onChange }) {
   const list = parseInvestigations(value);
   const [other, setOther] = useState({ Radiograph: "", "Blood test": "" });
+  const [more, setMore] = useState({ Radiograph: false, "Blood test": false });
   const has = (group, code) => list.some(i => i.group === group && i.code === code);
   const toggle = (group, item) => {
     if (has(group, item.code)) onChange(list.filter(i => !(i.group === group && i.code === item.code)));
@@ -1245,12 +1277,18 @@ function InvestigationsEditor({ value, onChange }) {
           <div key={g.group} className="presc-inv-group" role="group" aria-label={g.title.replace(/^\S+\s/, "")}>
             <div className="presc-inv-title">{g.title}{chosen.length > 0 && <span className="presc-inv-n">{chosen.length}</span>}</div>
             <div className="presc-inv-chips">
-              {g.items.map(item => (
+              {g.items.filter(item => !item.more || more[g.group] || has(g.group, item.code)).map(item => (
                 <button key={item.code} type="button" title={item.full} aria-pressed={has(g.group, item.code)}
                   className={`presc-inv-chip${has(g.group, item.code) ? " on" : ""}`} onClick={() => toggle(g.group, item)}>
                   {has(g.group, item.code) ? "✓ " : "+ "}{item.name}
                 </button>
               ))}
+              {g.items.some(i => i.more) && (
+                <button type="button" className="presc-inv-more" aria-expanded={more[g.group]}
+                  onClick={() => setMore(m => ({ ...m, [g.group]: !m[g.group] }))}>
+                  {more[g.group] ? "▲ Fewer" : `▼ More (${g.items.filter(i => i.more).length})`}
+                </button>
+              )}
             </div>
             <div className="presc-inv-other">
               <input value={other[g.group]} placeholder={g.other} aria-label={`Other ${g.group.toLowerCase()}`}
@@ -1356,14 +1394,13 @@ function EditModal({ presc, onSave, onClose, saving, error = "", allergies = [],
         </div>
         {/* Medicines */}
         <div style={box}>
-          <div style={{ fontSize:13, fontWeight:700, color:"#1e293b", marginBottom:10 }}>🧾 Medicines</div>
+          <div style={{ fontSize:13, fontWeight:700, color:"#1e293b", marginBottom:10 }}>🧾 Medicines &amp; Investigations</div>
           <AllergyBanner allergies={allergies} noneKnown={false} health={health} />
           <MedicineEditor medicines={form.medicines} onChange={list=>set("medicines",list)} allergies={allergies} />
-        </div>
-        {/* Investigations */}
-        <div style={box}>
-          <div style={{ fontSize:13, fontWeight:700, color:"#1e293b", marginBottom:10 }}>🔬 Investigations Advised</div>
-          <InvestigationsEditor value={form.investigations} onChange={list=>set("investigations",list)} />
+          <div style={{ marginTop:14, paddingTop:12, borderTop:"1.5px dashed #e2e8f0" }}>
+            <div style={{ fontSize:13, fontWeight:700, color:"#1e293b", marginBottom:10 }}>🔬 Investigations Advised</div>
+            <InvestigationsEditor value={form.investigations} onChange={list=>set("investigations",list)} />
+          </div>
         </div>
         {/* Follow-up */}
         <div style={{ ...box, marginBottom:0 }}>
@@ -1997,24 +2034,24 @@ export default function Prescription({ visitId, patient = null, consultationData
       {/* ── Medicines ── */}
       <div style={S.card}>
         <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10, flexWrap:"wrap" }}>
-          <div style={{ ...S.cardTitle, marginBottom:0 }}>🧾 Prescribe Medicines</div>
+          <div style={{ ...S.cardTitle, marginBottom:0 }}>🧾 Prescribe Medicines &amp; Investigations</div>
           {cleanMeds.length > 0 && <span style={{ fontSize:11, fontWeight:700, background:"#eff6ff", color:"#1d4ed8", border:"1px solid #bfdbfe", borderRadius:20, padding:"1px 9px" }}>{cleanMeds.length} added</span>}
         </div>
         <AllergyBanner allergies={allergies} noneKnown={noneKnown} health={health} />
         {copiedNote && <div className="presc-msg ok" role="status">{copiedNote}<button type="button" onClick={()=>setCopiedNote("")}>OK</button></div>}
         <MedicineEditor medicines={medicines} onChange={list => { setMedicines(list); setCopiedNote(""); }} allergies={allergies} />
         {unnamed > 0 && <div style={{ fontSize:12, color:"#b45309", marginTop:8 }}>A medicine without a name will be left out.</div>}
-      </div>
 
-      {/* ── Investigations advised ── */}
-      <div style={S.card}>
-        <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10, flexWrap:"wrap" }}>
-          <div style={{ ...S.cardTitle, marginBottom:0 }}>🔬 Investigations Advised</div>
-          {investigations.length > 0
-            ? <span style={{ fontSize:11, fontWeight:700, background:"#f5f3ff", color:"#6d28d9", border:"1px solid #ddd6fe", borderRadius:20, padding:"1px 9px" }}>{investigations.length} advised</span>
-            : <span style={{ fontSize:11.5, color:"#94a3b8" }}>optional — tap a test to add it, then write a note</span>}
+        {/* Investigations advised — part of the same prescription, right under the medicines */}
+        <div style={{ marginTop:16, paddingTop:14, borderTop:"1.5px dashed #e2e8f0" }}>
+          <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10, flexWrap:"wrap" }}>
+            <div style={{ ...S.cardTitle, marginBottom:0 }}>🔬 Investigations Advised</div>
+            {investigations.length > 0
+              ? <span style={{ fontSize:11, fontWeight:700, background:"#f5f3ff", color:"#6d28d9", border:"1px solid #ddd6fe", borderRadius:20, padding:"1px 9px" }}>{investigations.length} advised</span>
+              : <span style={{ fontSize:11.5, color:"#94a3b8" }}>optional — tap a test to add it, then write a note</span>}
+          </div>
+          <InvestigationsEditor value={investigations} onChange={setInvestigations} />
         </div>
-        <InvestigationsEditor value={investigations} onChange={setInvestigations} />
       </div>
 
       {/* ── Follow-up (date + time) ── */}
