@@ -150,6 +150,12 @@ const injectStyles = () => {
       font-size: 14px; font-weight: 700; color: #fff; flex-shrink: 0;
     }
     .dd-name-cell { display: flex; align-items: center; gap: 10px; }
+    .dd-expected { border-top: 2px dashed #e2e8f0; padding: 14px 20px 6px; background: #fcfdff; }
+    .dd-expected-h { font-size: 13px; font-weight: 800; color: #0b2d4e; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .dd-expected-h span { font-size: 11px; background: #fef3c7; color: #92400e; border-radius: 10px; padding: 1px 8px; }
+    .dd-expected-h small { flex-basis: 100%; font-weight: 500; color: #94a3b8; font-size: 11.5px; }
+    .dd-expected-row td { background: #fffdf7; }
+    .dd-newpt { color: #92400e; font-weight: 700; }
     .dd-name      { font-size: 13.5px; font-weight: 700; color: #0f2a50; }
     .dd-case      { font-size: 11px; color: #94a3b8; margin-top: 1px; }
     .dd-chip {
@@ -1113,6 +1119,7 @@ const AppointmentsSection = (props) => <AppointmentsBoard role="doctor" {...prop
 
 export default function DoctorDashboard() {
   const [visits,      setVisits]      = useState([]);
+  const [expected,    setExpected]    = useState([]);   // today's appointments with no visit yet
   const [loading,     setLoading]     = useState(true);
   const [search,      setSearch]      = useState("");
   const [confirm,     setConfirm]     = useState(null);
@@ -1155,6 +1162,8 @@ export default function DoctorDashboard() {
   const loadOpenVisits = async (silent = false) => {
     try {
       if (!silent) setLoading(true);
+      // today's bookings (also from the Appointments app) become visits first
+      await api.post("/appointments/sync-today").catch(() => {});
       const res = await api.get("/doctor/visits");
       // Backend returns patient_name — normalize to `name` since the rest
       // of this component (avatar initials, search filter, confirm
@@ -1162,7 +1171,7 @@ export default function DoctorDashboard() {
       let data = (res.data || []).map(v => ({ ...v, name: v.patient_name || v.name }));
       // Doctor + booked treatment + time come from the appointment of each visit
       // (Supabase — also the Appointments app's bookings). Missing → the visit's own fields.
-      if (data.length) {
+      {
         try {
           const pad = (n) => String(n).padStart(2, "0");
           const iso = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -1178,7 +1187,17 @@ export default function DoctorDashboard() {
             const a = byVisit[v.visit_id];
             return { ...v, appt_doctor: a?.doctor_name || "", appt_treatment: a?.treatment || "", appt_time: a?.time || "" };
           });
-        } catch { /* appointments not connected: the table still works */ }
+          // Booked for today but no visit yet: a new patient not registered yet (no case
+          // number), or a registered patient whose visit is about to be made. They turn
+          // into normal visits by themselves once Reception registers / links them.
+          const openVisitIds = new Set(data.map(v => v.visit_id));
+          const openPatients = new Set(data.map(v => v.patient_id));
+          const today = iso(new Date());
+          setExpected((Array.isArray(ap.data) ? ap.data : [])
+            .filter(a => a.date === today && a.state === "SCHEDULED" && !a.in_clinic_visit_id
+              && !(a.visit_id && openVisitIds.has(a.visit_id)) && !(a.patient_id && openPatients.has(a.patient_id)))
+            .sort((x, y) => String(x.time).localeCompare(String(y.time))));
+        } catch { setExpected([]); /* appointments not connected: the table still works */ }
       }
       setVisits(data);
 
@@ -1246,6 +1265,10 @@ export default function DoctorDashboard() {
   );
 
   /* Unified search: filters by name, case number, mobile, or chief complaint */
+  const expectedShown = expected.filter((a) => {
+    const q = search.toLowerCase().trim();
+    return !q || [a.name, a.case_number, a.mobile, a.treatment, a.doctor_name].some((x) => String(x || "").toLowerCase().includes(q));
+  });
   const filtered = visits.filter((v) => {
     const q = search.toLowerCase().trim();
     const complaint = resolveComplaint(v);
@@ -1528,6 +1551,36 @@ export default function DoctorDashboard() {
           {filtered.length > 0 && (
             <div style={{ padding:"12px 20px", borderTop:"1px solid #f0f4fb", fontSize:11.5, color:"#94a3b8", textAlign:"right" }}>
               Showing {filtered.length} of {visits.length} visit{visits.length !== 1 ? "s" : ""}
+            </div>
+          )}
+
+          {/* ── Booked for today, visit not made yet ── */}
+          {expectedShown.length > 0 && (
+            <div className="dd-expected">
+              <div className="dd-expected-h">
+                📅 Booked for today — visit not started yet <span>{expectedShown.length}</span>
+                <small>New patients appear here until Reception registers them; then they move up with their case number.</small>
+              </div>
+              <table className="dd-table">
+                <tbody>
+                  {expectedShown.map((a) => (
+                    <tr key={a.id} className="dd-expected-row">
+                      <td style={{ width:84, fontWeight:800, color:"#0b2d4e", whiteSpace:"nowrap" }}>🕐 {fmtApptTime(a.time)}</td>
+                      <td>
+                        <div className="dd-name">{a.name || "—"}</div>
+                        <div className="dd-case">{a.case_number ? `📁 ${a.case_number}` : <span className="dd-newpt">🆕 Not registered yet</span>}</div>
+                      </td>
+                      <td style={{ fontSize:12.5, color:"#92400e", fontWeight:600 }}>{a.treatment || "—"}</td>
+                      <td style={{ fontSize:12.5, fontWeight:700, color:"#1d4d7a" }}>{a.doctor_name ? `👨‍⚕️ ${a.doctor_name}` : ""}</td>
+                      <td style={{ textAlign:"right" }}>
+                        {a.linked
+                          ? <button className="dd-appt-nav-btn" style={{ color:"#1d4d7a", background:"#eef4fb", border:"1px solid #c9daee" }} onClick={() => setApptHistoryId(a.patient_id)}>📋 History</button>
+                          : <span className="dd-chip" style={{ background:"#fef3c7", color:"#92400e", border:"1px solid #fde68a" }}>Waiting for registration</span>}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           )}
         </div>
