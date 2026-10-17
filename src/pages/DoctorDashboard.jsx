@@ -2,7 +2,7 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import api from "../api/api";
 import PatientCompleteHistory from "./PatientCompleteHistory";
-import AppointmentsBoard from "../components/AppointmentsBoard";
+import AppointmentsBoard, { announceAppointmentsChanged, onAppointmentsChanged } from "../components/AppointmentsBoard";
 
 /* ─── inject styles once ─── */
 const injectStyles = () => {
@@ -915,6 +915,7 @@ const [historyPatientId, setHistoryPatientId] = useState(null);
         created_by: "Doctor",
       });
       const visitId = res.data?.visit_id;
+      announceAppointmentsChanged();            // appointment lists (and the open-visit table) reload now
       setHistoryPatientId(null);
       if (visitId) onOpenVisit(visitId);
     } catch (err) {
@@ -1150,9 +1151,12 @@ export default function DoctorDashboard() {
     const onFocus = () => { if (document.visibilityState === "visible") loadOpenVisits(true); };
     document.addEventListener("visibilitychange", onFocus);
     window.addEventListener("focus", onFocus);
+    // a visit or booking made anywhere in the app on this computer → reload at once
+    const stopChanged = onAppointmentsChanged(() => loadOpenVisits(true));
 
     return () => {
       clearInterval(intervalId);
+      stopChanged();
       document.removeEventListener("visibilitychange", onFocus);
       window.removeEventListener("focus", onFocus);
     };

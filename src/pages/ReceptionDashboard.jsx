@@ -4,7 +4,7 @@ import api from "../api/api";
 import PatientCompleteHistory from "./PatientCompleteHistory";
 import BillingReceipts from "./BillingReceipts";
 import OtherExpenses from "./OtherExpenses";
-import AppointmentsBoard from "../components/AppointmentsBoard";
+import AppointmentsBoard, { announceAppointmentsChanged } from "../components/AppointmentsBoard";
 
 /* Doctor signature image, embedded as a data URI so it renders correctly
    inside the print popup window without needing a server-hosted path. */
@@ -1844,6 +1844,7 @@ export default function ReceptionDashboard() {
           treatment: (followup_treatment || chief_complaint || "").trim(),
           notes: chief_complaint && followup_treatment ? `Complaint: ${chief_complaint}` : "",
         });
+        announceAppointmentsChanged();          // Today's appointments / Appointments page reload now
         const name = visitPatient.name;
         setVisitPatient(null);
         setVisitCreatedFor({ name, visitId: null, apptOn: `${visit_date.split("-").reverse().join("-")} ${visit_time}` });
@@ -1872,6 +1873,7 @@ export default function ReceptionDashboard() {
 
       const name    = visitPatient.name;
       const visitId = res.data?.id || res.data?.visit_id || res.data?.visit?.id || null;
+      announceAppointmentsChanged();            // the visit's appointment shows in Today's appointments now
 
       setVisitPatient(null);
       setVisitCreatedFor({ name, visitId, patientId: visitPatient.id });

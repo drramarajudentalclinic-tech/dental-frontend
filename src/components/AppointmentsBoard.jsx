@@ -2,6 +2,26 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import api from "../api/api";
 
+/* ── "appointments changed" signal ──
+   Any screen that creates a visit or books an appointment calls
+   announceAppointmentsChanged(); every appointment list open on this computer
+   (this tab and other tabs) reloads at once instead of waiting for its timer. */
+const CHANGED = "clinic:appointments-changed";
+let channel = null;
+try { channel = typeof BroadcastChannel !== "undefined" ? new BroadcastChannel(CHANGED) : null; } catch { channel = null; }
+export function announceAppointmentsChanged() {
+  try { window.dispatchEvent(new Event(CHANGED)); } catch { /* ignore */ }
+  try { if (channel) channel.postMessage(Date.now()); } catch { /* ignore */ }
+}
+export function onAppointmentsChanged(fn) {
+  const local = () => fn();
+  window.addEventListener(CHANGED, local);
+  let ch = null;
+  try { ch = typeof BroadcastChannel !== "undefined" ? new BroadcastChannel(CHANGED) : null; } catch { ch = null; }
+  if (ch) ch.onmessage = local;
+  return () => { window.removeEventListener(CHANGED, local); if (ch) ch.close(); };
+}
+
 /*
   <AppointmentsBoard />  — appointments from Supabase (the same list the
   Appointments app uses), linked to this clinic's patients.
@@ -176,6 +196,7 @@ function ApptForm({ initial, onSaved, onClose }) {
           date: f.date, time: f.time, treatment: f.treatment, notes: f.notes, doctor_name: f.doctor, source: "clinic",
         });
       }
+      announceAppointmentsChanged();
       onSaved(res.data);
     } catch (e) { setErr(errText(e, "The appointment could not be saved. Please try again.")); }
     finally { setBusy(false); }
@@ -238,6 +259,7 @@ function CreateVisitDialog({ appt, onDone, onClose }) {
     setBusy(true); setErr("");
     try {
       const res = await api.post("/visits", { patient_id: appt.patient_id, chief_complaint: complaint.trim(), followup_treatment: followup.trim(), visit_time: appt.time });
+      announceAppointmentsChanged();
       onDone(res.data?.id || res.data?.visit_id || res.data?.visit?.id || null);
     } catch (e) { setErr(errText(e, "The visit could not be created. Please try again.")); setBusy(false); }
   };
@@ -297,8 +319,20 @@ export default function AppointmentsBoard({ role = "reception", compact = false,
 
   useEffect(() => { load(); }, [load]);
   useEffect(() => {
-    const t = setInterval(() => { if (!document.hidden) load(true); }, 60000);
-    return () => clearInterval(t);
+    // other computers (Reception / Doctor / the Appointments app): re-read every 20 s
+    // while the page is visible, and at once when the page is shown again
+    const t = setInterval(() => { if (!document.hidden) load(true); }, 20000);
+    const onShow = () => { if (!document.hidden) load(true); };
+    document.addEventListener("visibilitychange", onShow);
+    window.addEventListener("focus", onShow);
+    // this computer: reload the moment a visit or booking is made anywhere in the app
+    const stop = onAppointmentsChanged(() => load(true));
+    return () => {
+      clearInterval(t);
+      document.removeEventListener("visibilitychange", onShow);
+      window.removeEventListener("focus", onShow);
+      stop();
+    };
   }, [load]);
   useEffect(() => { if (!notice) return undefined; const t = setTimeout(() => setNotice(""), 5000); return () => clearTimeout(t); }, [notice]);
 
@@ -323,7 +357,7 @@ export default function AppointmentsBoard({ role = "reception", compact = false,
   const replace = (row) => setRows((list) => list.map((x) => (x.id === row.id ? { ...x, ...row } : x)));
   const act = async (a, fn, okText) => {
     setBusyId(a.id);
-    try { const res = await fn(); if (res?.data?.id) replace(res.data); if (okText) setNotice(okText); }
+    try { const res = await fn(); if (res?.data?.id) replace(res.data); if (okText) setNotice(okText); announceAppointmentsChanged(); }
     catch (e) { setNotice(errText(e, "That did not work. Please try again.")); }
     finally { setBusyId(null); }
   };
