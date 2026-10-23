@@ -482,7 +482,21 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
     setLoading(true);
 
     const fetchMeta   = fetch(`${apiBase}/cbct/${volumeId}`,         { headers: authHeaders() }).then(r => r.ok ? r.json() : Promise.reject("Failed to load metadata"));
-    const fetchSlices = fetch(`${apiBase}/cbct/${volumeId}/slices`,   { headers: authHeaders() }).then(r => r.ok ? r.json() : Promise.reject("Failed to load slices"));
+    // Slices: a scan kept in cloud storage (Cloudflare R2) is downloaded straight from
+    // there with a private one-hour link from the server - tens of MB that then do not
+    // pass through the server. Anything else (or if that fails) loads through the server.
+    const viaServer = () => fetch(`${apiBase}/cbct/${volumeId}/slices`, { headers: authHeaders() })
+      .then(r => r.ok ? r.json() : Promise.reject("Failed to load slices"));
+    const fetchSlices = fetch(`${apiBase}/cbct/${volumeId}/link`, { headers: authHeaders() })
+      .then(r => (r.ok ? r.json() : null))
+      .catch(() => null)
+      .then(link => {
+        if (!link || !link.url) return viaServer();
+        return fetch(link.url)
+          .then(r => (r.ok ? r.json() : Promise.reject(new Error(`cloud ${r.status}`))))
+          .then(slices => ({ slices }))
+          .catch(() => viaServer());
+      });
 
     setLoadingMsg("Loading DICOM metadata…");
     fetchMeta

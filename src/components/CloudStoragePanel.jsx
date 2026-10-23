@@ -44,6 +44,7 @@ export default function CloudStoragePanel({ onClose }) {
   const [loadErr, setLoadErr] = useState("");
   const [check, setCheck] = useState(null);
   const [checking, setChecking] = useState(false);
+  const [cors, setCors] = useState(null);       // true / false once checked
   const [moveMsg, setMoveMsg] = useState("");
   const [files, setFiles] = useState({ busy: false, text: "", problems: [] });
   const timer = useRef(null);
@@ -70,8 +71,20 @@ export default function CloudStoragePanel({ onClose }) {
   useEffect(() => { load().then((running) => { if (running) poll(); }); return () => clearTimeout(timer.current); }, [load, poll]);
 
   const runCheck = async () => {
-    setChecking(true); setCheck(null);
-    try { setCheck((await api.get("/images/storage/check")).data); }
+    setChecking(true); setCheck(null); setCors(null);
+    try {
+      const c = (await api.get("/images/storage/check")).data;
+      setCheck(c);
+      if (c.ok) {
+        // can this website read straight from the bucket? (the bucket's CORS rule — needed for CBCT)
+        let readable = false;
+        try {
+          const b = (await api.get("/images/storage/browser-check")).data;
+          if (b?.url) readable = (await (await fetch(b.url)).text()).trim() === "ok";
+        } catch { readable = false; }
+        setCors(readable);
+      }
+    }
     catch (e) { setCheck({ ok: false, error: errText(e, "The check could not run.") }); }
     finally { setChecking(false); }
   };
@@ -148,6 +161,13 @@ export default function CloudStoragePanel({ onClose }) {
               <button type="button" style={S.btn} onClick={runCheck} disabled={checking}>{checking ? "Checking…" : "🔌 Check connection"}</button>
               {check && <span style={{ fontSize: 13.5, color: check.ok ? "#065f46" : "#991b1b" }}>{check.ok ? `✅ ${check.message}` : `❌ ${check.error}`}</span>}
             </div>
+            {cors === true && <div style={{ ...S.ok, marginTop: 8 }}>✅ The website can read files straight from the cloud (CBCT scans open from there).</div>}
+            {cors === false && (
+              <div style={{ ...S.warn, marginTop: 8 }}>
+                ⚠️ The website cannot read files straight from the cloud yet, so CBCT scans load through the server (slower).
+                In Cloudflare → R2 → the bucket → <b>Settings → CORS policy</b>, add the rule from the setup notes with this website's address.
+              </div>
+            )}
           </div>
 
           <div style={S.box}>
