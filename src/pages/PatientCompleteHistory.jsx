@@ -182,19 +182,36 @@ function buildVisit(v, billing) {
 
 /* ── pictures and PDFs: loaded with the login ── */
 const imagePath = (img) => String(img.url || `/api/images/${img.id}/data`).replace(/^\/api(?=\/)/, "");
+// A picture kept in cloud storage (Cloudflare R2) is shown straight from there through
+// a private one-hour link from the server; anything else loads through the server as before.
+async function cloudLink(path) {
+  if (!/^\/images\/\d+\/data$/.test(path)) return null;
+  try {
+    const res = await api.get(path.replace(/\/data$/, "/link"));
+    return res?.data?.url ? res.data : null;
+  } catch {
+    return null;
+  }
+}
 function useBlobUrl(path, enabled = true) {
-  const [state, setState] = useState({ url: "", blob: null, error: "" });
+  const [state, setState] = useState({ url: "", blob: null, error: "", download: "" });
   useEffect(() => {
     if (!path || !enabled) return undefined;
     let made = "", cancelled = false;
-    setState({ url: "", blob: null, error: "" });
-    api.get(path, { responseType: "blob" })
-      .then((res) => {
-        if (cancelled) return;
-        if (typeof URL.createObjectURL === "function") made = URL.createObjectURL(res.data);
-        setState({ url: made, blob: res.data, error: "" });
+    setState({ url: "", blob: null, error: "", download: "" });
+    cloudLink(path)
+      .then((link) => {
+        if (link) {
+          if (!cancelled) setState({ url: link.url, blob: null, error: "", download: link.download_url || link.url });
+          return;
+        }
+        return api.get(path, { responseType: "blob" }).then((res) => {
+          if (cancelled) return;
+          if (typeof URL.createObjectURL === "function") made = URL.createObjectURL(res.data);
+          setState({ url: made, blob: res.data, error: "", download: "" });
+        });
       })
-      .catch(() => { if (!cancelled) setState({ url: "", blob: null, error: "Could not be loaded" }); });
+      .catch(() => { if (!cancelled) setState({ url: "", blob: null, error: "Could not be loaded", download: "" }); });
     return () => { cancelled = true; if (made) URL.revokeObjectURL(made); };
   }, [path, enabled]);
   return state;
@@ -217,7 +234,7 @@ function Thumb({ img, onOpen, showDate }) {
 function Viewer({ items, index, onIndex, onClose }) {
   const item = items[index];
   const isPdf = item.kind === "pdf" || String(item.mime_type || "").includes("pdf");
-  const { url, blob, error } = useBlobUrl(item.path);
+  const { url, blob, error, download } = useBlobUrl(item.path);
   useEffect(() => {
     const key = (e) => {
       if (e.key === "Escape") onClose();
@@ -228,9 +245,9 @@ function Viewer({ items, index, onIndex, onClose }) {
     return () => window.removeEventListener("keydown", key);
   }, [index, items.length]); // eslint-disable-line react-hooks/exhaustive-deps
   const save = () => {
-    if (!blob) return;
+    if (!blob && !download) return;
     const a = document.createElement("a");
-    a.href = url; a.download = item.fileName || `${item.title || "file"}${isPdf ? ".pdf" : ".jpg"}`;
+    a.href = download || url; a.download = item.fileName || `${item.title || "file"}${isPdf ? ".pdf" : ".jpg"}`;
     document.body.appendChild(a); a.click(); a.remove();
   };
   return createPortal(
@@ -243,7 +260,7 @@ function Viewer({ items, index, onIndex, onClose }) {
         {items.length > 1 && <span style={{ fontSize: 12.5, opacity: 0.8 }}>{index + 1} of {items.length}</span>}
         {items.length > 1 && <button type="button" className="pch-vbtn" disabled={index === 0} onClick={() => onIndex(index - 1)}>◀ Previous</button>}
         {items.length > 1 && <button type="button" className="pch-vbtn" disabled={index === items.length - 1} onClick={() => onIndex(index + 1)}>Next ▶</button>}
-        <button type="button" className="pch-vbtn" disabled={!blob} onClick={save}>⬇ Download</button>
+        <button type="button" className="pch-vbtn" disabled={!blob && !download} onClick={save}>⬇ Download</button>
         <button type="button" className="pch-vbtn" disabled={!url} onClick={() => window.open(url, "_blank")}>↗ Full size</button>
         <button type="button" className="pch-vbtn pch-vbtn-close" onClick={onClose} autoFocus>✕ Close</button>
       </div>

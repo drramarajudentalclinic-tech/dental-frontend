@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import api from "../api/api";
 import PatientCompleteHistory from "./PatientCompleteHistory";
 import AppointmentsBoard, { announceAppointmentsChanged, onAppointmentsChanged } from "../components/AppointmentsBoard";
+import CloudStoragePanel from "../components/CloudStoragePanel";
 
 /* ─── inject styles once ─── */
 const injectStyles = () => {
@@ -1127,6 +1128,7 @@ export default function DoctorDashboard() {
   const [closing,     setClosing]     = useState(false);
   const [lookupOpen,  setLookupOpen]  = useState(false);
   const [apptOpen,    setApptOpen]    = useState(false);
+  const [storageOpen, setStorageOpen] = useState(false);   // ☁️ Cloud storage (R2)
   const [showDebug,   setShowDebug]   = useState(false);
   const [rawSample,   setRawSample]   = useState(null);
   const navigate = useNavigate();
@@ -1312,6 +1314,8 @@ export default function DoctorDashboard() {
         />
       )}
 
+      {storageOpen && <CloudStoragePanel onClose={() => setStorageOpen(false)} />}
+
       {/* ── appointments modal ── */}
       {apptOpen && (
         <div style={{
@@ -1403,6 +1407,13 @@ export default function DoctorDashboard() {
             title="View appointments"
           >
             📅 Appointments
+          </button>
+          <button
+            className="dd-appt-nav-btn"
+            onClick={() => setStorageOpen(true)}
+            title="Cloud storage for X-rays, CBCT scans, receipts and Excel sheets"
+          >
+            ☁️ Storage
           </button>
           <div className="dd-header-badge">
             <span />

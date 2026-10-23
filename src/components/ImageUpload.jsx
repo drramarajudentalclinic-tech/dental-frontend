@@ -73,18 +73,46 @@ async function explainLoadError(err) {
   return "The picture could not be loaded.";
 }
 
+/* A picture kept in cloud storage (Cloudflare R2) is shown straight from there,
+ * through a private link the server gives out for one hour — it does not pass
+ * through the server. Anything else (or an older server) loads as before. */
+async function cloudLink(src) {
+  const path = apiPath(src);
+  if (!/\/images\/\d+\/data$/.test(path)) return null;
+  try {
+    const res = await api.get(path.replace(/\/data$/, "/link"));
+    return res?.data?.url ? res.data : null;
+  } catch {
+    return null;
+  }
+}
+
 function loadPicture(src) {
   let entry = pictureCache.get(src);
+  if (entry && entry.expires && Date.now() > entry.expires) {   // the private link ran out: ask again
+    pictureCache.delete(src);
+    entry = null;
+  }
   if (!entry) {
-    entry = { url: null, type: "", size: 0 };
-    entry.promise = api.get(apiPath(src), { responseType: "blob" })
-      .then((res) => {
-        const blob = res.data;
-        if (!blob || typeof blob.size !== "number" || blob.size === 0) throw new Error("empty");
-        entry.url  = URL.createObjectURL(blob);
-        entry.type = blob.type || "";
-        entry.size = blob.size;
-        return entry;
+    entry = { url: null, type: "", size: 0, remote: false, download: null, expires: 0 };
+    entry.promise = cloudLink(src)
+      .then((link) => {
+        if (link) {
+          entry.url      = link.url;
+          entry.type     = link.mime_type || "";
+          entry.remote   = true;
+          entry.download = link.download_url || link.url;
+          entry.expires  = Date.now() + Math.max(60, (link.expires_in || 3600) - 300) * 1000;
+          return entry;
+        }
+        return api.get(apiPath(src), { responseType: "blob" }).then((res) => {
+          const blob = res.data;
+          if (!blob || typeof blob.size !== "number" || blob.size === 0) throw new Error("empty");
+          entry.url  = URL.createObjectURL(blob);
+          entry.type = blob.type || "";
+          entry.size = blob.size;
+          return entry;
+        });
       })
       .catch(async (err) => {
         pictureCache.delete(src);              // so "Try again" really tries again
@@ -98,7 +126,7 @@ function loadPicture(src) {
 
 function forgetPicture(src) {
   const entry = pictureCache.get(src);
-  if (entry?.url) URL.revokeObjectURL(entry.url);
+  if (entry?.url && !entry.remote) URL.revokeObjectURL(entry.url);
   pictureCache.delete(src);
 }
 
@@ -531,7 +559,7 @@ function Lightbox({ img, images = [], onNavigate, onClose }) {
     setBrightness(100); setContrast(100); setInvert(false);
     if (img.available === false) { setError("The file for this picture is missing on the server."); return; }
     loadPicture(img.url)
-      .then(entry => { if (!cancelled) setPicture({ url: entry.url, type: entry.type }); })
+      .then(entry => { if (!cancelled) setPicture({ url: entry.url, type: entry.type, download: entry.download }); })
       .catch(err => { if (!cancelled) setError(err.message || "The picture could not be loaded."); });
     return () => { cancelled = true; };
   }, [img.id, img.url, img.available, attempt]);
@@ -598,7 +626,7 @@ function Lightbox({ img, images = [], onNavigate, onClose }) {
   const download = () => {
     if (!picture) return;
     const a = document.createElement("a");
-    a.href = picture.url;
+    a.href = picture.download || picture.url;      // a cloud picture's download link names the file itself
     a.download = downloadName(img, picture.type);
     document.body.appendChild(a); a.click(); a.remove();
   };
