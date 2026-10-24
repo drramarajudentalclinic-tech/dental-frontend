@@ -1135,6 +1135,7 @@ export default function DoctorDashboard() {
   const [apptOpen,    setApptOpen]    = useState(false);
   const [storageOpen, setStorageOpen] = useState(false);   // ☁️ Cloud storage (R2)
   const [imaging,     setImaging]     = useState({ pending: 0, overdue: 0 });   // 🩻 X-rays & Scans waiting
+  const [startingId,  setStartingId]  = useState(null);   // a booked patient whose visit is being started
   const [showDebug,   setShowDebug]   = useState(false);
   const [rawSample,   setRawSample]   = useState(null);
   const navigate = useNavigate();
@@ -1252,6 +1253,35 @@ export default function DoctorDashboard() {
       alert("Failed to close visit. Please try again.");
     } finally {
       setClosing(false);
+    }
+  };
+
+  // "▶ Start visit" for a registered patient booked for today whose visit was not made
+  // automatically: make (or find) today's visit for the booking, then open it.
+  const startBookedVisit = async (a) => {
+    if (!a?.patient_id) return;
+    setStartingId(a.id);
+    try {
+      await api.post("/appointments/sync-today?force=1").catch(() => {});
+      const res = await api.get("/doctor/visits");
+      let visitId = (res.data || []).find((v) => v.patient_id === a.patient_id)?.visit_id;
+      if (!visitId) {
+        const made = await api.post(`/patients/${a.patient_id}/create-visit`, {
+          created_by: "Doctor",
+          assigned_doctor: a.doctor_name || undefined,
+          visit_time: a.time || undefined,           // the booked time; the booking is linked to this visit
+        });
+        visitId = made.data?.visit_id;
+      }
+      announceAppointmentsChanged();
+      if (visitId) handleOpenVisit(visitId);
+      else loadOpenVisits(true);
+    } catch (err) {
+      console.error(err);
+      alert(err?.response?.data?.error || "The visit could not be started. Please try again.");
+      loadOpenVisits(true);
+    } finally {
+      setStartingId(null);
     }
   };
 
@@ -1605,9 +1635,16 @@ export default function DoctorDashboard() {
                       <td style={{ fontSize:12.5, color:"#92400e", fontWeight:600 }}>{a.treatment || "—"}</td>
                       <td style={{ fontSize:12.5, fontWeight:700, color:"#1d4d7a" }}>{a.doctor_name ? `👨‍⚕️ ${a.doctor_name}` : ""}</td>
                       <td style={{ textAlign:"right" }}>
-                        {a.linked
-                          ? <button className="dd-appt-nav-btn" style={{ color:"#1d4d7a", background:"#eef4fb", border:"1px solid #c9daee" }} onClick={() => setApptHistoryId(a.patient_id)}>📋 History</button>
-                          : <span className="dd-chip" style={{ background:"#fef3c7", color:"#92400e", border:"1px solid #fde68a" }}>Waiting for registration</span>}
+                        {a.linked ? (
+                          <span style={{ display:"inline-flex", gap:8, flexWrap:"wrap", justifyContent:"flex-end" }}>
+                            <button className="dd-open-btn" disabled={startingId === a.id}
+                              title="Make today's visit for this booking and open it"
+                              onClick={() => startBookedVisit(a)}>
+                              {startingId === a.id ? "Starting…" : "▶ Start visit"}
+                            </button>
+                            <button className="dd-appt-nav-btn" style={{ color:"#1d4d7a", background:"#eef4fb", border:"1px solid #c9daee" }} onClick={() => setApptHistoryId(a.patient_id)}>📋 History</button>
+                          </span>
+                        ) : <span className="dd-chip" style={{ background:"#fef3c7", color:"#92400e", border:"1px solid #fde68a" }}>Waiting for registration</span>}
                       </td>
                     </tr>
                   ))}
