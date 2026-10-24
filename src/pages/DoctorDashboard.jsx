@@ -6,6 +6,7 @@ import AppointmentsBoard, { announceAppointmentsChanged, onAppointmentsChanged }
 import CloudStoragePanel from "../components/CloudStoragePanel";
 import ImagingQueue, { announceImagingChanged } from "../components/ImagingQueue";
 import PortalSharePanel, { PortalHub } from "../components/PortalSharePanel";
+import StaffPanel from "../components/StaffPanel";
 
 /* ─── inject styles once ─── */
 const injectStyles = () => {
@@ -1139,6 +1140,7 @@ export default function DoctorDashboard() {
   const [apptOpen,    setApptOpen]    = useState(false);
   const [storageOpen, setStorageOpen] = useState(false);   // ☁️ Cloud storage (R2)
   const [portalHubOpen, setPortalHubOpen] = useState(false); // 🌐 patient portal (find a patient)
+  const [staffOpen, setStaffOpen] = useState(false);         // 👥 staff accounts
   const [apptPortalPid, setApptPortalPid] = useState(null);
   const [imaging,     setImaging]     = useState({ pending: 0, overdue: 0 });   // 🩻 X-rays & Scans waiting
   const [startingId,  setStartingId]  = useState(null);   // a booked patient whose visit is being started
@@ -1359,6 +1361,7 @@ export default function DoctorDashboard() {
 
       {storageOpen && <CloudStoragePanel onClose={() => setStorageOpen(false)} />}
       {portalHubOpen && <PortalHub onClose={() => setPortalHubOpen(false)} />}
+      {staffOpen && <StaffPanel onClose={() => setStaffOpen(false)} />}
 
       {/* ── appointments modal ── */}
       {apptOpen && (
@@ -1477,6 +1480,13 @@ export default function DoctorDashboard() {
             title="Patient portal: choose what each patient can see online"
           >
             🌐 Patient portal
+          </button>
+          <button
+            className="dd-appt-nav-btn"
+            onClick={() => setStaffOpen(true)}
+            title="Staff accounts: add reception or doctor logins, reset passwords, switch accounts off"
+          >
+            👥 Staff
           </button>
           <div className="dd-header-badge">
             <span />
