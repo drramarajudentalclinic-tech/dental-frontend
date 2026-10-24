@@ -5,6 +5,7 @@ import PatientCompleteHistory from "./PatientCompleteHistory";
 import AppointmentsBoard, { announceAppointmentsChanged, onAppointmentsChanged } from "../components/AppointmentsBoard";
 import CloudStoragePanel from "../components/CloudStoragePanel";
 import ImagingQueue, { announceImagingChanged } from "../components/ImagingQueue";
+import PortalSharePanel, { PortalHub } from "../components/PortalSharePanel";
 
 /* ─── inject styles once ─── */
 const injectStyles = () => {
@@ -891,6 +892,7 @@ const PatientLookupDrawer = ({ onClose, onOpenVisit }) => {
   };
 
 const [historyPatientId, setHistoryPatientId] = useState(null);
+  const [portalPid, setPortalPid] = useState(null);   // 🌐 patient portal panel
 
   const handleSearch = useCallback(async () => {
     if (!query.trim()) return;
@@ -1078,8 +1080,10 @@ const [historyPatientId, setHistoryPatientId] = useState(null);
           onBack={() => setHistoryPatientId(null)}
           onCreateVisit={handleCreateVisitFromHistory}
           onOpenVisit={(visitId) => { setHistoryPatientId(null); onOpenVisit(visitId); }}
+          onSharePortal={setPortalPid}
         />
       )}
+      {portalPid && <PortalSharePanel patientId={portalPid} onClose={() => setPortalPid(null)} />}
     </>
   );
 };
@@ -1134,6 +1138,8 @@ export default function DoctorDashboard() {
   const [lookupOpen,  setLookupOpen]  = useState(false);
   const [apptOpen,    setApptOpen]    = useState(false);
   const [storageOpen, setStorageOpen] = useState(false);   // ☁️ Cloud storage (R2)
+  const [portalHubOpen, setPortalHubOpen] = useState(false); // 🌐 patient portal (find a patient)
+  const [apptPortalPid, setApptPortalPid] = useState(null);
   const [imaging,     setImaging]     = useState({ pending: 0, overdue: 0 });   // 🩻 X-rays & Scans waiting
   const [startingId,  setStartingId]  = useState(null);   // a booked patient whose visit is being started
   const [showDebug,   setShowDebug]   = useState(false);
@@ -1352,6 +1358,7 @@ export default function DoctorDashboard() {
       )}
 
       {storageOpen && <CloudStoragePanel onClose={() => setStorageOpen(false)} />}
+      {portalHubOpen && <PortalHub onClose={() => setPortalHubOpen(false)} />}
 
       {/* ── appointments modal ── */}
       {apptOpen && (
@@ -1409,8 +1416,10 @@ export default function DoctorDashboard() {
           patientId={apptHistoryId}
           readOnlyLabel="Doctor — Read Only"
           onBack={() => setApptHistoryId(null)}
+          onSharePortal={setApptPortalPid}
         />
       )}
+      {apptPortalPid && <PortalSharePanel patientId={apptPortalPid} onClose={() => setApptPortalPid(null)} />}
 
       {/* ══ HEADER ══ */}
       <div className="dd-header">
@@ -1461,6 +1470,13 @@ export default function DoctorDashboard() {
             title="Cloud storage for X-rays, CBCT scans, receipts and Excel sheets"
           >
             ☁️ Storage
+          </button>
+          <button
+            className="dd-appt-nav-btn"
+            onClick={() => setPortalHubOpen(true)}
+            title="Patient portal: choose what each patient can see online"
+          >
+            🌐 Patient portal
           </button>
           <div className="dd-header-badge">
             <span />

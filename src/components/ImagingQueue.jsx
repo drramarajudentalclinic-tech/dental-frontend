@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import api from "../api/api";
+import PortalSharePanel from "./PortalSharePanel";
 import ImageUpload from "./ImageUpload";
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -142,6 +143,7 @@ function ImagingDrawer({ start, onClose, onDone }) {
     return () => { document.body.style.overflow = prev; window.removeEventListener("keydown", key); };
   }, [onClose]);
 
+  const [shareOpen, setShareOpen] = useState(false);   // 🌐 patient portal
   const total = it?.counts?.total || 0;
   const set = async (status, note) => {
     setBusy(true); setErr("");
@@ -191,10 +193,15 @@ function ImagingDrawer({ start, onClose, onDone }) {
             ) : (
               <button type="button" className="iq-btn" disabled={busy} onClick={() => set("pending")}>↩ Back to the waiting list</button>
             )}
+            {it.patient_id && (
+              <button type="button" className="iq-btn" onClick={() => setShareOpen(true)}
+                title="Choose which X-rays, scans and records this patient can see in the patient portal">🌐 Share with patient</button>
+            )}
             <button type="button" className="iq-btn" onClick={onClose}>Close</button>
           </div>
         </div>
       </div>
+      {shareOpen && <PortalSharePanel patientId={it.patient_id} onClose={() => setShareOpen(false)} />}
       {askNone && <NoneDialog it={it} busy={busy} onCancel={() => setAskNone(false)} onConfirm={(note) => set("none", note)} />}
     </div>,
     document.body,

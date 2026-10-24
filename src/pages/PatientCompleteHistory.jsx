@@ -336,7 +336,7 @@ function MedTable({ meds }) {
 /* ══════════════════════════════════════════════════════════════════
    The screen
 ══════════════════════════════════════════════════════════════════ */
-export default function PatientCompleteHistory({ patientId, onBack, onCreateVisit, onOpenVisit, readOnlyLabel = "Read Only" }) {
+export default function PatientCompleteHistory({ patientId, onBack, onCreateVisit, onOpenVisit, readOnlyLabel = "Read Only", onSharePortal }) {
   const [data, setData] = useState(null);
   const [history, setHistory] = useState(null);
   const [billing, setBilling] = useState(null);          // null = not loaded / not available
@@ -479,6 +479,10 @@ export default function PatientCompleteHistory({ patientId, onBack, onCreateVisi
           </div>
           <div className="pch-head-actions">
             {visitActions}
+            {onSharePortal && (
+              <button type="button" className="pch-btn" onClick={() => onSharePortal(patientId)}
+                title="Choose what this patient can see in the patient portal">🌐 Patient portal</button>
+            )}
             <button type="button" className="pch-btn" onClick={onBack}>← Back</button>
           </div>
         </header>
