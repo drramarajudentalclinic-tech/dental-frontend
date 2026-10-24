@@ -7,7 +7,8 @@ import DentalChart, { resolveDiagnosisCondition } from "../components/DentalChar
 import Findings from "../components/Findings";
 import Consultation from "../components/Consultation";
 import Prescription from "../components/Prescription";
-import ImageUpload from "../components/ImageUpload";
+// X-rays, OPG, photos and CBCT are uploaded from the Doctor dashboard (🩻 X-rays & Scans)
+// after the visit is closed — see ImagingQueue.jsx.
 // Medical Conditions, Allergy Records, Current Medications, Personal Habits
 // and Women's Health: one shared component — the same one Reception uses,
 // reading and writing the same records.
@@ -417,6 +418,7 @@ function BillingInstructionsModal({ visit, patient, onConfirm, onCancel }) {
           }}>
             📋 The clinical summary will be sent to <strong>Reception</strong> automatically (their “Doctor's Instructions” list).
             Add optional billing instructions below, then you will return to your <strong>dashboard</strong> for the next patient.
+            The visit also waits in <strong>🩻 X-rays &amp; Scans</strong> on the dashboard for its pictures or scans.
           </div>
 
           {(visit?.diagnosis || visit?.treatment_done || visit?.treatment_plan || visit?.advice) && (
@@ -983,9 +985,21 @@ export default function VisitPage() {
           />
         </Module>
 
-        <Module icon="🖼️" title="Image Upload" sub="X-rays & clinical photos" bg="#ecfeff" delay="vp-d6">
-          <ImageUpload visitId={visitId} disabled={isClosed} />
-        </Module>
+        {/* X-rays, OPG, photos & CBCT: uploaded later from the Doctor dashboard */}
+        <div style={{
+          display:"flex", alignItems:"center", gap:12, flexWrap:"wrap",
+          background:"#ecfeff", border:"1px solid #a5f3fc", borderRadius:14,
+          padding:"14px 18px", margin:"4px 0 18px", color:"#155e75",
+          fontFamily:"'Plus Jakarta Sans',sans-serif", fontSize:13, lineHeight:1.55,
+        }}>
+          <span style={{ fontSize:22 }}>🩻</span>
+          <span style={{ flex:"1 1 320px" }}>
+            <b>X-rays, OPG, photos &amp; CBCT</b> are uploaded from the <b>Doctor dashboard → X-rays &amp; Scans</b>.
+            {isClosed
+              ? " This visit is there (or already done) — open it from the dashboard to add or view files."
+              : " When you close this visit it appears there, so you can add them whenever they are ready — or mark “No images needed”."}
+          </span>
+        </div>
 
         {/* ══════════ BOTTOM ACTIONS ══════════ */}
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", paddingTop:10 }}>

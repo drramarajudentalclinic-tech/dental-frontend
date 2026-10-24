@@ -1623,7 +1623,7 @@ function CBCTViewer({ volumeId, onClose }) {
     </div>
   );
 }
-function CBCTUploadSection({ visitId, disabled }) {
+function CBCTUploadSection({ visitId, disabled, onChange }) {
   const [volumes, setVolumes] = useState([]);
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -1647,6 +1647,7 @@ function CBCTUploadSection({ visitId, disabled }) {
             : [];
         setVolumes(list);
         setLoading(false);
+        if (onChange) onChange();
       })
       .catch(() => {
         setError("Failed to load CBCT volumes");
@@ -1866,7 +1867,9 @@ function CBCTUploadSection({ visitId, disabled }) {
 /* ═══════════════════════════════════════════
    MAIN COMPONENT
 ═══════════════════════════════════════════ */
-export default function ImageUpload({ visitId, disabled = false }) {
+// onChange (optional): called whenever this visit's pictures or CBCT scans were (re)loaded —
+// e.g. after an upload or delete — so a screen around it can refresh its counts.
+export default function ImageUpload({ visitId, disabled = false, onChange }) {
   useEffect(() => { injectStyles(); }, []);
 
   const [activeTab,   setActiveTab]   = useState("images"); // "images" | "cbct"
@@ -1889,6 +1892,7 @@ export default function ImageUpload({ visitId, disabled = false }) {
     try {
       const res = await api.get(`/visits/${visitId}/images`);
       setImages(Array.isArray(res.data) ? res.data : []);
+      if (onChange) onChange();
     } catch (err) {
       console.error("Failed to load images", err);
       setLoadError("Could not load the pictures for this visit.");
@@ -2014,7 +2018,7 @@ export default function ImageUpload({ visitId, disabled = false }) {
 
       {/* ── CBCT Tab ── */}
       {activeTab==="cbct" && (
-        <CBCTUploadSection visitId={visitId} disabled={disabled} />
+        <CBCTUploadSection visitId={visitId} disabled={disabled} onChange={onChange} />
       )}
 
       {/* ── Modals (each one is drawn on the page body, over everything) ── */}

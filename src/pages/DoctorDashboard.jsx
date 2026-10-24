@@ -4,6 +4,7 @@ import api from "../api/api";
 import PatientCompleteHistory from "./PatientCompleteHistory";
 import AppointmentsBoard, { announceAppointmentsChanged, onAppointmentsChanged } from "../components/AppointmentsBoard";
 import CloudStoragePanel from "../components/CloudStoragePanel";
+import ImagingQueue, { announceImagingChanged } from "../components/ImagingQueue";
 
 /* ─── inject styles once ─── */
 const injectStyles = () => {
@@ -45,6 +46,10 @@ const injectStyles = () => {
     }
     .dd-header-sub { font-size: 11.5px; color: rgba(255,255,255,0.65); margin-top: 2px; }
     .dd-header-right { display: flex; align-items: center; gap: 12px; }
+    @media (max-width: 1100px) {
+      .dd-header { flex-wrap: wrap; gap: 12px; }
+      .dd-header-right { flex-wrap: wrap; gap: 8px; }
+    }
     .dd-header-badge {
       display: inline-flex; align-items: center; gap: 6px;
       background: rgba(255,255,255,0.12);
@@ -1129,6 +1134,7 @@ export default function DoctorDashboard() {
   const [lookupOpen,  setLookupOpen]  = useState(false);
   const [apptOpen,    setApptOpen]    = useState(false);
   const [storageOpen, setStorageOpen] = useState(false);   // ☁️ Cloud storage (R2)
+  const [imaging,     setImaging]     = useState({ pending: 0, overdue: 0 });   // 🩻 X-rays & Scans waiting
   const [showDebug,   setShowDebug]   = useState(false);
   const [rawSample,   setRawSample]   = useState(null);
   const navigate = useNavigate();
@@ -1239,6 +1245,7 @@ export default function DoctorDashboard() {
       await api.put(`/visits/${confirm.visit_id}/close`);
       setVisits((prev) => prev.filter((v) => v.visit_id !== confirm.visit_id));
       setConfirm(null);
+      announceImagingChanged();            // the closed visit now waits in X-rays & Scans
       // Visit closed — receptionist will handle billing
     } catch (err) {
       console.error(err);
@@ -1407,6 +1414,16 @@ export default function DoctorDashboard() {
             title="View appointments"
           >
             📅 Appointments
+          </button>
+          <button
+            className="dd-appt-nav-btn"
+            onClick={() => document.getElementById("imaging-queue")?.scrollIntoView({ behavior: "smooth", block: "start" })}
+            title="Closed visits waiting for X-rays, OPG, photos or CBCT"
+          >
+            🩻 X-rays &amp; Scans{imaging.pending > 0 && (
+              <span style={{ marginLeft:6, background: imaging.overdue ? "#dc2626" : "#f59e0b", color:"#fff",
+                borderRadius:999, padding:"0 7px", fontSize:11, fontWeight:800 }}>{imaging.pending}</span>
+            )}
           </button>
           <button
             className="dd-appt-nav-btn"
@@ -1599,6 +1616,9 @@ export default function DoctorDashboard() {
             </div>
           )}
         </div>
+
+        {/* ══ X-rays & Scans: every closed visit waits here for its pictures / scans ══ */}
+        <ImagingQueue onSummary={setImaging} onOpenHistory={setApptHistoryId} />
 
       </div>
     </div>
