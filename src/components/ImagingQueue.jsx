@@ -6,7 +6,8 @@ import ImageUpload from "./ImageUpload";
 
 /* ═══════════════════════════════════════════════════════════════════
    🩻 X-RAYS & SCANS  (Doctor dashboard)
-   X-rays, OPGs, intra-oral photos and CBCT scans are added AFTER the
+   X-rays, OPGs, intra-oral photos, CBCT scans and implant details
+   (photo of the implant box / sticker: system, size, torque) are added AFTER the
    visit. Every closed visit waits here until the doctor either
      ✓ marks it uploaded  (at least one file is there), or
      ✕ says no images are needed  (nothing uploaded)
@@ -23,7 +24,7 @@ export function announceImagingChanged() {
 const errText = (e, fallback) => e?.response?.data?.error || e?.response?.data?.message || fallback;
 
 const KINDS = [
-  ["IOPA", "IOPA"], ["OPG", "OPG"], ["INTRAORAL", "Photo"], ["CBCT", "CBCT pic"], ["scans", "CBCT scan"],
+  ["IOPA", "IOPA"], ["OPG", "OPG"], ["INTRAORAL", "Photo"], ["CBCT", "CBCT pic"], ["scans", "CBCT scan"], ["IMPLANT", "Implant pic"],
 ];
 function fileChips(counts, empty = "None yet") {
   const parts = KINDS.filter(([k]) => (counts?.[k] || 0) > 0)
@@ -354,7 +355,7 @@ export default function ImagingQueue({ onSummary, onOpenHistory }) {
       <div className="iq-sum">
         {summary.overdue > 0 && <span className="iq-pill" style={{ background:"#fef2f2", color:"#b91c1c", borderColor:"#fecaca" }}>⚠️ {summary.overdue} waiting 2+ days</span>}
         <span className="iq-pill" style={{ background:"#ecfdf5", color:"#047857", borderColor:"#a7f3d0" }}>✓ {summary.done_today} done today</span>
-        <span className="iq-pill" style={{ background:"#f8fafc", color:"#64748b", borderColor:"#e2e8f0" }}>Every closed visit comes here. Open → upload X-rays, OPG, photos or CBCT → ✓ Uploaded. Nothing needed → No images.</span>
+        <span className="iq-pill" style={{ background:"#f8fafc", color:"#64748b", borderColor:"#e2e8f0" }}>Every closed visit comes here. Open → upload X-rays, OPG, photos, CBCT or implant details → ✓ Uploaded. Nothing needed → No images.</span>
       </div>
 
       {notice && <div className="iq-note" role="status" style={{ background:"#eff6ff", color:"#1e40af", border:"1px solid #bfdbfe" }}>{notice}</div>}

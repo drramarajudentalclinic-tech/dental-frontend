@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { createPortal } from "react-dom";
 import api from "../api/api";
+import { IMPLANT_SYSTEMS as IMPLANT_SYSTEM_NAMES, IMPLANT_DIAMETERS, IMPLANT_LENGTHS, IMPLANT_TORQUES, EMPTY_IMPLANT,
+  formatImplant, implantReady, implantsFromTreatmentText } from "./implantOptions";
 
 /* ─── constants ─────────────────────────────────────────────── */
 const IMAGE_TYPES = [
@@ -8,6 +10,7 @@ const IMAGE_TYPES = [
   { value: "OPG",       label: "OPG",              icon: "🦴", desc: "Orthopantomogram" },
   { value: "CBCT",      label: "CBCT",             icon: "🔬", desc: "Cone Beam CT" },
   { value: "INTRAORAL", label: "Intra Oral Image",  icon: "📸", desc: "Intraoral Photo" },
+  { value: "IMPLANT",   label: "Implant",           icon: "🔩", desc: "Box / sticker: system, size, torque" },
 ];
 
 // Biggest picture the server accepts (images.py: IMAGE_MAX_MB, default 25).
@@ -460,6 +463,7 @@ const injectStyles = () => {
     .imgup-viewer-nav.left { left:14px; }
     .imgup-viewer-nav.right { right:14px; }
     .imgup-viewer-hint { text-align:center; padding:7px 10px 9px; font-size:11px; color:rgba(255,255,255,0.35); flex-shrink:0; }
+    @media (max-width:560px) { .imgup-implant-grid { grid-template-columns:1fr 1fr !important; } .imgup-implant-grid > label { grid-column:auto !important; } }
     @media (max-width:820px) {
       /* small screens: title and Close on the first line, the tools on a line of their own */
       .imgup-viewer-tools.main { order:3; flex-basis:100%; }
@@ -732,6 +736,88 @@ function Lightbox({ img, images = [], onNavigate, onClose }) {
 }
 
 /* ═══════════════════════════════════════════
+   IMPLANT DETAILS (upload kind "Implant")
+   The photo of the implant box / sticker is saved with its details in the
+   description, e.g. "Tooth 36 · Straumann Ø4.1 × 10 mm, 35 Ncm".
+   Implants written in today's "Treatment Done Today" can be filled in with one tap.
+═══════════════════════════════════════════ */
+function implantDescription(tooth, details, extra) {
+  const t = String(tooth || "").trim();
+  return [t ? `Tooth ${t}` : "", formatImplant(details), String(extra || "").trim()].filter(Boolean).join(" · ");
+}
+
+function ImplantUploadFields({ visitId, tooth, setTooth, value, onChange }) {
+  const [suggestions, setSuggestions] = useState([]);
+  useEffect(() => {
+    let cancelled = false;
+    api.get(`/visits/${visitId}/consultations`)
+      .then(res => {
+        if (cancelled) return;
+        const rows = Array.isArray(res.data) ? res.data : [];
+        setSuggestions(rows.flatMap(r => implantsFromTreatmentText(r.treatment_done_today)));
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [visitId]);
+
+  const set = k => e => onChange({ ...value, [k]: e.target.value });
+  const box = { width:"100%",padding:"8px 10px",border:"1.5px solid #e2e8f0",borderRadius:8,fontFamily:"'Plus Jakarta Sans',sans-serif",
+    fontSize:12.5,color:"#1e293b",background:"#fff",outline:"none",boxSizing:"border-box" };
+  const lab = { display:"flex",flexDirection:"column",gap:4,fontSize:10.5,fontWeight:700,color:"#64748b",letterSpacing:"0.3px",minWidth:0 };
+
+  return (
+    <div style={{ marginTop:16,border:"1.5px solid #99f6e4",background:"linear-gradient(180deg,#f0fdfa,#fff)",borderRadius:12,padding:"12px 14px" }}>
+      <div style={{ fontSize:12.5,fontWeight:800,color:"#0f766e",marginBottom:8 }}>🔩 Implant details <span style={{ fontWeight:500,color:"#64748b",fontSize:11 }}>— saved with the picture</span></div>
+      {suggestions.length > 0 && (
+        <div style={{ marginBottom:10 }}>
+          <div style={{ fontSize:11,color:"#475569",marginBottom:5 }}>From this visit's treatment notes — tap to fill in:</div>
+          <div style={{ display:"flex",gap:6,flexWrap:"wrap" }}>
+            {suggestions.map((sg, i) => (
+              <button type="button" key={i} onClick={() => { onChange({ ...EMPTY_IMPLANT, ...sg.details }); setTooth(sg.teeth.join(", ")); }}
+                style={{ border:"1.5px solid #5eead4",background:"#fff",color:"#0f766e",borderRadius:999,padding:"5px 11px",
+                  fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit" }}>
+                {sg.teeth.length ? `Tooth ${sg.teeth.join(", ")} · ` : ""}{sg.text}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      <div style={{ display:"grid",gridTemplateColumns:"repeat(4,minmax(0,1fr))",gap:8 }} className="imgup-implant-grid">
+        <label style={{ ...lab, gridColumn:"span 1" }}>Tooth
+          <input style={box} value={tooth} onChange={e=>setTooth(e.target.value.replace(/[^\d,\s]/g, ""))} placeholder="e.g. 36" inputMode="numeric" aria-label="Tooth number" />
+        </label>
+        <label style={{ ...lab, gridColumn:"span 3" }}>Implant system *
+          <select style={box} value={value.system} onChange={set("system")} aria-label="Implant system">
+            <option value="">Choose the system…</option>
+            {IMPLANT_SYSTEM_NAMES.map(x => <option key={x} value={x}>{x}</option>)}
+          </select>
+        </label>
+        {value.system === "Other" && (
+          <label style={{ ...lab, gridColumn:"1 / -1" }}>System name
+            <input style={box} value={value.systemOther} onChange={set("systemOther")} placeholder="e.g. Bego, MIS, Zimmer…" aria-label="Other implant system" />
+          </label>
+        )}
+        <label style={lab}>Diameter (mm)
+          <select style={box} value={value.diameter} onChange={set("diameter")} aria-label="Implant diameter">
+            <option value="">—</option>{IMPLANT_DIAMETERS.map(x => <option key={x} value={x}>Ø {x}</option>)}
+          </select>
+        </label>
+        <label style={lab}>Length (mm)
+          <select style={box} value={value.length} onChange={set("length")} aria-label="Implant length">
+            <option value="">—</option>{IMPLANT_LENGTHS.map(x => <option key={x} value={x}>{x}</option>)}
+          </select>
+        </label>
+        <label style={{ ...lab, gridColumn:"span 2" }}>Insertion torque
+          <select style={box} value={value.torque} onChange={set("torque")} aria-label="Insertion torque">
+            <option value="">—</option>{IMPLANT_TORQUES.map(x => <option key={x} value={x}>{x} Ncm</option>)}
+          </select>
+        </label>
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════
    UPLOAD MODAL — one or several pictures at a time
 ═══════════════════════════════════════════ */
 let pickSeq = 0;
@@ -745,6 +831,8 @@ function UploadModal({ onClose, onUploaded, visitId }) {
   const [uploading,   setUploading]   = useState(false);
   const [progress,    setProgress]    = useState("");
   const [message,     setMessage]     = useState("");
+  const [implant,     setImplant]     = useState(EMPTY_IMPLANT);   // only for "Implant"
+  const [implTooth,   setImplTooth]   = useState("");
   const fileRef  = useRef();
   const picksRef = useRef([]);
   picksRef.current = picks;
@@ -790,7 +878,9 @@ function UploadModal({ onClose, onUploaded, visitId }) {
   };
 
   const ready = picks.filter(p => !p.error);
-  const canUpload = !!selType && ready.length > 0 && !uploading;
+  const isImplant = selType === "IMPLANT";
+  const canUpload = !!selType && ready.length > 0 && !uploading && (!isImplant || implantReady(implant));
+  const finalDescription = isImplant ? implantDescription(implTooth, implant, description) : description;
 
   const handleUpload = async () => {
     if (!canUpload) return;
@@ -804,7 +894,7 @@ function UploadModal({ onClose, onUploaded, visitId }) {
         const fd = new FormData();
         fd.append("image",       pick.file);
         fd.append("type",        selType);
-        fd.append("description", description);
+        fd.append("description", finalDescription);
         fd.append("image_date",  imageDate);
         await api.post(`/visits/${visitId}/images`, fd, { headers:{ "Content-Type":"multipart/form-data" } });
         done += 1;
@@ -858,6 +948,9 @@ function UploadModal({ onClose, onUploaded, visitId }) {
             </button>
           ))}
         </div>
+        {isImplant && (
+          <ImplantUploadFields visitId={visitId} tooth={implTooth} setTooth={setImplTooth} value={implant} onChange={setImplant} />
+        )}
         {selType === "CBCT" && (
           <div style={{ fontSize:11.5,color:"#92400e",background:"#fffbeb",border:"1px solid #fde68a",borderRadius:8,padding:"7px 10px",marginTop:8 }}>
             This is for a <b>picture</b> of a CBCT (a screenshot or exported slice). To load a full CBCT scan, use the “CBCT Volumes” tab.
@@ -916,7 +1009,7 @@ function UploadModal({ onClose, onUploaded, visitId }) {
               </span>
             </label>
             <textarea value={description} onChange={e=>setDescription(e.target.value)} aria-label="Description"
-              placeholder="e.g. Upper left molar region, post-RCT…" rows={2}
+              placeholder={isImplant ? "e.g. lot number, bone type, healing abutment…" : "e.g. Upper left molar region, post-RCT…"} rows={2}
               style={{ width:"100%",padding:"9px 12px",border:"1.5px solid #e2e8f0",borderRadius:9,
                 fontFamily:"'Plus Jakarta Sans',sans-serif",fontSize:13,color:"#1e293b",
                 background:"#f8fafc",outline:"none",resize:"vertical",boxSizing:"border-box" }} />
@@ -930,7 +1023,9 @@ function UploadModal({ onClose, onUploaded, visitId }) {
 
         <div style={{ display:"flex",gap:10,marginTop:18,alignItems:"center" }}>
           <span style={{ flex:1,fontSize:12,color:"#64748b" }}>
-            {!selType ? "Choose the kind of picture first." : ready.length === 0 ? "Now add at least one picture." : ""}
+            {!selType ? "Choose the kind of picture first." : ready.length === 0 ? "Now add at least one picture."
+              : isImplant && !implantReady(implant) ? "Choose the implant system."
+              : isImplant ? `Saved as: ${finalDescription}` : ""}
           </span>
           <button type="button" onClick={onClose} disabled={uploading} style={{ padding:"11px 18px",borderRadius:10,background:"transparent",
             color:"#64748b",border:"1.5px solid #e2e8f4",fontFamily:"'Plus Jakarta Sans',sans-serif",
@@ -1928,7 +2023,7 @@ export default function ImageUpload({ visitId, disabled = false, onChange }) {
           <div>
             <div style={{ fontSize:14,fontWeight:700,color:"#0b2d4e" }}>Clinical Images</div>
             <div style={{ fontSize:11.5,color:"#94a3b8" }}>
-              {images.length} image{images.length!==1?"s":""} · IOPA · OPG · CBCT · Intraoral
+              {images.length} image{images.length!==1?"s":""} · IOPA · OPG · CBCT · Intraoral · Implant
             </div>
           </div>
         </div>
@@ -1982,7 +2077,7 @@ export default function ImageUpload({ visitId, disabled = false, onChange }) {
               <div style={{ fontSize:40,marginBottom:10 }}>🦷</div>
               <div style={{ fontSize:14,fontWeight:600,color:"#475569",marginBottom:6 }}>No clinical images yet</div>
               <div style={{ fontSize:12.5,color:"#94a3b8",marginBottom:16 }}>
-                {disabled ? "No pictures were added for this visit" : "Upload X-rays, OPGs or intraoral photos"}
+                {disabled ? "No pictures were added for this visit" : "Upload X-rays, OPGs, intraoral photos or implant details"}
               </div>
               {!disabled && (
                 <button type="button" onClick={()=>setShowUpload(true)} style={{

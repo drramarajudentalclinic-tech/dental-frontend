@@ -2,6 +2,10 @@ import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import api from "../api/api";
 import { CONDITIONS as DENTAL_CHART_CONDITIONS, CMAP as DENTAL_CHART_CMAP } from "./DentalChart";
+import { IMPLANT_SYSTEMS, IMPLANT_DIAMETERS, IMPLANT_LENGTHS, IMPLANT_TORQUES, EMPTY_IMPLANT, formatImplant, implantReady } from "./implantOptions";
+
+// The treatment that opens the implant details (system, size, torque)
+const IMPLANT_LABEL = "Implant Done";
 
 // Teeth are listed the way the dentist sees the patient: the patient's RIGHT
 // side is on the LEFT of the screen.
@@ -464,6 +468,49 @@ function DentalChartModal({ onClose, onConfirm }) {
   );
 }
 
+// ── Implant details — shown when "Implant Done" is chosen ───────────────────
+function ImplantFields({ value, onChange }) {
+  const set = k => e => onChange({ ...value, [k]: e.target.value });
+  const summary = formatImplant(value);
+  return (
+    <div className="cimp">
+      <div className="cimp-head">🔩 Implant details <span>System is needed · size and torque recommended</span></div>
+      <div className="cimp-grid">
+        <label className="cimp-wide">Implant system
+          <select value={value.system} onChange={set("system")} aria-label="Implant system">
+            <option value="">Choose the system…</option>
+            {IMPLANT_SYSTEMS.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </label>
+        {value.system === "Other" && (
+          <label className="cimp-wide">System name
+            <input value={value.systemOther} onChange={set("systemOther")} placeholder="e.g. Bego, MIS, Zimmer…" aria-label="Other implant system"/>
+          </label>
+        )}
+        <label>Diameter (mm)
+          <select value={value.diameter} onChange={set("diameter")} aria-label="Implant diameter">
+            <option value="">—</option>
+            {IMPLANT_DIAMETERS.map(s => <option key={s} value={s}>Ø {s}</option>)}
+          </select>
+        </label>
+        <label>Length (mm)
+          <select value={value.length} onChange={set("length")} aria-label="Implant length">
+            <option value="">—</option>
+            {IMPLANT_LENGTHS.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </label>
+        <label>Insertion torque
+          <select value={value.torque} onChange={set("torque")} aria-label="Insertion torque">
+            <option value="">—</option>
+            {IMPLANT_TORQUES.map(s => <option key={s} value={s}>{s} Ncm</option>)}
+          </select>
+        </label>
+      </div>
+      {summary && <div className="cimp-sum">Will be saved as: <b>{summary}</b></div>}
+    </div>
+  );
+}
+
 // ── Treatment Chart Modal ────────────────────────────────────────────────────
 // Used for "Advice & Treatment Plan", "Treatment Done Today" and for adding a
 // Dental Chart finding from Diagnosis.
@@ -486,6 +533,7 @@ function TreatmentChartModal({
   const [selected,   setSelected]   = useState(new Set());   // teeth picked, waiting for a treatment
   const [draftLabel, setDraftLabel] = useState(null);        // treatment picked, waiting for "Apply"
   const [noteDraft,  setNoteDraft]  = useState("");
+  const [implant,    setImplant]    = useState(EMPTY_IMPLANT);  // details for "Implant Done"
   const [query,      setQuery]      = useState("");
   const [date,       setDate]       = useState(todayStr());
   const [saving,     setSaving]     = useState(false);
@@ -501,7 +549,8 @@ function TreatmentChartModal({
     ? options.filter(o => o.label.toLowerCase().includes(query.trim().toLowerCase()))
     : options;
 
-  const resetDraft = () => { setDraftLabel(null); setNoteDraft(""); };
+  const resetDraft = () => { setDraftLabel(null); setNoteDraft(""); setImplant(EMPTY_IMPLANT); };
+  const isImplant = draftLabel === IMPLANT_LABEL;
 
   const toggleTooth = n => {
     const next = new Set(selected);
@@ -510,7 +559,7 @@ function TreatmentChartModal({
     // Tapping a single tooth that already has a treatment loads it for editing.
     if (next.size === 1 && !draftLabel) {
       const only = [...next][0];
-      if (assign[only]) { setDraftLabel(assign[only].label); setNoteDraft(assign[only].note || ""); }
+      if (assign[only]) { setDraftLabel(assign[only].label); setNoteDraft(assign[only].note || ""); setImplant(assign[only].implant || EMPTY_IMPLANT); }
     }
   };
 
@@ -520,12 +569,14 @@ function TreatmentChartModal({
   };
 
   const selectedList = sortedTeeth(selected);
-  const canApply = selectedList.length > 0 && !!draftLabel && (draftLabel !== "Other" || !!noteDraft.trim());
+  const canApply = selectedList.length > 0 && !!draftLabel && (draftLabel !== "Other" || !!noteDraft.trim())
+    && (!isImplant || implantReady(implant));
 
   const withDraftApplied = base => {
     const color = options.find(o => o.label === draftLabel)?.color || colorForLabel(draftLabel);
     const next = { ...base };
-    selectedList.forEach(n => { next[n] = { label: draftLabel, note: noteDraft.trim(), color }; });
+    const details = isImplant ? { ...implant } : null;
+    selectedList.forEach(n => { next[n] = { label: draftLabel, note: noteDraft.trim(), color, implant: details }; });
     return next;
   };
 
@@ -547,6 +598,11 @@ function TreatmentChartModal({
   // How a tooth's treatment renders as text, e.g. "Extraction — deep decay" or just the "Other" text
   const fmtInfo = info => {
     if (info.label === "Other") return info.note || "Other";
+    if (info.implant) {
+      // "Implant Done — Straumann Ø4.1 × 10 mm, 35 Ncm · note"  (" · " so it never splits like "; " does)
+      const details = formatImplant(info.implant);
+      return `${info.label} — ${details}${info.note ? ` · ${info.note}` : ""}`;
+    }
     return info.note ? `${info.label} — ${info.note}` : info.label;
   };
 
@@ -686,6 +742,8 @@ function TreatmentChartModal({
             {shownOptions.length === 0 && <div className="copt-none">Nothing matches "{query}". Choose "Other" to type your own.</div>}
           </div>
 
+          {isImplant && <ImplantFields value={implant} onChange={setImplant}/>}
+
           {draftLabel && (
             <div className="copt-note">
               <textarea className="cmod-textarea small" rows={1}
@@ -700,6 +758,7 @@ function TreatmentChartModal({
               {!selectedList.length ? "Select a tooth first."
                 : !draftLabel ? `Now choose the ${itemWord}.`
                 : draftLabel === "Other" && !noteDraft.trim() ? `Type a description for "Other".`
+                : isImplant && !implantReady(implant) ? "Choose the implant system."
                 : ""}
             </span>
             {selectedAssigned.length > 0 && (
@@ -1922,6 +1981,16 @@ button.ctp-tooth:focus-visible, .ctp-qbtn:focus-visible, .copt-btn:focus-visible
 .copt-lbl { min-width:0; overflow-wrap:anywhere; }
 .copt-none { grid-column:1/-1; font-size:12.5px; color:#64748b; padding:8px 2px; }
 .copt-note { margin-top:10px; }
+.cimp { margin-top:10px; border:1.5px solid #99f6e4; background:linear-gradient(180deg,#f0fdfa,#fff); border-radius:10px; padding:10px 12px; animation:fadeIn .2s ease both; }
+.cimp-head { font-size:12.5px; font-weight:700; color:#0f766e; margin-bottom:8px; display:flex; gap:8px; align-items:baseline; flex-wrap:wrap; }
+.cimp-head span { font-size:11px; font-weight:500; color:#64748b; }
+.cimp-grid { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:8px; }
+.cimp-grid label { display:flex; flex-direction:column; gap:3px; font-size:11px; font-weight:600; color:#475569; min-width:0; }
+.cimp-grid .cimp-wide { grid-column:1 / -1; }
+.cimp-grid select, .cimp-grid input { width:100%; box-sizing:border-box; padding:7px 8px; border:1.5px solid #cbd5e1; border-radius:7px; font-family:inherit; font-size:12.5px; color:#0f172a; background:#fff; outline:none; }
+.cimp-grid select:focus, .cimp-grid input:focus { border-color:#0f766e; box-shadow:0 0 0 3px rgba(15,118,110,.12); }
+.cimp-sum { margin-top:8px; font-size:12px; color:#334155; background:#ccfbf1; border-radius:6px; padding:5px 8px; }
+@media (max-width:560px) { .cimp-grid { grid-template-columns:1fr 1fr; } }
 .copt-actions { display:flex; align-items:center; justify-content:flex-end; gap:10px; flex-wrap:wrap; margin-top:10px; }
 .copt-why { font-size:12px; color:#64748b; margin-right:auto; }
 
