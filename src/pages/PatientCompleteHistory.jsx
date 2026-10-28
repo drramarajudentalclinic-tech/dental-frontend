@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import api from "../api/api";
+import { implantsFromTreatmentText } from "../components/implantOptions";
 
 /*
   <PatientCompleteHistory />  — the patient's complete record, read-only
@@ -20,7 +21,8 @@ import api from "../api/api";
                            The same text saved on the visit, the consultation
                            and the prescription is shown only once.
         🦷 Treatments    – every treatment done, visit by visit, with the teeth,
-                           diagnosis and doctor; the treatment plans
+                           diagnosis and doctor; implants placed (system, size,
+                           torque, photo of the box / sticker); the treatment plans
         🩻 X-rays & photos – all pictures of all visits, grouped (IOPA, OPG,
                            intra-oral …), opened in a viewer
         💊 Prescriptions – every prescription (a prescription saved twice is
@@ -93,6 +95,7 @@ function parseMeds(raw) {
 const medDays = (m) => (m.days && Number(m.days) > 0 ? `${m.days} day${Number(m.days) !== 1 ? "s" : ""}` : "");
 
 const IMAGE_GROUPS = [
+  { key: "IMPLANT", short: "Implant", label: "Implant details", match: (t) => /implant/.test(t) },
   { key: "IOPA", short: "IOPA", label: "IOPA X-rays", match: (t) => /iopa|x-?ray|rvg/.test(t) },
   { key: "OPG", short: "OPG", label: "OPGs", match: (t) => /opg|panoram/.test(t) },
   { key: "INTRAORAL", short: "Intra-oral", label: "Intra-oral photos", match: (t) => /intra|photo/.test(t) },
@@ -182,6 +185,24 @@ function buildVisit(v, billing) {
 
 /* ── pictures and PDFs: loaded with the login ── */
 const imagePath = (img) => String(img.url || `/api/images/${img.id}/data`).replace(/^\/api(?=\/)/, "");
+/* any file type: image (shown) | pdf | preview (HEIC / TIFF / DICOM, shown through a JPG the server makes) | file (download) */
+const EXT_FOR_MIME = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif", "image/bmp": "bmp", "image/avif": "avif",
+  "application/pdf": "pdf", "image/heic": "heic", "image/heif": "heif", "image/tiff": "tif", "application/dicom": "dcm", "model/stl": "stl",
+  "model/ply": "ply", "model/obj": "obj", "application/zip": "zip", "application/msword": "doc", "application/vnd.ms-excel": "xls",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx", "text/plain": "txt", "text/csv": "csv", "video/mp4": "mp4" };
+const fileExt = (img) => String(img.ext || (String(img.file_name || img.path || img.image_path || "").toLowerCase().match(/\.([a-z0-9]{1,10})$/) || [])[1]
+  || EXT_FOR_MIME[String(img.mime_type || "").toLowerCase()] || "").toLowerCase();
+function fileKind(img) {
+  if (img.kind) return img.kind;
+  const m = String(img.mime_type || "");
+  if (m.includes("pdf")) return "pdf";
+  if (/^image\/(jpeg|png|webp|gif|bmp|avif)$/.test(m)) return "image";
+  if (/heic|heif|tiff|dicom/.test(m)) return "preview";
+  return m ? "file" : "image";
+}
+const viewPath = (img) => (fileKind(img) === "preview" ? `/images/${img.id}/preview` : imagePath(img));
+const FILE_ICON = { stl: "🦷", ply: "🦷", obj: "🦷", zip: "🗜️", doc: "📝", docx: "📝", txt: "📝", xls: "📊", xlsx: "📊", csv: "📊", mp4: "🎞️", mov: "🎞️" };
 // A picture kept in cloud storage (Cloudflare R2) is shown straight from there through
 // a private one-hour link from the server; anything else loads through the server as before.
 async function cloudLink(path) {
@@ -218,14 +239,18 @@ function useBlobUrl(path, enabled = true) {
 }
 
 function Thumb({ img, onOpen, showDate }) {
-  const { url, error } = useBlobUrl(imagePath(img));
+  const kind = fileKind(img);
+  const { url, error } = useBlobUrl(viewPath(img), kind === "image" || kind === "preview");
   const g = groupOfImage(img);
-  const isPdf = String(img.mime_type || "").includes("pdf");
+  const isPdf = kind === "pdf";
   return (
     <button type="button" className="pch-thumb" onClick={onOpen} title={img.description || g.label} data-image={img.id}>
-      {url && !isPdf ? <img src={url} alt={`${img.image_type || "Image"} ${fmtDate(img.image_date)}`} />
-        : <div className="pch-thumb-ph">{error ? "⚠️" : isPdf ? "📄" : "…"}</div>}
-      <span className="pch-thumb-tag">{img.image_type || g.label}</span>
+      {url && !isPdf && kind !== "file" ? <img src={url} alt={`${img.image_type || "Image"} ${fmtDate(img.image_date)}`} />
+        : <div className="pch-thumb-ph">{error ? "⚠️" : isPdf ? "📄" : kind === "file"
+          ? <span style={{ display: "grid", justifyItems: "center", gap: 2 }}>{FILE_ICON[fileExt(img)] || "📎"}<small style={{ fontSize: 10, fontWeight: 700 }}>{fileExt(img).toUpperCase()}</small></span>
+          : "…"}</div>}
+      {kind === "preview" && <span className="pch-thumb-date" style={{ top: 6, bottom: "auto", left: "auto", right: 6 }}>{fileExt(img).toUpperCase()}</span>}
+      <span className="pch-thumb-tag">{g.key === "IMPLANT" ? "🔩 Implant" : (img.image_type || g.label)}</span>
       {showDate && <span className="pch-thumb-date">{fmtDate(img.image_date || img.visit_date)}</span>}
     </button>
   );
@@ -234,7 +259,8 @@ function Thumb({ img, onOpen, showDate }) {
 function Viewer({ items, index, onIndex, onClose }) {
   const item = items[index];
   const isPdf = item.kind === "pdf" || String(item.mime_type || "").includes("pdf");
-  const { url, blob, error, download } = useBlobUrl(item.path);
+  const { url, blob, error, download } = useBlobUrl(item.path, item.kind !== "file");
+  const [busy, setBusy] = useState(false);
   useEffect(() => {
     const key = (e) => {
       if (e.key === "Escape") onClose();
@@ -244,11 +270,24 @@ function Viewer({ items, index, onIndex, onClose }) {
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
   }, [index, items.length]); // eslint-disable-line react-hooks/exhaustive-deps
-  const save = () => {
+  const save = async () => {
+    const name = item.fileName || `${item.title || "file"}${isPdf ? ".pdf" : ".jpg"}`;
+    const give = (href) => { const a = document.createElement("a"); a.href = href; a.download = name; document.body.appendChild(a); a.click(); a.remove(); };
+    if (item.downloadPath) {                       // a preview is on screen: download the ORIGINAL file
+      setBusy(true);
+      try {
+        const link = await cloudLink(item.downloadPath);
+        if (link) give(link.download_url || link.url);
+        else {
+          const res = await api.get(item.downloadPath, { responseType: "blob" });
+          const href = URL.createObjectURL(res.data); give(href); setTimeout(() => URL.revokeObjectURL(href), 60000);
+        }
+      } catch { alert("The file could not be downloaded. Please try again."); }   // eslint-disable-line no-alert
+      finally { setBusy(false); }
+      return;
+    }
     if (!blob && !download) return;
-    const a = document.createElement("a");
-    a.href = download || url; a.download = item.fileName || `${item.title || "file"}${isPdf ? ".pdf" : ".jpg"}`;
-    document.body.appendChild(a); a.click(); a.remove();
+    give(download || url);
   };
   return createPortal(
     <div className="pch-viewer" role="dialog" aria-modal="true" aria-label={item.title}>
@@ -260,12 +299,19 @@ function Viewer({ items, index, onIndex, onClose }) {
         {items.length > 1 && <span style={{ fontSize: 12.5, opacity: 0.8 }}>{index + 1} of {items.length}</span>}
         {items.length > 1 && <button type="button" className="pch-vbtn" disabled={index === 0} onClick={() => onIndex(index - 1)}>◀ Previous</button>}
         {items.length > 1 && <button type="button" className="pch-vbtn" disabled={index === items.length - 1} onClick={() => onIndex(index + 1)}>Next ▶</button>}
-        <button type="button" className="pch-vbtn" disabled={!blob && !download} onClick={save}>⬇ Download</button>
-        <button type="button" className="pch-vbtn" disabled={!url} onClick={() => window.open(url, "_blank")}>↗ Full size</button>
+        <button type="button" className="pch-vbtn" disabled={busy || (!item.downloadPath && !blob && !download)} onClick={save}>
+          {busy ? "…" : item.kind === "preview" ? "⬇ Original file" : "⬇ Download"}</button>
+        {item.kind !== "file" && <button type="button" className="pch-vbtn" disabled={!url} onClick={() => window.open(url, "_blank")}>↗ Full size</button>}
         <button type="button" className="pch-vbtn pch-vbtn-close" onClick={onClose} autoFocus>✕ Close</button>
       </div>
       <div className="pch-viewer-stage" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-        {error ? <div style={{ color: "#fecaca" }}>⚠️ This file could not be loaded.</div>
+        {item.kind === "file" ? (
+          <div style={{ color: "#e2e8f0", textAlign: "center", lineHeight: 1.6 }}>
+            <div style={{ fontSize: 56 }}>{FILE_ICON[item.ext] || "📎"}</div>
+            <b>{(item.ext || "").toUpperCase()} file</b>
+            <div style={{ opacity: 0.7, fontSize: 13 }}>This kind of file cannot be shown here — use Download and open it with its own program.</div>
+          </div>
+        ) : error ? <div style={{ color: "#fecaca" }}>⚠️ This file could not be loaded.</div>
           : !url ? <div style={{ color: "#cbd5e1" }}>{blob ? "Ready — use Download." : "Loading…"}</div>
           : isPdf ? <iframe title={item.title} src={url} style={{ width: "100%", height: "100%", border: 0, borderRadius: 10, background: "#fff" }} />
           : <img src={url} alt={item.title} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: 8 }} />}
@@ -431,11 +477,29 @@ export default function PatientCompleteHistory({ patientId, onBack, onCreateVisi
   const firstVisit = visits[visits.length - 1]?.date;
   const lastVisit = visits[0]?.date;
   const treatmentVisits = visits.filter((v) => v.treatmentDone.length);
+  // implants placed: from "Implant Done — system Ø × length, torque IRT tooth" in the treatment notes
+  const implants = visits.flatMap((v) => {
+    const seen = new Set();
+    return implantsFromTreatmentText(v.treatmentDone.join("; ")).filter((x) => {
+      const k = `${x.teeth.join(",")}|${x.text}`;
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    }).map((x) => ({ ...x, visit: v, photos: v.images.filter((i) => {
+      if (groupOfImage(i).key !== "IMPLANT") return false;
+      // "Tooth 36 · Straumann …" → only that tooth's row; a photo without a tooth number shows on every row
+      const m = clean(i.description).match(/^Tooth\s+([\d,\s]+)/i);
+      if (!m || !x.teeth.length) return true;
+      const photoTeeth = m[1].split(",").map((n) => Number(n.trim())).filter(Boolean);
+      return photoTeeth.some((n) => x.teeth.includes(n));
+    }).map((i) => ({ ...i, visit_date: v.date })) }));
+  });
   const t = billing?.totals;
 
   const toggle = (id) => setOpen((prev) => { const s = new Set(prev); if (s.has(id)) s.delete(id); else s.add(id); return s; });
   const openImages = (list, img) => setViewer({
-    items: list.map((x) => ({ path: imagePath(x), mime_type: x.mime_type, title: `${x.image_type || groupOfImage(x).label} — ${fmtDate(x.image_date || x.visit_date)}`, sub: clean(x.description), fileName: `${patient.name || "patient"} ${x.image_type || "image"} ${clean(x.image_date || "").slice(0, 10)}` })),
+    items: list.map((x) => ({ path: viewPath(x), kind: fileKind(x), ext: fileExt(x),
+      downloadPath: fileKind(x) === "preview" || fileKind(x) === "file" ? imagePath(x) : null, mime_type: x.mime_type, title: `${x.image_type || groupOfImage(x).label} — ${fmtDate(x.image_date || x.visit_date)}`, sub: clean(x.description), fileName: `${patient.name || "patient"} ${x.image_type || "image"} ${clean(x.image_date || "").slice(0, 10)}${fileExt(x) ? `.${fileExt(x)}` : ""}` })),
     index: Math.max(0, list.findIndex((x) => x.id === img.id)),
   });
   const openReceipt = (r, list) => setViewer({
@@ -662,6 +726,26 @@ export default function PatientCompleteHistory({ patientId, onBack, onCreateVisi
                 )}
                 {visits.length > 0 && !visits.some((v) => v.treatmentDone.length || v.diagnosis.length || v.chart.length) && <Empty>No treatment recorded yet.</Empty>}
               </Block>
+              {implants.length > 0 && (
+                <Block title={`Implants placed (${implants.reduce((n, x) => n + Math.max(1, x.teeth.length), 0)})`} icon="🔩">
+                  <Table headers={["Date", "Tooth", "Implant system", "Size", "Torque", "Box / sticker"]}
+                    rows={implants.map((x, i) => {
+                      const d = x.details;
+                      const system = d.system === "Other" ? d.systemOther : d.system;
+                      const size = d.diameter && d.length ? `Ø${d.diameter} × ${d.length} mm` : d.diameter ? `Ø${d.diameter} mm` : d.length ? `${d.length} mm long` : "";
+                      return [
+                        <span key={`d${i}`} style={{ whiteSpace: "nowrap" }}>{fmtDate(x.visit.date)}</span>,
+                        x.teeth.length ? <b key={`t${i}`}>{x.teeth.join(", ")}</b> : <span key={`t${i}`} className="pch-muted">—</span>,
+                        system || <span key={`s${i}`} className="pch-muted">—</span>,
+                        size || <span key={`z${i}`} className="pch-muted">—</span>,
+                        d.torque ? `${d.torque} Ncm` : <span key={`q${i}`} className="pch-muted">—</span>,
+                        x.photos.length
+                          ? <button key={`p${i}`} type="button" className="pch-chip" onClick={() => openImages(x.photos, x.photos[0])}>🔩 {x.photos.length} photo{x.photos.length > 1 ? "s" : ""}</button>
+                          : <span key={`p${i}`} className="pch-muted">not uploaded</span>,
+                      ];
+                    })} />
+                </Block>
+              )}
               {visits.some((v) => v.plan.length) && (
                 <Block title="Treatment plans" icon="🗒">
                   <Table headers={["Date", "Plan"]} rows={visits.filter((v) => v.plan.length).map((v) => [<span key="d" style={{ whiteSpace: "nowrap" }}>{fmtDate(v.date)}</span>, v.plan.join("; ")])} />
@@ -684,6 +768,11 @@ export default function PatientCompleteHistory({ patientId, onBack, onCreateVisi
                   return (
                     <Block key={v.id} title={`Visit of ${fmtDate(v.date)}`} icon="🗓" right={<span className="pch-muted">{v.treatmentDone[0] || v.diagnosis[0] || ""}</span>}>
                       <div className="pch-thumbs">{list.map((img) => <Thumb key={img.id} img={img} showDate onOpen={() => openImages(list, img)} />)}</div>
+                      {list.some((i) => groupOfImage(i).key === "IMPLANT" && clean(i.description)) && (
+                        <div className="pch-muted" style={{ marginTop: 8, fontSize: 12.5 }}>
+                          {list.filter((i) => groupOfImage(i).key === "IMPLANT" && clean(i.description)).map((i) => <div key={i.id}>🔩 {clean(i.description)}</div>)}
+                        </div>
+                      )}
                     </Block>
                   );
                 })}
