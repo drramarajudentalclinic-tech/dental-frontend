@@ -3,6 +3,10 @@ import { createPortal } from "react-dom";
 import api from "../api/api";
 import { CONDITIONS as DENTAL_CHART_CONDITIONS, CMAP as DENTAL_CHART_CMAP } from "./DentalChart";
 import { IMPLANT_SYSTEMS, IMPLANT_DIAMETERS, IMPLANT_LENGTHS, IMPLANT_TORQUES, EMPTY_IMPLANT, formatImplant, implantReady } from "./implantOptions";
+import { rctStage, STAGE_FIELDS, EMPTY_RCT, formatRct, CANALS, PULP_DIAGNOSIS, WL_METHOD, ROTARY_SYSTEMS, PAEDIATRIC_FILES,
+  FILE_LENGTHS, MAF_SIZES, TAPERS, IRRIGANTS, ACTIVATION, MEDICAMENTS, TEMP_SEALS, OBT_TECHNIQUES, SEALERS,
+  CORE_RESTORATIONS, RETX_REMOVAL, PULP_OBTURATION, PULP_RESTORATION, PULP_IRRIGANTS,
+  GLIDE_PATH, HAND_FILE_BRANDS, HAND_FILE_TYPES, HAND_SIZES } from "./rctOptions";
 
 // The treatment that opens the implant details (system, size, torque)
 const IMPLANT_LABEL = "Implant Done";
@@ -31,7 +35,9 @@ const QUADRANT_NAMES = {
 // ── Treatment options shown per-tooth in "Treatment Done Today" ─────────────
 const PERMANENT_TREATMENTS = [
   "A/O Done",
+  "BMP / Cleaning & Shaping Done",
   "Obturation Done",
+  "Re-RCT Done",
   "Implant Done",
   "Extraction",
   "Surgical Extraction",
@@ -78,6 +84,8 @@ const ADVICE_DECIDUOUS_TREATMENTS = [
 const TREATMENT_COLORS = {
   "A/O Done":              "#0284c7",
   "Obturation Done":       "#4f46e5",
+  "BMP / Cleaning & Shaping Done": "#6366f1",
+  "Re-RCT Done":           "#7e22ce",
   "Implant Done":          "#0f766e",
   "Implant":               "#0f766e",
   "Extraction":            "#dc2626",
@@ -511,6 +519,163 @@ function ImplantFields({ value, onChange }) {
   );
 }
 
+// ── Root canal details — shown for A/O, BMP, Obturation, Re-RCT and Pulpectomy ──
+const RCT_TITLES = { ao: "Access opening", bmp: "Cleaning & shaping", obt: "Obturation", retx: "Re-treatment", pulp: "Pulpectomy" };
+function RctFields({ stage, value, onChange }) {
+  const f = STAGE_FIELDS[stage] || [];
+  const has = k => f.includes(k);
+  const set = (k, v) => onChange({ ...value, [k]: v });
+  const sel = k => e => set(k, e.target.value);
+  const toggle = (k, item) => {
+    const list = value[k] || [];
+    set(k, list.includes(item) ? list.filter(x => x !== item) : [...list, item]);
+  };
+  const toggleCanal = c => {
+    const list = value.canals || [];
+    const next = list.includes(c) ? list.filter(x => x !== c) : [...list, c];
+    onChange({ ...value, canals: CANALS.filter(x => next.includes(x)) });
+  };
+  const Sel = ({ k, label, options, wide, suffix = "" }) => (
+    <label key={k} className={wide ? "crct-wide" : ""}>{label}
+      <select value={value[k] || ""} onChange={sel(k)} aria-label={label}>
+        <option value="">—</option>
+        {options.map(o => <option key={o} value={o}>{o}{suffix}</option>)}
+      </select>
+    </label>
+  );
+  const ChipRow = ({ k, options, label }) => (
+    <div key={k} className="crct-wide">
+      <span className="crct-lbl">{label}</span>
+      <div className="crct-chips" role="group" aria-label={label}>
+        {options.map(o => (
+          <button key={o} type="button" className={`crct-chip${(value[k] || []).includes(o) ? " on" : ""}`}
+            aria-pressed={(value[k] || []).includes(o)} onClick={() => toggle(k, o)}>{o}</button>
+        ))}
+      </div>
+    </div>
+  );
+  const summary = formatRct(value, stage);
+  const paed = stage === "pulp";
+
+  return (
+    <div className="crct">
+      <div className="crct-head">🦷 Root canal details — {RCT_TITLES[stage]} <span>all optional · fill what you used</span></div>
+      <div className="crct-grid">
+        {has("canals") && (
+          <div className="crct-wide">
+            <span className="crct-lbl">Canals</span>
+            <div className="crct-chips" role="group" aria-label="Canals">
+              {CANALS.map(c => (
+                <button key={c} type="button" className={`crct-chip${(value.canals || []).includes(c) ? " on" : ""}`}
+                  aria-pressed={(value.canals || []).includes(c)} onClick={() => toggleCanal(c)}>{c}</button>
+              ))}
+            </div>
+          </div>
+        )}
+        {has("wl") && (value.canals || []).length > 0 && (
+          <div className="crct-wide">
+            <span className="crct-lbl">Working length (mm)</span>
+            <div className="crct-wl">
+              {value.canals.map(c => (
+                <label key={c}><b>{c}</b>
+                  <input type="number" inputMode="decimal" step="0.5" min="5" max="35" placeholder="mm" aria-label={`Working length ${c}`}
+                    value={value.wl?.[c] || ""} onChange={e => set("wl", { ...(value.wl || {}), [c]: e.target.value })}/>
+                </label>
+              ))}
+            </div>
+          </div>
+        )}
+        {has("wl") && Sel({ k: "wlMethod", label: "Length taken with", options: WL_METHOD })}
+        {has("diagnosis") && Sel({ k: "diagnosis", label: "Pulp / periapical diagnosis", options: PULP_DIAGNOSIS, wide: true })}
+        {has("removal") && ChipRow({ k: "removal", options: RETX_REMOVAL, label: "Old filling removed with" })}
+        {has("hand") && (
+          <>
+            <span className="crct-sub crct-wide">✋ Hand files</span>
+            {Sel({ k: "handBrand", label: "Brand", options: HAND_FILE_BRANDS })}
+            {Sel({ k: "handType", label: "File type", options: HAND_FILE_TYPES })}
+            {value.handBrand === "Other" && (
+              <label className="crct-wide">Brand name
+                <input value={value.handBrandOther || ""} onChange={sel("handBrandOther")} aria-label="Other hand file brand"/>
+              </label>
+            )}
+            {Sel({ k: "handLength", label: "Length", options: FILE_LENGTHS, suffix: " mm" })}
+            <div className="crct-pair">
+              {Sel({ k: "handFrom", label: "From size", options: HAND_SIZES, suffix: "" })}
+              {Sel({ k: "handTo", label: "To size", options: HAND_SIZES, suffix: "" })}
+            </div>
+          </>
+        )}
+        {has("glide") && (
+          <>
+            <span className="crct-sub crct-wide">🧭 Glide path</span>
+            {Sel({ k: "glide", label: "Glide path files", options: GLIDE_PATH, wide: true })}
+            {value.glide === "Other" && (
+              <label className="crct-wide">Glide path name
+                <input value={value.glideOther || ""} onChange={sel("glideOther")} aria-label="Other glide path"/>
+              </label>
+            )}
+          </>
+        )}
+        {(has("files") || has("pfiles")) && (
+          <>
+            <span className="crct-sub crct-wide">{paed ? "🧒 Files" : "⚙️ Rotary / reciprocating"}</span>
+            {Sel({ k: "system", label: paed ? "Files (paediatric)" : "Rotary / file system", options: paed ? PAEDIATRIC_FILES : ROTARY_SYSTEMS, wide: true })}
+            {value.system === "Other" && (
+              <label className="crct-wide">System name
+                <input value={value.systemOther || ""} onChange={sel("systemOther")} placeholder="e.g. Dentsply Wave One, Fanta…" aria-label="Other file system"/>
+              </label>
+            )}
+            {!paed && Sel({ k: "fileLength", label: "File length", options: FILE_LENGTHS, suffix: " mm" })}
+            {Sel({ k: "maf", label: "Master apical file (ISO)", options: MAF_SIZES })}
+            {!paed && Sel({ k: "taper", label: "Taper", options: TAPERS })}
+          </>
+        )}
+        {(has("irrigation") || has("pirrigation")) && (
+          <>
+            <span className="crct-sub crct-wide">💧 Irrigation</span>
+            {ChipRow({ k: "irrigants", options: paed ? PULP_IRRIGANTS : IRRIGANTS, label: "Irrigation" })}
+            {!paed && Sel({ k: "activation", label: "Irrigant activation", options: ACTIVATION })}
+          </>
+        )}
+        {has("obturation") && (
+          <>
+            <span className="crct-sub crct-wide">🔥 Obturation</span>
+            {Sel({ k: "technique", label: "Obturation technique", options: OBT_TECHNIQUES, wide: true })}
+            {Sel({ k: "sealer", label: "Sealer", options: SEALERS })}
+            <label>Master cone (GP)
+              <input value={value.masterCone || ""} onChange={sel("masterCone")} aria-label="Master cone"
+                placeholder={value.maf ? `${value.maf}${value.taper && value.taper !== "Variable" ? `/${value.taper}` : ""}` : "e.g. 25/.06 or F2"}/>
+              {!value.masterCone && value.maf && (
+                <button type="button" className="crct-same" onClick={() => set("masterCone", `${value.maf}${value.taper && value.taper !== "Variable" ? `/${value.taper}` : ""}`)}>
+                  Same as MAF
+                </button>
+              )}
+            </label>
+            {value.sealer === "Other" && (
+              <label className="crct-wide">Sealer name
+                <input value={value.sealerOther || ""} onChange={sel("sealerOther")} aria-label="Other sealer"/>
+              </label>
+            )}
+          </>
+        )}
+        {has("pobturation") && (
+          <>
+            {Sel({ k: "pulpMaterial", label: "Obturating material", options: PULP_OBTURATION })}
+            {value.pulpMaterial === "Other" && (
+              <label>Material name<input value={value.pulpMaterialOther || ""} onChange={sel("pulpMaterialOther")} aria-label="Other material"/></label>
+            )}
+          </>
+        )}
+        {has("medicament") && Sel({ k: "medicament", label: "Intracanal dressing", options: MEDICAMENTS })}
+        {has("tempSeal") && Sel({ k: "tempSeal", label: "Temporary seal", options: TEMP_SEALS })}
+        {has("core") && Sel({ k: "core", label: "Post-endo restoration", options: CORE_RESTORATIONS })}
+        {has("prestoration") && Sel({ k: "restoration", label: "Final restoration", options: PULP_RESTORATION })}
+      </div>
+      {summary && <div className="crct-sum">Will be saved as: <b>{summary}</b></div>}
+    </div>
+  );
+}
+
 // ── Treatment Chart Modal ────────────────────────────────────────────────────
 // Used for "Advice & Treatment Plan", "Treatment Done Today" and for adding a
 // Dental Chart finding from Diagnosis.
@@ -534,6 +699,7 @@ function TreatmentChartModal({
   const [draftLabel, setDraftLabel] = useState(null);        // treatment picked, waiting for "Apply"
   const [noteDraft,  setNoteDraft]  = useState("");
   const [implant,    setImplant]    = useState(EMPTY_IMPLANT);  // details for "Implant Done"
+  const [rct,        setRct]        = useState(EMPTY_RCT);      // root canal details (kept when moving A/O → BMP → Obturation)
   const [query,      setQuery]      = useState("");
   const [date,       setDate]       = useState(todayStr());
   const [saving,     setSaving]     = useState(false);
@@ -549,8 +715,10 @@ function TreatmentChartModal({
     ? options.filter(o => o.label.toLowerCase().includes(query.trim().toLowerCase()))
     : options;
 
-  const resetDraft = () => { setDraftLabel(null); setNoteDraft(""); setImplant(EMPTY_IMPLANT); };
+  const resetDraft = () => { setDraftLabel(null); setNoteDraft(""); setImplant(EMPTY_IMPLANT); setRct(EMPTY_RCT); };
   const isImplant = draftLabel === IMPLANT_LABEL;
+  // only the "Treatment Done" chart gets root canal details (not Advice or Diagnosis)
+  const stage = itemWord === "treatment" && title !== undefined && !String(title).startsWith("💊") ? rctStage(draftLabel) : null;
 
   const toggleTooth = n => {
     const next = new Set(selected);
@@ -559,7 +727,7 @@ function TreatmentChartModal({
     // Tapping a single tooth that already has a treatment loads it for editing.
     if (next.size === 1 && !draftLabel) {
       const only = [...next][0];
-      if (assign[only]) { setDraftLabel(assign[only].label); setNoteDraft(assign[only].note || ""); setImplant(assign[only].implant || EMPTY_IMPLANT); }
+      if (assign[only]) { setDraftLabel(assign[only].label); setNoteDraft(assign[only].note || ""); setImplant(assign[only].implant || EMPTY_IMPLANT); setRct(assign[only].rct || EMPTY_RCT); }
     }
   };
 
@@ -576,7 +744,8 @@ function TreatmentChartModal({
     const color = options.find(o => o.label === draftLabel)?.color || colorForLabel(draftLabel);
     const next = { ...base };
     const details = isImplant ? { ...implant } : null;
-    selectedList.forEach(n => { next[n] = { label: draftLabel, note: noteDraft.trim(), color, implant: details }; });
+    const rctDetails = stage ? { ...rct, stage } : null;
+    selectedList.forEach(n => { next[n] = { label: draftLabel, note: noteDraft.trim(), color, implant: details, rct: rctDetails }; });
     return next;
   };
 
@@ -598,6 +767,12 @@ function TreatmentChartModal({
   // How a tooth's treatment renders as text, e.g. "Extraction — deep decay" or just the "Other" text
   const fmtInfo = info => {
     if (info.label === "Other") return info.note || "Other";
+    if (info.rct) {
+      // "Obturation Done — Canals MB, DB, P · WL … · ProTaper Gold 25 mm, MAF 25/.06 · Single cone, AH Plus · note"
+      const details = formatRct(info.rct, info.rct.stage);
+      const text = [details, info.note].filter(Boolean).join(" · ");
+      return text ? `${info.label} — ${text}` : info.label;
+    }
     if (info.implant) {
       // "Implant Done — Straumann Ø4.1 × 10 mm, 35 Ncm · note"  (" · " so it never splits like "; " does)
       const details = formatImplant(info.implant);
@@ -743,6 +918,7 @@ function TreatmentChartModal({
           </div>
 
           {isImplant && <ImplantFields value={implant} onChange={setImplant}/>}
+          {stage && <RctFields stage={stage} value={rct} onChange={setRct}/>}
 
           {draftLabel && (
             <div className="copt-note">
@@ -1989,6 +2165,26 @@ button.ctp-tooth:focus-visible, .ctp-qbtn:focus-visible, .copt-btn:focus-visible
 .cimp-grid .cimp-wide { grid-column:1 / -1; }
 .cimp-grid select, .cimp-grid input { width:100%; box-sizing:border-box; padding:7px 8px; border:1.5px solid #cbd5e1; border-radius:7px; font-family:inherit; font-size:12.5px; color:#0f172a; background:#fff; outline:none; }
 .cimp-grid select:focus, .cimp-grid input:focus { border-color:#0f766e; box-shadow:0 0 0 3px rgba(15,118,110,.12); }
+.crct { margin-top:10px; border:1.5px solid #c7d2fe; background:linear-gradient(180deg,#eef2ff,#fff); border-radius:10px; padding:10px 12px; animation:fadeIn .2s ease both; }
+.crct-head { font-size:12.5px; font-weight:700; color:#4338ca; margin-bottom:8px; display:flex; gap:8px; align-items:baseline; flex-wrap:wrap; }
+.crct-head span { font-size:11px; font-weight:500; color:#64748b; }
+.crct-grid { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:8px 10px; max-height:46vh; overflow-y:auto; padding-right:2px; }
+.crct-grid label, .crct-lbl { display:flex; flex-direction:column; gap:3px; font-size:11px; font-weight:600; color:#475569; min-width:0; }
+.crct-wide { grid-column:1 / -1; }
+.crct-grid select, .crct-grid input { width:100%; box-sizing:border-box; padding:7px 8px; border:1.5px solid #cbd5e1; border-radius:7px; font-family:inherit; font-size:12.5px; color:#0f172a; background:#fff; outline:none; }
+.crct-grid select:focus, .crct-grid input:focus { border-color:#4f46e5; box-shadow:0 0 0 3px rgba(79,70,229,.12); }
+.crct-chips { display:flex; flex-wrap:wrap; gap:5px; margin-top:3px; }
+.crct-chip { border:1.5px solid #c7d2fe; background:#fff; color:#3730a3; border-radius:999px; padding:4px 10px; font:600 11.5px inherit; font-family:inherit; cursor:pointer; transition:background .15s, color .15s; }
+.crct-chip.on { background:#4f46e5; border-color:#4f46e5; color:#fff; }
+.crct-wl { display:grid; grid-template-columns:repeat(auto-fill, minmax(104px,1fr)); gap:6px; margin-top:3px; }
+.crct-wl input { min-width:58px; padding:6px 6px; }
+.crct-wl label { flex-direction:row; align-items:center; gap:5px; }
+.crct-wl b { font-size:11.5px; color:#3730a3; min-width:26px; }
+.crct-sub { font-size:11px; font-weight:800; color:#3730a3; text-transform:uppercase; letter-spacing:.05em; border-top:1px dashed #c7d2fe; padding-top:7px; margin-top:2px; }
+.crct-pair { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+.crct-same { margin-top:4px; align-self:flex-start; border:1px dashed #818cf8; background:#fff; color:#4338ca; border-radius:6px; padding:2px 8px; font-size:11px; font-weight:600; cursor:pointer; font-family:inherit; }
+.crct-sum { margin-top:8px; font-size:12px; color:#334155; background:#e0e7ff; border-radius:6px; padding:5px 8px; overflow-wrap:anywhere; }
+@media (max-width:560px) { .crct-grid { grid-template-columns:1fr; } }
 .cimp-sum { margin-top:8px; font-size:12px; color:#334155; background:#ccfbf1; border-radius:6px; padding:5px 8px; }
 @media (max-width:560px) { .cimp-grid { grid-template-columns:1fr 1fr; } }
 .copt-actions { display:flex; align-items:center; justify-content:flex-end; gap:10px; flex-wrap:wrap; margin-top:10px; }
