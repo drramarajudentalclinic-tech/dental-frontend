@@ -13,8 +13,41 @@ const IMAGE_TYPES = [
   { value: "IMPLANT",   label: "Implant",           icon: "🔩", desc: "Box / sticker: system, size, torque" },
 ];
 
-// Biggest picture the server accepts (images.py: IMAGE_MAX_MB, default 25).
+// Biggest file the server accepts (images.py: IMAGE_MAX_MB, default 25).
 const MAX_UPLOAD_MB = 25;
+
+/* ─── any file type ───────────────────────────────────────────────────────────
+ * image   – JPG, PNG, WEBP, GIF, BMP, AVIF: shown as they are
+ * pdf     – shown in the viewer
+ * preview – iPhone HEIC, TIFF, DICOM: the server makes a JPG preview to look at;
+ *           Download gives the original file
+ * file    – STL / PLY / OBJ scans, Word, Excel, ZIP …: opened with Download
+ * Programs and web pages are refused (here and on the server).
+ * ─────────────────────────────────────────────────────────────────────────── */
+const BLOCKED_EXT = new Set(["exe","msi","bat","cmd","com","scr","pif","cpl","ps1","psm1","vbs","vbe","wsf","js","mjs","jse","jar",
+  "sh","bash","php","py","pl","rb","html","htm","xhtml","shtml","svg","svgz","hta","dll","sys","lnk","reg","apk","app","dmg","iso"]);
+const BROWSER_IMAGE = /^image\/(jpeg|png|webp|gif|bmp|avif)$/;
+const PREVIEW_EXT = new Set(["heic","heif","tif","tiff","dcm","dicom"]);
+function extOf(name) { const m = String(name || "").toLowerCase().match(/\.([a-z0-9]{1,10})$/); return m ? m[1] : ""; }
+function kindOf(img) {
+  if (img.kind) return img.kind;
+  const mime = img.mime_type || "";
+  if (mime === "application/pdf") return "pdf";
+  if (BROWSER_IMAGE.test(mime)) return "image";
+  if (/heic|heif|tiff|dicom/.test(mime)) return "preview";
+  return mime ? "file" : "image";              // very old pictures have no type saved: they are pictures
+}
+function viewUrl(img) {
+  return kindOf(img) === "preview" ? (img.preview_url || img.url.replace(/\/data$/, "/preview")) : img.url;
+}
+const FILE_ICONS = { stl:"🦷", ply:"🦷", obj:"🦷", "3mf":"🦷", dcm:"🩻", dicom:"🩻", zip:"🗜️", rar:"🗜️", "7z":"🗜️",
+  doc:"📝", docx:"📝", odt:"📝", rtf:"📝", txt:"📝", xls:"📊", xlsx:"📊", csv:"📊", ppt:"📽️", pptx:"📽️",
+  mp4:"🎞️", mov:"🎞️", mp3:"🎵", wav:"🎵", pdf:"📄" };
+function fileLabel(img) {
+  const ext = (img.ext || extOf(img.file_name) || extOf(img.path) || "").toUpperCase();
+  return ext ? `${ext} file` : "File";
+}
+function fileIcon(img) { return FILE_ICONS[(img.ext || extOf(img.file_name) || extOf(img.path) || "").toLowerCase()] || "📎"; }
 
 // Reads the backend URL from Vite's env (VITE_API_URL in .env / .env.production).
 // If that's not set for some reason, auto-detect: use localhost when running
@@ -512,8 +545,18 @@ function serverMessage(err, fallback) {
 }
 
 function downloadName(img, type) {
-  const ext = { "image/png":"png", "image/webp":"webp", "image/gif":"gif", "image/bmp":"bmp", "application/pdf":"pdf" }[type || img.mime_type] || "jpg";
+  if (img.file_name) return img.file_name;
+  const ext = img.ext || { "image/png":"png", "image/webp":"webp", "image/gif":"gif", "image/bmp":"bmp", "application/pdf":"pdf" }[type || img.mime_type] || "jpg";
   return `${img.type || "image"}_${img.image_date || "undated"}_${img.id}.${ext}`;
+}
+
+/* Download the ORIGINAL file (for a HEIC / TIFF / DICOM the screen shows a preview). */
+async function downloadOriginal(img) {
+  const entry = await loadPicture(img.url);
+  const a = document.createElement("a");
+  a.href = entry.download || entry.url;
+  a.download = downloadName(img, entry.type);
+  document.body.appendChild(a); a.click(); a.remove();
 }
 
 /* ═══════════════════════════════════════════
@@ -535,8 +578,11 @@ function Lightbox({ img, images = [], onNavigate, onClose }) {
   const [picture,    setPicture]    = useState(null);     // { url, type } once loaded
   const [error,      setError]      = useState("");
   const [attempt,    setAttempt]    = useState(0);
+  const [saving,     setSaving]     = useState(false);
   const dragRef  = useRef(null);
   const stageRef = useRef(null);
+  const kind     = kindOf(img);
+  const isFile   = kind === "file";
 
   useLockPageScroll();
 
@@ -562,11 +608,12 @@ function Lightbox({ img, images = [], onNavigate, onClose }) {
     setZoom(1); setPan({ x:0, y:0 }); setRotation(0);
     setBrightness(100); setContrast(100); setInvert(false);
     if (img.available === false) { setError("The file for this picture is missing on the server."); return; }
-    loadPicture(img.url)
+    if (kindOf(img) === "file") return () => { cancelled = true; };      // nothing to show: Download opens it
+    loadPicture(viewUrl(img))
       .then(entry => { if (!cancelled) setPicture({ url: entry.url, type: entry.type, download: entry.download }); })
       .catch(err => { if (!cancelled) setError(err.message || "The picture could not be loaded."); });
     return () => { cancelled = true; };
-  }, [img.id, img.url, img.available, attempt]);
+  }, [img.id, img.url, img.preview_url, img.kind, img.available, attempt]);
 
   // Size of the viewing area (so a rotated picture still fits)
   useEffect(() => {
@@ -619,7 +666,7 @@ function Lightbox({ img, images = [], onNavigate, onClose }) {
   const onPointerUp = () => setDragging(false);
 
   const typeObj = IMAGE_TYPES.find(t => t.value === img.type) || { label: img.type };
-  const isPdf   = (picture?.type || img.mime_type) === "application/pdf";
+  const isPdf   = kind === "pdf" || (picture?.type || img.mime_type) === "application/pdf";
 
   // The picture always fills the viewing area as far as its shape allows —
   // also after turning it on its side.
@@ -627,12 +674,19 @@ function Lightbox({ img, images = [], onNavigate, onClose }) {
   const boxW = Math.max(60, (sideways ? stage.h : stage.w) - 24);
   const boxH = Math.max(60, (sideways ? stage.w : stage.h) - 24);
 
-  const download = () => {
-    if (!picture) return;
-    const a = document.createElement("a");
-    a.href = picture.download || picture.url;      // a cloud picture's download link names the file itself
-    a.download = downloadName(img, picture.type);
-    document.body.appendChild(a); a.click(); a.remove();
+  const download = async () => {
+    if (kind === "image" || kind === "pdf") {
+      if (!picture) return;
+      const a = document.createElement("a");
+      a.href = picture.download || picture.url;      // a cloud picture's download link names the file itself
+      a.download = downloadName(img, picture.type);
+      document.body.appendChild(a); a.click(); a.remove();
+      return;
+    }
+    setSaving(true);                                   // preview / other file: the original file
+    try { await downloadOriginal(img); setError(""); }
+    catch (err) { setError(err.message || "The file could not be downloaded."); }
+    finally { setSaving(false); }
   };
 
   return inBody(
@@ -646,10 +700,11 @@ function Lightbox({ img, images = [], onNavigate, onClose }) {
           </div>
           <div style={{ fontSize:11.5, color:"rgba(255,255,255,0.5)", marginTop:2 }}>
             {img.image_date && <>📅 {fmtDate(img.image_date)}</>}
+            {kind === "preview" && <span style={{ marginLeft:10, color:"#fcd34d" }}>Preview of a {fileLabel(img)} — Download gives the original</span>}
             {images.length > 1 && index >= 0 && <span style={{ marginLeft: img.image_date ? 10 : 0 }}>Picture {index + 1} of {images.length}</span>}
           </div>
         </div>
-        {!isPdf && (
+        {!isPdf && !isFile && (
           <div className="imgup-viewer-tools main">
             <button type="button" className="imgup-lbox-btn" onClick={()=>applyZoom(zoom-STEP)} title="Zoom out (−)" aria-label="Zoom out">−</button>
             <span className="imgup-viewer-zoom" aria-live="polite">{Math.round(zoom*100)}%</span>
@@ -664,13 +719,17 @@ function Lightbox({ img, images = [], onNavigate, onClose }) {
         )}
         <div className="imgup-viewer-tools end">
           <span className="imgup-viewer-sep"/>
-          <button type="button" className="imgup-lbox-btn" onClick={download} disabled={!picture} title="Download" aria-label="Download">⬇</button>
+          <button type="button" className={`imgup-lbox-btn${kind === "image" || kind === "pdf" ? "" : " wide"}`} onClick={download}
+            disabled={saving || ((kind === "image" || kind === "pdf") && !picture)}
+            title={kind === "preview" ? "Download the original file" : "Download"} aria-label="Download">
+            {saving ? "…" : kind === "preview" ? "⬇ Original" : kind === "file" ? "⬇ Download" : "⬇"}
+          </button>
           <button type="button" className="imgup-lbox-btn" onClick={onClose} title="Close (Esc)" aria-label="Close" style={{ fontSize:16 }}>✕</button>
         </div>
       </div>
 
       {/* ── brightness / contrast ── */}
-      {showAdjust && !isPdf && (
+      {showAdjust && !isPdf && !isFile && (
         <div className="imgup-viewer-adjust">
           <label>Brightness
             <input type="range" min={40} max={220} value={brightness} onChange={e=>setBrightness(+e.target.value)} aria-label="Brightness" />
@@ -699,7 +758,19 @@ function Lightbox({ img, images = [], onNavigate, onClose }) {
             <button type="button" className="imgup-lbox-btn wide" style={{ margin:"0 auto" }} onClick={()=>setAttempt(n=>n+1)}>Try again</button>
           </div>
         )}
-        {!error && !picture && (
+        {!error && isFile && (
+          <div style={{ textAlign:"center", color:"#e2e8f0", maxWidth:440, padding:20 }}>
+            <div style={{ fontSize:64, marginBottom:10 }}>{fileIcon(img)}</div>
+            <div style={{ fontSize:16, fontWeight:700, marginBottom:6 }}>{fileLabel(img)}</div>
+            <div style={{ fontSize:13, color:"rgba(255,255,255,0.6)", marginBottom:18, lineHeight:1.6 }}>
+              This kind of file cannot be shown here. Download it and open it with its own program
+              {/stl|ply|obj|3mf/.test(img.ext || "") ? " (for example the scanner software or a 3-D viewer)" : ""}.
+            </div>
+            <button type="button" className="imgup-lbox-btn wide" style={{ margin:"0 auto", height:44, padding:"0 20px", fontSize:14 }}
+              onClick={download} disabled={saving}>{saving ? "Downloading…" : `⬇ Download ${img.file_name || ""}`}</button>
+          </div>
+        )}
+        {!error && !isFile && !picture && (
           <div style={{ color:"rgba(255,255,255,0.6)", fontSize:13, display:"flex", alignItems:"center", gap:10 }}>
             <span className="imgup-spinner" /> Loading picture…
           </div>
@@ -843,9 +914,9 @@ function UploadModal({ onClose, onUploaded, visitId }) {
   useEffect(() => () => { picksRef.current.forEach(p => p.preview && URL.revokeObjectURL(p.preview)); }, []);
 
   const checkFile = (f) => {
-    const isHeic = /\.(heic|heif)$/i.test(f.name) || /hei[cf]/i.test(f.type);
-    if (isHeic) return "iPhone HEIC photos cannot be displayed in the browser. Please save it as JPG first.";
-    if (!f.type.startsWith("image/")) return "This is not a picture file. Use JPG, PNG or WEBP.";
+    const ext = extOf(f.name);
+    if (BLOCKED_EXT.has(ext) || /html|javascript|svg|x-msdownload/.test(f.type))
+      return `“.${ext || "?"}” files cannot be uploaded (programs and web pages could harm the computer).`;
     if (f.size === 0) return "This file is empty.";
     if (f.size > MAX_UPLOAD_MB * 1048576) return `Too large (${fmtSize(f.size)}). The limit is ${MAX_UPLOAD_MB} MB.`;
     return "";
@@ -859,7 +930,8 @@ function UploadModal({ onClose, onUploaded, visitId }) {
       ...prev,
       ...incoming.map(f => {
         const error = checkFile(f);
-        return { key: ++pickSeq, file: f, error, preview: !error ? URL.createObjectURL(f) : null };
+        const showable = !error && BROWSER_IMAGE.test(f.type);   // a small picture of it, when the browser can draw it
+        return { key: ++pickSeq, file: f, error, preview: showable ? URL.createObjectURL(f) : null };
       }),
     ]);
   };
@@ -921,14 +993,14 @@ function UploadModal({ onClose, onUploaded, visitId }) {
 
   return inBody(
     <div className="imgup-modal-overlay" onClick={closeIfIdle}>
-      <div className="imgup-modal" role="dialog" aria-modal="true" aria-label="Upload pictures" onClick={e=>e.stopPropagation()}>
+      <div className="imgup-modal" role="dialog" aria-modal="true" aria-label="Upload files" onClick={e=>e.stopPropagation()}>
         <div style={{ display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:18 }}>
           <div>
             <div style={{ fontSize:16,fontWeight:800,color:"#0b2d4e" }}>
               📸 Upload {selTypeObj ? selTypeObj.label : "Clinical Images"}
             </div>
             <div style={{ fontSize:12,color:"#94a3b8",marginTop:2 }}>
-              {selTypeObj ? selTypeObj.desc : "Choose the kind of picture, then add one or more files"}
+              {selTypeObj ? selTypeObj.desc : "Choose the kind, then add one or more files (any format)"}
             </div>
           </div>
           <button type="button" onClick={onClose} disabled={uploading} aria-label="Close" style={{ width:30,height:30,borderRadius:8,border:"1.5px solid #e2e8f4",
@@ -958,17 +1030,20 @@ function UploadModal({ onClose, onUploaded, visitId }) {
         )}
 
         {/* 2 — files */}
-        <label style={{ ...lbl, marginTop:16 }}>2 · Pictures</label>
+        <label style={{ ...lbl, marginTop:16 }}>2 · Files</label>
         <div className={`imgup-dropzone ${drag?"drag":""} ${ready.length?"has-file":""}`}
           onClick={()=>!uploading && fileRef.current?.click()}
           onDragOver={e=>{e.preventDefault();setDrag(true);}}
           onDragLeave={()=>setDrag(false)} onDrop={handleDrop}>
           <span style={{ fontSize:28 }}>🖼️</span>
           <span style={{ fontSize:13.5,fontWeight:600,color:"#475569" }}>
-            {picks.length ? "Click or drop to add more pictures" : "Click or drag & drop pictures here"}
+            {picks.length ? "Click or drop to add more files" : "Click or drag & drop files here"}
           </span>
-          <span style={{ fontSize:11.5,color:"#94a3b8" }}>JPG, PNG, WEBP · up to {MAX_UPLOAD_MB} MB each · several at once is fine</span>
-          <input ref={fileRef} type="file" accept="image/*" multiple style={{ display:"none" }}
+          <span style={{ fontSize:11.5,color:"#94a3b8",textAlign:"center",lineHeight:1.5 }}>
+            Any file: JPG, PNG, PDF, iPhone HEIC, TIFF, DICOM, STL scans, Word, Excel, ZIP…<br/>
+            up to {MAX_UPLOAD_MB} MB each · several at once is fine
+          </span>
+          <input ref={fileRef} type="file" multiple style={{ display:"none" }}
             aria-label="Choose pictures"
             onChange={e=>{ addFiles(e.target.files); e.target.value = ""; }} />
         </div>
@@ -979,7 +1054,11 @@ function UploadModal({ onClose, onUploaded, visitId }) {
               <div key={p.key} className={`imgup-pick${p.error || p.uploadError ? " bad" : ""}`}>
                 {p.preview
                   ? <img src={p.preview} alt="" className="imgup-pick-thumb" />
-                  : <div className="imgup-pick-thumb" style={{ display:"flex",alignItems:"center",justifyContent:"center",fontSize:18 }}>⚠️</div>}
+                  : <div className="imgup-pick-thumb" style={{ display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",
+                      fontSize:18,color:"#cbd5e1" }}>
+                      {p.error ? "⚠️" : <>{FILE_ICONS[extOf(p.file.name)] || (PREVIEW_EXT.has(extOf(p.file.name)) ? "🖼️" : "📎")}
+                        <span style={{ fontSize:9,fontWeight:700,marginTop:1 }}>{extOf(p.file.name).toUpperCase()}</span></>}
+                    </div>}
                 <div style={{ flex:1, minWidth:0 }}>
                   <div style={{ fontSize:12.5,fontWeight:600,color:"#1e293b",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap" }}>{p.file.name}</div>
                   {p.error || p.uploadError
@@ -1023,7 +1102,7 @@ function UploadModal({ onClose, onUploaded, visitId }) {
 
         <div style={{ display:"flex",gap:10,marginTop:18,alignItems:"center" }}>
           <span style={{ flex:1,fontSize:12,color:"#64748b" }}>
-            {!selType ? "Choose the kind of picture first." : ready.length === 0 ? "Now add at least one picture."
+            {!selType ? "Choose the kind of picture first." : ready.length === 0 ? "Now add at least one file."
               : isImplant && !implantReady(implant) ? "Choose the implant system."
               : isImplant ? `Saved as: ${finalDescription}` : ""}
           </span>
@@ -1038,7 +1117,7 @@ function UploadModal({ onClose, onUploaded, visitId }) {
             cursor:canUpload?"pointer":"not-allowed",
             display:"flex",alignItems:"center",justifyContent:"center",gap:8 }}>
             {uploading ? <><span className="imgup-spinner"/> {progress}</>
-              : ready.length > 1 ? `✓ Upload ${ready.length} Images` : "✓ Upload Image"}
+              : ready.length > 1 ? `✓ Upload ${ready.length} Files` : "✓ Upload"}
           </button>
         </div>
       </div>
@@ -1179,7 +1258,8 @@ function DeleteModal({ img, onClose, onDeleted }) {
 function ImageCard({ img, disabled, onEdit, onDelete, onView }) {
   const typeObj = IMAGE_TYPES.find(t=>t.value===img.type)||{icon:"📄",label:img.type};
   const missing = img.available === false;
-  const isPdf   = img.mime_type === "application/pdf";
+  const kind    = kindOf(img);
+  const isPdf   = kind === "pdf";
   return (
     <div className="imgup-img-card">
       <button type="button" className="imgup-thumb" onClick={()=>onView(img)}
@@ -1195,8 +1275,14 @@ function ImageCard({ img, disabled, onEdit, onDelete, onView }) {
             gap:6,background:"#0b1120",color:"#e2e8f0",fontSize:12.5 }}>
             <span style={{ fontSize:34 }}>📄</span>PDF document
           </div>
+        ) : kind === "file" ? (
+          <div style={{ width:"100%",height:160,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",
+            gap:6,background:"#0b1120",color:"#e2e8f0",fontSize:12.5 }}>
+            <span style={{ fontSize:34 }}>{fileIcon(img)}</span>{fileLabel(img)}
+            <span style={{ fontSize:10.5,color:"#94a3b8" }}>Click to download</span>
+          </div>
         ) : (
-          <AuthImage src={img.url} alt={img.description||img.type}
+          <AuthImage src={viewUrl(img)} alt={img.description||img.type}
             style={{ width:"100%",height:160,objectFit:"cover",display:"block",
               transition:"transform 0.22s",filter:"brightness(0.92)" }}
             onMouseOver={e=>e.currentTarget.style.transform="scale(1.04)"}
@@ -1207,10 +1293,16 @@ function ImageCard({ img, disabled, onEdit, onDelete, onView }) {
           fontSize:11,fontWeight:700,color:"#fff",letterSpacing:"0.3px" }}>
           {typeObj.icon} {typeObj.label}
         </span>
-        {!missing && (
+        {!missing && kind !== "file" && (
           <span style={{ position:"absolute",bottom:8,right:8,background:"rgba(0,0,0,0.6)",
             borderRadius:20,padding:"2px 9px",fontSize:10.5,color:"rgba(255,255,255,0.9)" }}>
             🔍 Click to view
+          </span>
+        )}
+        {!missing && kind === "preview" && (
+          <span style={{ position:"absolute",top:8,right:8,background:"rgba(180,83,9,0.85)",
+            borderRadius:6,padding:"2px 7px",fontSize:10,fontWeight:700,color:"#fff" }}>
+            {(img.ext || "").toUpperCase() || "PREVIEW"}
           </span>
         )}
       </button>
@@ -2023,7 +2115,7 @@ export default function ImageUpload({ visitId, disabled = false, onChange }) {
           <div>
             <div style={{ fontSize:14,fontWeight:700,color:"#0b2d4e" }}>Clinical Images</div>
             <div style={{ fontSize:11.5,color:"#94a3b8" }}>
-              {images.length} image{images.length!==1?"s":""} · IOPA · OPG · CBCT · Intraoral · Implant
+              {images.length} file{images.length!==1?"s":""} · IOPA · OPG · CBCT · Intraoral · Implant · any format
             </div>
           </div>
         </div>
@@ -2077,7 +2169,7 @@ export default function ImageUpload({ visitId, disabled = false, onChange }) {
               <div style={{ fontSize:40,marginBottom:10 }}>🦷</div>
               <div style={{ fontSize:14,fontWeight:600,color:"#475569",marginBottom:6 }}>No clinical images yet</div>
               <div style={{ fontSize:12.5,color:"#94a3b8",marginBottom:16 }}>
-                {disabled ? "No pictures were added for this visit" : "Upload X-rays, OPGs, intraoral photos or implant details"}
+                {disabled ? "No pictures were added for this visit" : "Upload X-rays, OPGs, photos, implant details — any format (JPG, PDF, HEIC, DICOM, STL…)"}
               </div>
               {!disabled && (
                 <button type="button" onClick={()=>setShowUpload(true)} style={{
