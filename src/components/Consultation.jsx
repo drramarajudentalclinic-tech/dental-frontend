@@ -170,7 +170,25 @@ function isLowerTooth(n) { const q = Math.floor(Number(n) / 10); return q === 3 
 function labelOf(note) { return String(note || "").split(" — ")[0]; }
 function sortedTeeth(list) { return [...list].map(Number).sort((a, b) => a - b); }
 
-function todayStr() { return new Date().toISOString().split("T")[0]; }
+// Today's date on this computer (India time), as YYYY-MM-DD.
+function todayStr() {
+  const t = new Date();
+  return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`;
+}
+// The calendar day (this computer's time) of a server time stamp.
+// Time stamps without a zone are stored in UTC by the server.
+function localDay(stamp) {
+  if (!stamp) return "";
+  const raw = String(stamp);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+  const t = new Date(/[zZ]|[+-]\d{2}:?\d{2}$/.test(raw) ? raw : raw + "Z");
+  if (isNaN(t)) return raw.split("T")[0];
+  return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`;
+}
+// Day the consultation record was saved (decides "today" vs "past" for editing).
+function savedDay(r) { return localDay(r?.created_at || r?.updated_at); }
+// Date shown for a consultation: the date the doctor chose, else the day it was saved.
+function consDay(r) { return (r?.consultation_date ? String(r.consultation_date).split("T")[0] : "") || savedDay(r); }
 function fmtDate(d) {
   if (!d) return "";
   const p = String(d).split("T")[0].split("-");
@@ -1164,7 +1182,7 @@ function HistoryRowReadOnly({ r }) {
   return (
     <tr style={{background:"#fafbfc"}}>
       <td style={{fontFamily:"'DM Mono',monospace",fontSize:11.5,color:"#64748b",whiteSpace:"nowrap",verticalAlign:"top"}}>
-        {fmtDate(r.created_at||r.updated_at||"")}
+        {fmtDate(consDay(r))}
       </td>
       <td><DiagnosisReadOnly text={r.diagnosis}/></td>
       <td style={{fontSize:12.5,color:"#64748b",lineHeight:1.5,verticalAlign:"top",fontStyle:"italic"}}>
@@ -1196,12 +1214,14 @@ function HistoryRow({ r, onSave, onDelete }) {
   const [adv,       setAdv]       = useState(r.advice||r.treatment_plan||"");
   const [treat,     setTreat]     = useState(r.treatment_done_today||"");
   const [fupManual, setFupManual] = useState(r.follow_up_date||"");
+  const [day,       setDay]       = useState(consDay(r)||todayStr());
 
   useEffect(()=>{
     setAdv(r.advice||r.treatment_plan||"");
     setTreat(r.treatment_done_today||"");
     setFupManual(r.follow_up_date||"");
-  },[r.id, r.advice, r.treatment_done_today, r.follow_up_date]);
+    setDay(consDay(r)||todayStr());
+  },[r.id, r.advice, r.treatment_done_today, r.follow_up_date, r.consultation_date]);
 
   const handleSave = async () => {
     setSaving(true);
@@ -1210,6 +1230,7 @@ function HistoryRow({ r, onSave, onDelete }) {
       treatment_plan: adv,
       treatment_done_today: treat,
       follow_up_date: fupManual,
+      consultation_date: day,
     });
     setSaving(false);
     setEditing(false);
@@ -1219,8 +1240,14 @@ function HistoryRow({ r, onSave, onDelete }) {
     return (
       <tr style={{background:"#fffbeb",outline:"2px solid #fcd34d",outlineOffset:-1}}>
         <td style={{fontFamily:"'DM Mono',monospace",fontSize:11.5,color:"#64748b",whiteSpace:"nowrap",verticalAlign:"top",paddingTop:10}}>
-          {fmtDate(r.created_at||r.updated_at||todayStr())}
-          <div style={{fontSize:9,color:"#a3a3a3",marginTop:2}}>today</div>
+          <div style={{position:"relative",display:"inline-flex",alignItems:"center",gap:4,
+            background:"#f1f5f9",border:"1.5px solid #e2e8f0",borderRadius:6,padding:"5px 9px",
+            fontSize:11.5,color:"#475569",cursor:"pointer"}} title="Click to choose another date">
+            📅 {fmtDate(day)}
+            <input type="date" value={day} aria-label="Consultation date" onChange={e=>setDay(e.target.value||todayStr())}
+              style={{position:"absolute",opacity:0,inset:0,cursor:"pointer",fontSize:0,width:"100%",height:"100%"}}/>
+          </div>
+          {day===todayStr() && <div style={{fontSize:9,color:"#a3a3a3",marginTop:2}}>today</div>}
         </td>
         <td style={{verticalAlign:"top"}}>
           <DiagnosisReadOnly text={r.diagnosis}/>
@@ -1258,8 +1285,10 @@ function HistoryRow({ r, onSave, onDelete }) {
   return (
     <tr>
       <td style={{fontFamily:"'DM Mono',monospace",fontSize:11.5,color:"#64748b",whiteSpace:"nowrap",verticalAlign:"top"}}>
-        {fmtDate(r.created_at||r.updated_at||todayStr())}
-        <div style={{fontSize:9,color:"#22c55e",marginTop:2,fontWeight:600}}>today</div>
+        {fmtDate(consDay(r)||todayStr())}
+        {consDay(r)===todayStr()
+          ? <div style={{fontSize:9,color:"#22c55e",marginTop:2,fontWeight:600}}>today</div>
+          : <div style={{fontSize:9,color:"#b45309",marginTop:2,fontWeight:600}}>date chosen</div>}
       </td>
       <td style={{verticalAlign:"top"}}><DiagnosisReadOnly text={r.diagnosis}/></td>
       <td style={{fontSize:12.5,color:"#1e293b",lineHeight:1.6,verticalAlign:"top"}}>{r.advice||r.treatment_plan||"—"}</td>
@@ -1467,6 +1496,11 @@ export default function Consultation({
   const [followTime,     setFollowTime]     = useState("09:00");
   const [showFollowAdd,  setShowFollowAdd]  = useState(false);
   const [showPast,       setShowPast]       = useState(false);
+  // Date of this consultation: today unless the doctor picks another day.
+  // Picking a date on an Advice / Treatment entry sets it too, until the
+  // doctor sets this date by hand.
+  const [consDate,       setConsDate]       = useState(todayStr());
+  const [consDateSet,    setConsDateSet]    = useState(false);
   const [patientInfo,    setPatientInfo]    = useState(patient);
 
   // Fetch patient info — only runs once when visitId changes and patientInfo is missing
@@ -1496,7 +1530,7 @@ export default function Consultation({
     const today = todayStr();
     const condGroups = {};
     dentalChartLog.forEach(row => {
-      const rowDate = row.created_at ? row.created_at.split("T")[0] : today;
+      const rowDate = row.created_at ? localDay(row.created_at) : today;
       if (rowDate !== today) return;
       const condLabel = row.condition==="Other"&&row.other_text ? row.other_text : row.condition;
       if (!condGroups[condLabel]) condGroups[condLabel] = { teeth: [], notes: [], ids: [] };
@@ -1582,7 +1616,10 @@ export default function Consultation({
     (treatHints[t] = treatHints[t] || []).push(`Plan: ${e.note}`);
   }));
 
-  const addEntry  = setter => entry => setter(prev=>[...prev,entry]);
+  const addEntry  = setter => entry => {
+    setter(prev=>[...prev,entry]);
+    if (!consDateSet && entry?.date && entry.date !== todayStr()) setConsDate(entry.date);
+  };
   const editEntry = setter => (id,txt) => setter(prev=>prev.map(e=>e.id===id?{...e,note:txt}:e));
   const delEntry  = setter => id => setter(prev=>prev.filter(e=>e.id!==id));
 
@@ -1593,6 +1630,8 @@ export default function Consultation({
     setFollowDate("");
     setFollowTime("09:00");
     setShowFollowAdd(false);
+    setConsDate(todayStr());
+    setConsDateSet(false);
   };
 
   // Combined diagnosis string for saving: dental chart + other findings
@@ -1611,10 +1650,13 @@ export default function Consultation({
   const saveAll = async () => {
     try {
       const diagText = buildDiagnosisText();
+      const day = consDate || todayStr();
+      // An entry dated differently from the consultation keeps its own date in the text.
       const fmtE = e => {
+        const when = e.date && e.date !== day ? ` (${fmtDate(e.date)})` : "";
         if (e.teeth && e.teeth.length > 0)
-          return `${e.note} IRT ${e.teeth.sort((a,b)=>a-b).join(", ")}`;
-        return e.note;
+          return `${e.note} IRT ${e.teeth.sort((a,b)=>a-b).join(", ")}${when}`;
+        return `${e.note}${when}`;
       };
       const followUpDate = followUps.length>0 ? followUps[followUps.length-1].date : "";
       const payload = {
@@ -1624,6 +1666,7 @@ export default function Consultation({
         treatment_done_today: treatDone.map(fmtE).join("; "),
         follow_up_date:       followUpDate,
         follow_up_time:       followUps.length>0 ? (followUps[followUps.length-1].time || "") : "",
+        consultation_date:    day,
       };
 
       await api.post(`/visits/${visitId}/consultations`, payload);
@@ -1658,6 +1701,10 @@ export default function Consultation({
         if (!last.follow_up_time && last.follow_up_date === savedDate) {
           rows[rows.length-1] = { ...last, follow_up_time: savedTime };
         }
+      }
+      // Older servers do not send consultation_date back: keep the chosen date on screen.
+      if (rows.length > 0 && !rows[rows.length-1].consultation_date) {
+        rows[rows.length-1] = { ...rows[rows.length-1], consultation_date: day };
       }
       setRecords(rows);
       resetForm();
@@ -1855,6 +1902,9 @@ export default function Consultation({
         {/* SAVE */}
         {!disabled&&(
           <div className="cons-save-row">
+            <div className="cons-date-pick" title="Date saved with this consultation">
+              <DateField value={consDate} onChange={v=>{setConsDate(v);setConsDateSet(true);}}/>
+            </div>
             <button className="save-all-btn" onClick={saveAll}>💾 Save Consultation</button>
           </div>
         )}
@@ -1862,14 +1912,10 @@ export default function Consultation({
         {/* CONSULTATION HISTORY */}
         {records.length > 0 && (() => {
           const today = todayStr();
-          const todayRecs = records.filter(r => {
-            const d = (r.created_at||r.updated_at||"").split("T")[0];
-            return d === today;
-          });
-          const pastRecs = records.filter(r => {
-            const d = (r.created_at||r.updated_at||"").split("T")[0];
-            return d !== today;
-          });
+          // "Today" = saved today (these can still be edited); the date
+          // shown on each row is the consultation date that was chosen.
+          const todayRecs = records.filter(r => savedDay(r) === today);
+          const pastRecs = records.filter(r => savedDay(r) !== today);
 
           const tableHead = (
             <thead>
@@ -2021,7 +2067,8 @@ const css = `
 .chip-del { border:none; background:none; color:#93c5fd; cursor:pointer; font-size:11px; padding:0; }
 .chip-del:hover { color:#ef4444; }
 .empty-msg { font-size:12px; color:#cbd5e1; font-style:italic; }
-.cons-save-row { display:flex; justify-content:flex-end; margin-bottom:18px; }
+.cons-save-row { display:flex; justify-content:flex-end; align-items:center; gap:14px; flex-wrap:wrap; margin-bottom:18px; }
+.cons-date-pick { display:flex; align-items:center; }
 .save-all-btn { padding:10px 26px; background:#3b82f6; color:#fff; border:none; border-radius:9px; font-size:14px; font-weight:500; cursor:pointer; font-family:'DM Sans',sans-serif; box-shadow:0 2px 8px rgba(59,130,246,0.25); transition:background 0.15s; }
 .save-all-btn:hover { background:#2563eb; }
 .cons-table-wrap { margin-top:4px; }
