@@ -190,6 +190,8 @@ const injectStyles = () => {
     .dc-frow-actions { display: flex; gap: 5px; flex-shrink: 0; }
     .dc-sev-tag { display: inline-block; padding: 2px 8px; border-radius: 5px; font-size: 10px; font-weight: 700; font-family: var(--dc-mono); letter-spacing: .3px; white-space: nowrap; text-transform: uppercase; }
     .dc-surf-tag { display: inline-block; padding: 2px 8px; border-radius: 5px; font-family: var(--dc-mono); font-size: 10.5px; font-weight: 600; background: #fff; border: 1px solid var(--dc-border2); color: var(--dc-text2); white-space: nowrap; }
+    .dc-date-row { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
+    .dc-date-input { max-width: 180px; cursor: pointer; }
     .dc-date { font-family: var(--dc-mono); font-size: 10.5px; color: var(--dc-text3); white-space: nowrap; }
     .dc-tooth-badge { min-width: 32px; height: 26px; padding: 0 6px; border-radius: 8px; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; font-family: var(--dc-mono); font-weight: 700; font-size: 12px; cursor: pointer; border: 1.5px solid; background: #fff; }
 
@@ -425,9 +427,46 @@ function normalize(raw){
 }
 const formatDate = (d) => {
   if (!d) return "";
-  try { return new Date(d).toLocaleDateString("en-GB", { day:"2-digit", month:"short", year:"numeric" }); }
-  catch { return ""; }
+  // A plain "2026-10-29" is read as that calendar day (not shifted by time zone).
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(d));
+  const when = m ? new Date(+m[1], +m[2] - 1, +m[3]) : new Date(d);
+  if (isNaN(when)) return "";
+  return when.toLocaleDateString("en-GB", { day:"2-digit", month:"short", year:"numeric" });
 };
+/* Chart date: today's date on this computer, as YYYY-MM-DD. */
+const todayISO = () => {
+  const t = new Date();
+  return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`;
+};
+const isISODate = (v) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || "")) && !isNaN(new Date(v));
+/* The date shown for a finding: the date chosen by the doctor; for older
+   findings saved before dates could be chosen, the day it was recorded. */
+const findingDate = (f) => {
+  if (isISODate(f?.chart_date)) return f.chart_date;
+  const d = f?.created_at || f?.updated_at;
+  if (!d) return "";
+  const t = new Date(d);
+  if (isNaN(t)) return "";
+  return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`;
+};
+
+/* Date box used in the finding form and in quick mark. Today is filled in;
+   any other day can be picked. */
+function DatePicker({id,value,onChange,label="Date"}){
+  const today=todayISO();
+  return(
+    <div className="dc-field-group">
+      <label className="dc-field-label" htmlFor={id}>{label}</label>
+      <div className="dc-date-row">
+        <input id={id} type="date" className="dc-input dc-date-input" value={value}
+          onChange={e=>onChange(e.target.value)}/>
+        {value!==today&&(
+          <button type="button" className="dc-btn dc-btn-soft dc-btn-sm" onClick={()=>onChange(today)}>Today</button>
+        )}
+      </div>
+    </div>
+  );
+}
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
 /* ═══════════════════════════════════════════════════════
@@ -910,7 +949,7 @@ function FindingRow({f,showTooth,disabled,busy,onEdit,onDelete,onOpenTooth}){
           {showTooth&&f._surf.length===0&&!f.surface&&!f.severity&&!f.notes&&(
             <span style={{fontSize:11.5,color:"var(--dc-text3)"}}>Whole tooth</span>
           )}
-          <span className="dc-date" style={{marginLeft:"auto"}}>{formatDate(f.created_at||f.updated_at)}</span>
+          <span className="dc-date" style={{marginLeft:"auto"}}>{formatDate(findingDate(f))}</span>
         </div>
         {f.notes&&<div className="dc-frow-notes">“{f.notes}”</div>}
       </div>
@@ -943,6 +982,7 @@ function FindingForm({tooth,initial,othersOnTooth,saving,error,onSubmit,onCancel
   const[surfaces,setSurfaces]=useState(()=>
     (initial?._surf||[]).map(s=>(s==="O"||s==="I")?centre:s).filter((s,i,a)=>a.indexOf(s)===i));
   const[notes,setNotes]=useState(initial?.notes||"");
+  const[chartDate,setChartDate]=useState(()=>(initial&&findingDate(initial))||todayISO());
   const[localError,setLocalError]=useState("");
 
   const isOther=condition==="Other";
@@ -958,6 +998,7 @@ function FindingForm({tooth,initial,othersOnTooth,saving,error,onSubmit,onCancel
   const submit=()=>{
     if(!condition){setLocalError("Choose a condition first.");return;}
     if(isOther&&!otherText.trim()){setLocalError("Type a description for “Other”.");return;}
+    if(!isISODate(chartDate)){setLocalError("Choose a date.");return;}
     const label=(isOther?otherText.trim():condition).toLowerCase();
     if(taken.has(label)){
       setLocalError(`Tooth ${tooth} already has “${isOther?otherText.trim():condition}”. Edit that entry instead of adding it twice.`);
@@ -969,6 +1010,7 @@ function FindingForm({tooth,initial,othersOnTooth,saving,error,onSubmit,onCancel
       notes:notes.trim(),
       other_text:isOther?otherText.trim():"",
       custom_color:isOther?otherColor:"",
+      chart_date:chartDate,
     });
   };
 
@@ -999,6 +1041,7 @@ function FindingForm({tooth,initial,othersOnTooth,saving,error,onSubmit,onCancel
             <span className="dc-field-label">Severity (optional)</span>
             <SeverityPicker value={severity} onChange={setSeverity}/>
           </div>
+          <DatePicker id="dc-date" value={chartDate} onChange={v=>{setChartDate(v);setLocalError("");}}/>
           <label className="dc-field-label" htmlFor="dc-notes">Clinical notes (optional)</label>
           <textarea id="dc-notes" className="dc-notes-ta" placeholder="Observations, plan, follow-up…"
             value={notes} onChange={e=>setNotes(e.target.value)}/>
@@ -1149,6 +1192,8 @@ function QuickMarkBar({quick,setQuick,marked,notice,onUndo,onDone}){
             <span className="dc-field-label">Severity (optional)</span>
             <SeverityPicker value={quick.severity} onChange={v=>setQuick(q=>({...q,severity:v}))}/>
           </div>
+          <DatePicker id="dc-quick-date" label="Date for every tooth you click" value={quick.date||todayISO()}
+            onChange={v=>setQuick(q=>({...q,date:v}))}/>
           <label className="dc-field-label" htmlFor="dc-quick-notes">Notes (optional)</label>
           <input id="dc-quick-notes" className="dc-input" placeholder="Same note for every tooth you click"
             value={quick.notes} onChange={e=>setQuick(q=>({...q,notes:e.target.value}))}/>
@@ -1262,7 +1307,7 @@ function FindingsLog({findings,disabled,busy,onEdit,onDelete,onOpenTooth,onQuick
 /* ═══════════════════════════════════════════════════════
    MAIN EXPORT
 ═══════════════════════════════════════════════════════ */
-const EMPTY_QUICK = () => ({ condition:"", severity:"", surfaces:[], notes:"", otherText:"", otherColor:OTHER_PALETTE[8] });
+const EMPTY_QUICK = () => ({ condition:"", severity:"", surfaces:[], notes:"", date:todayISO(), otherText:"", otherColor:OTHER_PALETTE[8] });
 
 export default function DentalChart({visitId,disabled=false,onRecordsChange,externalRecords}){
   const[records,setRecords]=useState([]);            // rows exactly as the server sent them
@@ -1379,10 +1424,12 @@ export default function DentalChart({visitId,disabled=false,onRecordsChange,exte
     const existing=before.find(f=>sameFinding(f,q.condition,q.otherText));
     const centre=centerCode(n);
     const surface=SURF_ORDER.filter(s=>q.surfaces.map(x=>(x==="O"||x==="I")?centre:x).includes(s)).join(",");
+    const date=isISODate(q.date)?q.date:todayISO();
     const extras={};
     if(q.severity)extras.severity=q.severity;
     if(surface)extras.surface=surface;
     if(q.notes.trim())extras.notes=q.notes.trim();
+    if(existing&&findingDate(existing)!==date)extras.chart_date=date;
 
     if(existing&&Object.keys(extras).length===0){
       say("info",`Tooth ${n} already has ${label}. Nothing was changed.`);
@@ -1401,6 +1448,7 @@ export default function DentalChart({visitId,disabled=false,onRecordsChange,exte
           severity:q.severity||"",surface,notes:q.notes.trim(),
           other_text:isOther?q.otherText.trim():"",
           custom_color:isOther?q.otherColor:"",
+          chart_date:date,
         });
         setMarked(m=>[...m.filter(x=>x.tooth!==n),{tooth:n,id:res?.data?.id,created:true}]);
         setNotice(null);
