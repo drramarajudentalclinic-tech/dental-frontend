@@ -826,14 +826,27 @@ export default function PatientCompleteHistory({ patientId, onBack, onCreateVisi
           {tab === "appointments" && appts && (() => {
             const STATE = { SCHEDULED: "Scheduled", COMPLETED: "Completed", CANCELLED: "Cancelled" };
             const n = new Date(); const today = `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}-${String(n.getDate()).padStart(2, "0")}`;
-            const row = (a) => [
-              <span key="d" style={{ whiteSpace: "nowrap" }}><b>{fmtDate(a.date)}</b></span>,
-              fmtTime(a.time),
-              a.treatment,
-              a.doctor_name,
-              <span key="s" className={`pch-ap pch-ap-${a.state === "SCHEDULED" && a.date < today ? "missed" : a.state.toLowerCase()}`}>{a.state === "SCHEDULED" && a.date < today ? "Not attended" : STATE[a.state] || a.state}</span>,
-              a.notes,
-            ];
+            // A visit on the appointment's day means the patient came, even if the
+            // appointment itself was never marked done (for example a visit opened
+            // one day and closed the next with the first day's date).
+            const visitDays = new Set(visits.map((v) => String(v.date || "").slice(0, 10)).filter(Boolean));
+            const status = (a) => {
+              const day = String(a.date || "").slice(0, 10);
+              if (a.state === "SCHEDULED" && visitDays.has(day)) return ["completed", "Attended"];
+              if (a.state === "SCHEDULED" && day < today) return ["missed", "Not attended"];
+              return [String(a.state || "").toLowerCase(), STATE[a.state] || a.state];
+            };
+            const row = (a) => {
+              const [cls, label] = status(a);
+              return [
+                <span key="d" style={{ whiteSpace: "nowrap" }}><b>{fmtDate(a.date)}</b></span>,
+                fmtTime(a.time),
+                a.treatment,
+                a.doctor_name,
+                <span key="s" className={`pch-ap pch-ap-${cls}`}>{label}</span>,
+                a.notes,
+              ];
+            };
             return (
               <>
                 <Block title={`Upcoming (${appts.upcoming.length})`} icon="📅">
