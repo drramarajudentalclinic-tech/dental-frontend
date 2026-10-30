@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import api from "../api/api";
+import VoicePanel, { VoiceButton } from "./voice/VoicePanel";
+import "./voice/VoiceTyping";   // 🎙 dictation into any text box
 
 /* ═══════════════════════════════════════════════════════
    DENTAL CHART
@@ -1328,6 +1330,8 @@ export default function DentalChart({visitId,disabled=false,onRecordsChange,exte
   const[confirm,setConfirm]=useState(null);          // finding waiting for delete confirmation
   const[focus,setFocus]=useState("");                // legend filter (lower-case label)
   const[oldServer,setOldServer]=useState(false);     // backend still replaces instead of adding
+  const[voiceOpen,setVoiceOpen]=useState(false);     // Voice to chart window
+  const[voiceUndo,setVoiceUndo]=useState(null);      // { ids, text } — what the last voice save added
 
   const loadSeq=useRef(0);
   const noticeTimer=useRef(null);
@@ -1502,6 +1506,47 @@ export default function DentalChart({visitId,disabled=false,onRecordsChange,exte
     }finally{setDeleting(false);}
   };
 
+  /* ── Voice to chart: save the entries the doctor checked ── */
+  const saveVoice=async(items,{date})=>{
+    const findingsToSave=items.filter(i=>i.kind==="finding");
+    const general=items.filter(i=>i.kind==="general");
+    if(!findingsToSave.length) return general.length
+      ? "Whole-mouth findings (e.g. generalised calculus) are added in Consultation → Diagnosis → Other finding."
+      : "Nothing to save.";
+    setSaving(true);
+    const failed=[],added=[];
+    try{
+      for(const it of findingsToSave){
+        try{
+          const res=await api.post(`/visits/${visitId}/dental-chart`,{
+            tooth_number:Number(it.tooth),condition:it.condition,severity:it.severity||"",
+            surface:(it.surfaces||[]).join(","),notes:String(it.notes||"").trim(),
+            other_text:it.condition==="Other"?String(it.other_text||"").trim():"",
+            custom_color:it.condition==="Other"?OTHER_PALETTE[8]:"",chart_date:date,
+          });
+          if(res?.status===201&&res?.data?.id)added.push(res.data.id);   // new rows only (updates are not undone)
+        }catch(e){console.error(e);failed.push(`${it.tooth} ${it.condition==="Other"?it.other_text:it.condition}`);}
+      }
+      await load();
+    }finally{setSaving(false);}
+    if(failed.length)return `Could not save: ${failed.join(", ")}. The other entries were saved — press Save again to retry these.`;
+    setVoiceUndo({ids:added,text:`🎙 Saved ${plural(findingsToSave.length,"finding","findings")} from voice.${general.length?` Whole-mouth findings (${general.map(g=>g.label).join(", ")}) go in Consultation → Diagnosis.`:""}`});
+    return "";
+  };
+  const undoVoice=async()=>{
+    const u=voiceUndo;
+    if(!u)return;
+    setVoiceUndo(null);
+    setDeleting(true);
+    try{
+      for(const id of u.ids){ try{await api.delete(`/visits/${visitId}/dental-chart/${id}`);}catch(e){console.error(e);} }
+      await load();
+      say("info",`Removed the ${plural(u.ids.length,"finding","findings")} added by voice.`);
+    }finally{setDeleting(false);}
+  };
+  useEffect(()=>{setVoiceUndo(null);},[visitId]);
+  const voiceColors=useMemo(()=>Object.fromEntries(Object.entries(CMAP).map(([k,v])=>[k,v.a])),[]);
+
   /* ── Header numbers + legend ── */
   const teethCount=new Set(findings.map(f=>f.tooth_number)).size;
   const usedMap=new Map();
@@ -1566,12 +1611,28 @@ export default function DentalChart({visitId,disabled=false,onRecordsChange,exte
         <div className="dc-panel dc-mode">
           <div className="dc-mode-row">
             <span className="dc-mode-hint"><b>Click a tooth</b> to see, add or edit its findings.</span>
-            <button type="button" className="dc-btn dc-btn-soft" style={{marginLeft:"auto"}} onClick={()=>startQuick("")}>
-              ⚡ Quick mark several teeth
-            </button>
+            <div style={{marginLeft:"auto",display:"flex",gap:8,flexWrap:"wrap"}}>
+              <VoiceButton label="Voice to chart" onClick={()=>setVoiceOpen(true)}/>
+              <button type="button" className="dc-btn dc-btn-soft" onClick={()=>startQuick("")}>
+                ⚡ Quick mark several teeth
+              </button>
+            </div>
           </div>
+          {voiceUndo&&(
+            <div className="dc-notice dc-notice-info" role="status" style={{marginTop:10,display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+              <span>{voiceUndo.text}</span>
+              <span style={{marginLeft:"auto",display:"flex",gap:6}}>
+                {voiceUndo.ids.length>0&&<button type="button" className="dc-btn dc-btn-soft dc-btn-sm" disabled={busy} onClick={undoVoice}>↩ Undo</button>}
+                <button type="button" className="dc-btn dc-btn-ghost dc-btn-sm" onClick={()=>setVoiceUndo(null)}>OK</button>
+              </span>
+            </div>
+          )}
+          {!voiceUndo&&notice&&<div className={`dc-notice dc-notice-${notice.kind}`} role="status" style={{marginTop:10}}>{notice.text}</div>}
         </div>
       )}
+      <VoicePanel open={voiceOpen} onClose={()=>setVoiceOpen(false)} title="Voice to chart"
+        modes={["chart","perio"]} existing={records} colors={voiceColors} draftKey={visitId}
+        onSave={saveVoice} saveLabel={n=>`Save ${n||""} to chart`}/>
       {!disabled&&(
         <QuickMarkBar quick={quick} setQuick={setQuick} marked={marked} notice={notice}
           onUndo={undoMark} onDone={endQuick}/>

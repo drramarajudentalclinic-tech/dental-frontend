@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import api from "../api/api";
+import VoicePanel, { VoiceButton } from "./voice/VoicePanel";
+import "./voice/VoiceTyping";   // 🎙 dictation into any text box
 import { CONDITIONS as DENTAL_CHART_CONDITIONS, CMAP as DENTAL_CHART_CMAP } from "./DentalChart";
 import { IMPLANT_SYSTEMS, IMPLANT_DIAMETERS, IMPLANT_LENGTHS, IMPLANT_TORQUES, EMPTY_IMPLANT, formatImplant, implantReady } from "./implantOptions";
 import { rctStage, STAGE_FIELDS, EMPTY_RCT, formatRct, CANALS, PULP_DIAGNOSIS, WL_METHOD, ROTARY_SYSTEMS, PAEDIATRIC_FILES,
@@ -1501,6 +1503,7 @@ export default function Consultation({
   // doctor sets this date by hand.
   const [consDate,       setConsDate]       = useState(todayStr());
   const [consDateSet,    setConsDateSet]    = useState(false);
+  const [voiceOpen,      setVoiceOpen]      = useState(false);   // Voice to chart window
   const [patientInfo,    setPatientInfo]    = useState(patient);
 
   // Fetch patient info — only runs once when visitId changes and patientInfo is missing
@@ -1620,6 +1623,41 @@ export default function Consultation({
     setter(prev=>[...prev,entry]);
     if (!consDateSet && entry?.date && entry.date !== todayStr()) setConsDate(entry.date);
   };
+  // ── Voice to chart: entries the doctor checked in the voice window ──
+  const saveVoice = async (items, { date }) => {
+    let n = 0;
+    const stamp = Date.now();
+    items.forEach((it, i) => {
+      if (it.kind !== "treatment" && it.kind !== "advice") return;
+      const base = it.label === "Other" ? (it.text || "Other") : it.label;
+      const entry = {
+        id: stamp + i, note: it.note ? `${base} — ${it.note}` : base, date, teeth: it.teeth || [],
+        chartType: it.chartType || "permanent", color: TREATMENT_COLORS[base] || colorForLabel(base),
+      };
+      addEntry(it.kind === "treatment" ? setTreatDone : setAdvice)(entry);
+      n++;
+    });
+    // chart findings and whole-mouth findings go to the real Dental Chart / Other findings records
+    const findings = items.filter(i => i.kind === "finding");
+    if (findings.length && !onAddDentalRecord) return "Chart findings can't be saved from here — use the Dental Chart tab.";
+    const groups = new Map();
+    findings.forEach(f => {
+      const label = f.condition === "Other" ? (f.other_text || "Other") : f.condition;
+      const notes = [(f.surfaces || []).join(""), f.severity, f.notes].filter(Boolean).join(" · ");
+      const key = `${label}|${notes}`;
+      if (!groups.has(key)) groups.set(key, { label, notes, teeth: [] });
+      groups.get(key).teeth.push(Number(f.tooth));
+    });
+    for (const g of groups.values()) {
+      await onAddDentalRecord({ teeth: g.teeth, label: g.label, freeText: g.notes, date, color: colorForLabel(g.label), notes: g.notes });
+      n += g.teeth.length;
+    }
+    for (const gfind of items.filter(i => i.kind === "general")) {
+      if (onAddFindingRecord) { await onAddFindingRecord({ note: gfind.label, date }); n++; }
+    }
+    return n ? "" : "Nothing to save.";
+  };
+
   const editEntry = setter => (id,txt) => setter(prev=>prev.map(e=>e.id===id?{...e,note:txt}:e));
   const delEntry  = setter => id => setter(prev=>prev.filter(e=>e.id!==id));
 
@@ -1743,7 +1781,16 @@ export default function Consultation({
             <div className="cons-header-title">Consultation</div>
             <div className="cons-header-sub">Doctor's notes &amp; advice</div>
           </div>
+          {!disabled && (
+            <div style={{marginLeft:"auto"}}>
+              <VoiceButton label="Voice" title="Speak the treatment done, advice or chart findings" onClick={()=>setVoiceOpen(true)}/>
+            </div>
+          )}
         </div>
+        <VoicePanel open={voiceOpen} onClose={()=>setVoiceOpen(false)} title="Voice — consultation"
+          modes={["both","chart","perio"]} existing={dentalChartLog} draftKey={visitId}
+          onSave={saveVoice}
+          saveLabel={n=>`Add ${n||""} to consultation`}/>
 
         <div className="cons-grid">
 

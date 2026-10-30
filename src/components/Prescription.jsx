@@ -1,6 +1,8 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { createPortal } from "react-dom";
 import api from "../api/api";
+import VoicePanel, { VoiceButton } from "./voice/VoicePanel";
+import "./voice/VoiceTyping";   // 🎙 dictation into any text box
 
 /* ─── helpers ──────────────────────────────────────────────── */
 function todayStr() { return new Date().toISOString().split("T")[0]; }
@@ -1726,6 +1728,7 @@ export default function Prescription({ visitId, patient = null, consultationData
   const [followUpDate,  setFollowUpDate]  = useState("");
   const [followUpTime,  setFollowUpTime]  = useState("");
   const [medicines,     setMedicines]     = useState([]);
+  const [voiceOpen,     setVoiceOpen]     = useState(false);   // Voice → medicines window
   const [investigations, setInvestigations] = useState([]);
   const [showPreview,   setShowPreview]   = useState(false);
   const [confirming,    setConfirming]    = useState(false);
@@ -2036,7 +2039,21 @@ export default function Prescription({ visitId, patient = null, consultationData
         <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10, flexWrap:"wrap" }}>
           <div style={{ ...S.cardTitle, marginBottom:0 }}>🧾 Prescribe Medicines &amp; Investigations</div>
           {cleanMeds.length > 0 && <span style={{ fontSize:11, fontWeight:700, background:"#eff6ff", color:"#1d4ed8", border:"1px solid #bfdbfe", borderRadius:20, padding:"1px 9px" }}>{cleanMeds.length} added</span>}
+          {!disabled && <span style={{ marginLeft:"auto" }}><VoiceButton label="Voice" title="Speak the medicines (e.g. amoxicillin 500 three times a day after food 5 days)" onClick={()=>setVoiceOpen(true)}/></span>}
         </div>
+        <VoicePanel open={voiceOpen} onClose={()=>setVoiceOpen(false)} title="Voice — prescription" modes={["rx"]} showDate={false} draftKey={visitId}
+          catalogue={[...MEDICINES, ...(catalogue.custom || [])]}
+          saveLabel={n=>`Add ${n||""} medicine${n===1?"":"s"}`}
+          onSave={(items)=>{
+            const meds = items.filter(i => i.kind === "medicine" && String(i.name || "").trim());
+            const have = new Set(medicines.map(m => lower(m.name)));
+            const fresh = meds.filter(m => !have.has(lower(m.name)))
+              .map(m => ({ name: m.name.trim(), times: m.times || DEFAULT_CUSTOM.times, days: m.days === "" || m.days == null ? "" : Number(m.days), when: m.when || "", note: m.note || "" }));
+            if (!fresh.length) return meds.length ? "These medicines are already on the prescription." : "Nothing to add.";
+            setMedicines(prev => [...prev, ...fresh]);
+            setCopiedNote(`🎙 Added ${fresh.length} medicine${fresh.length === 1 ? "" : "s"} from voice — please check the dose and days.`);
+            return "";
+          }}/>
         <AllergyBanner allergies={allergies} noneKnown={noneKnown} health={health} />
         {copiedNote && <div className="presc-msg ok" role="status">{copiedNote}<button type="button" onClick={()=>setCopiedNote("")}>OK</button></div>}
         <MedicineEditor medicines={medicines} onChange={list => { setMedicines(list); setCopiedNote(""); }} allergies={allergies} />
