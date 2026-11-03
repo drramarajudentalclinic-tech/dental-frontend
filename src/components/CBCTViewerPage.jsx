@@ -42,14 +42,25 @@ export default function CBCTViewerPage() {
     document.body.style.overflow   = "hidden";
     document.body.style.background = "#020617";
 
+    // ── Phones / tablets: pinch zooms the scan, not the whole page ─────────
+    const stop = (e) => e.preventDefault();
+    document.addEventListener("gesturestart", stop);
+    document.documentElement.style.overscrollBehavior = "none";
+    let vp = document.querySelector('meta[name="viewport"]');
+    const oldVp = vp ? vp.getAttribute("content") : null;
+    if (!vp) { vp = document.createElement("meta"); vp.name = "viewport"; document.head.appendChild(vp); }
+    vp.setAttribute("content", "width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover");
+
     // ── Tab title ─────────────────────────────────────────────────────────
-    document.title = vid ? `CBCT Viewer — Volume #${vid}` : "CBCT Viewer";
+    document.title = vid ? `CBCT Planner — Scan #${vid}` : "CBCT Planner";
 
     setReady(true);
 
     return () => {
       document.body.style.overflow   = "";
       document.body.style.background = "";
+      document.removeEventListener("gesturestart", stop);
+      if (oldVp !== null) vp.setAttribute("content", oldVp);
     };
   }, []);
 

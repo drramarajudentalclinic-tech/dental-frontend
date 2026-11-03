@@ -1,1210 +1,1123 @@
 /**
- * CBCTViewer.jsx  –  Production-grade CBCT / DICOM MPR Viewer
+ * CBCTViewer.jsx — CBCT viewer and implant planner
  *
- * Features:
- *   • Axial / Coronal / Sagittal MPR panels with crosshair sync
- *   • 3D volume preview panel
- *   • Window / Level (W/L) adjustment via right-click drag
- *   • Zoom & Pan on each panel
- *   • Distance & Angle measurement tools
- *   • HU density probe
- *   • Implant planning (Nobel Active, Straumann BLT, Zimmer TSV, etc.)
- *   • IAN nerve tracing
- *   • Annotation save/load via API
- *   • Cine / auto-scroll
- *   • Screenshot export (client-side canvas)
- *   • Server-side composite PNG export
- *   • Full keyboard shortcuts
+ * Works on phones, tablets, laptops and desktops (touch, pen, mouse).
+ *
+ *  MPR mode        Axial · Coronal · Sagittal · 3-D, linked cross-hair,
+ *                  thick slab / MIP, window–level presets, zoom / pan.
+ *  Implant mode    1 Draw the arch on the axial view
+ *                  2 Panoramic view + cross-sections along the arch
+ *                  3 Trace the nerve (inferior alveolar canal) — shown in every view
+ *                  4 Place implants from the clinic's systems and sizes; move / tilt
+ *                    them in any view; distance to the nerve and to the next implant,
+ *                    bone density around each implant, safety-zone warnings
+ *  Measurements    distance, angle, density (HU) — in true millimetres
+ *  Download        planning report (Print / Save as PDF), report picture,
+ *                  plan file, picture of the screen; plan saved with the scan
+ *
+ * Props are unchanged: <CBCTViewer volumeId apiBase onClose />
+ * Saved plans use the existing /cbct/<id>/annotations address; older
+ * annotations are kept as they are.
  */
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { loadVolume, authHeaders, budgetForDevice } from "./cbct/volume";
+import {
+  makeView, renderView, makeLut, toScreen, toWorld, fitScale, buildArch, archAt, archNearest,
+  implantApex, implantNerveGap, implantDensity, implantTilt, implantGap, guessTooth,
+  add, sub, mul, norm, dot, dist, rotate, rad, deg, clamp,
+} from "./cbct/geometry";
+import { drawOverlay, hitTest, COLORS } from "./cbct/overlay";
+import { Renderer3D, webgl2Supported } from "./cbct/render3d";
+import { buildReportHTML, openReport, reportPNG, planFile, downloadBlob, implantRows } from "./cbct/report";
+import { IMPLANT_SYSTEMS, IMPLANT_DIAMETERS, IMPLANT_LENGTHS } from "./implantOptions";
 
-import React, {
-  useState, useEffect, useRef, useCallback, useMemo, useReducer
-} from "react";
-
-// ─── Constants ────────────────────────────────────────────────────────────────
-const VIEWS = ["axial", "coronal", "sagittal"];
-
-const VIEW_LABELS = { axial: "AX", coronal: "COR", sagittal: "SAG" };
-const VIEW_COLORS = { axial: "#38bdf8", coronal: "#34d399", sagittal: "#f472b6" };
-
-const TOOLS = {
-  SCROLL:   "scroll",
-  PAN:      "pan",
-  ZOOM:     "zoom",
-  WL:       "wl",
-  DISTANCE: "distance",
-  ANGLE:    "angle",
-  HU:       "hu",
-  IMPLANT:  "implant",
-  IAN:      "ian",
-  ERASE:    "erase",
-};
-
-const IMPLANTS = [
-  { brand: "Nobel Active",      diameter: 4.3, length: 13, color: "#60a5fa" },
-  { brand: "Nobel Active",      diameter: 3.5, length: 11, color: "#60a5fa" },
-  { brand: "Straumann BLT",     diameter: 4.1, length: 12, color: "#34d399" },
-  { brand: "Straumann BLT",     diameter: 3.3, length: 10, color: "#34d399" },
-  { brand: "Zimmer TSV",        diameter: 4.7, length: 14, color: "#f472b6" },
-  { brand: "Zimmer TSV",        diameter: 3.7, length: 12, color: "#f472b6" },
-  { brand: "Osstem TSIII",      diameter: 4.0, length: 10, color: "#fb923c" },
-  { brand: "Dentium SuperLine", diameter: 4.0, length: 11, color: "#a78bfa" },
+/* ── constants ─────────────────────────────────────────────────────────── */
+const VIEW_TITLE = { axial: "Axial", coronal: "Coronal", sagittal: "Sagittal", pano: "Panoramic", cross: "Cross-section", "3d": "3-D" };
+const PRESETS = [
+  { name: "Dental", w: 4000, l: 1200 }, { name: "Bone", w: 2500, l: 700 }, { name: "Teeth", w: 2200, l: 1600 }, { name: "Soft", w: 700, l: 100 },
 ];
+const FDI = [18, 17, 16, 15, 14, 13, 12, 11, 21, 22, 23, 24, 25, 26, 27, 28, 48, 47, 46, 45, 44, 43, 42, 41, 31, 32, 33, 34, 35, 36, 37, 38];
+const EMPTY_PLAN = {
+  jaw: "lower", archPoints: [], crossS: 0, crossWidth: 40, crossStep: 1, crossSlab: 1, panoSlab: 10, panoOffset: 0,
+  nerves: [], implants: [], measures: [], safety: 2, showSafety: true,
+};
+const TOOLS = {
+  nav: { icon: "✛", label: "Navigate", key: "V", hint: "Tap a view to move the cross-hair. Tap an implant to select it; drag its yellow dot to move, orange dot to tilt." },
+  pan: { icon: "✋", label: "Move", key: "P", hint: "Drag to move the picture. Two fingers also move and zoom." },
+  zoom: { icon: "🔍", label: "Zoom", key: "Z", hint: "Drag up / down to zoom. Mouse wheel + Ctrl also zooms." },
+  wl: { icon: "◐", label: "Contrast", key: "W", hint: "Drag left / right for contrast, up / down for brightness. Right mouse button works with any tool." },
+  dist: { icon: "📏", label: "Distance", key: "D", hint: "Tap two points." },
+  angle: { icon: "∠", label: "Angle", key: "A", hint: "Tap three points; the middle one is the corner." },
+  hu: { icon: "◉", label: "Density", key: "H", hint: "Tap a point to read its density (HU)." },
+  arch: { icon: "〰", label: "Arch", key: "R", hint: "On the AXIAL view, tap along the middle of the jaw from one end to the other (6–10 taps), then press Done.", implant: true },
+  nerve: { icon: "⟿", label: "Nerve", key: "N", hint: "On the PANORAMIC view, tap along the canal from the mental foramen back to the ramus, then press Done. Check it in the cross-sections.", implant: true },
+  implant: { icon: "🔩", label: "Implant", key: "I", hint: "Tap the crest of the bone on the CROSS-SECTION or PANORAMIC view to place an implant. Drag its dots to move or tilt it.", implant: true },
+  erase: { icon: "⌫", label: "Erase", key: "E", hint: "Tap a measurement, nerve point or implant to remove it." },
+};
+const uid = () => `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+const r1 = (n) => (Math.round(n * 10) / 10).toFixed(1);
+const lsGet = (k, d) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* private window */ } };
 
-const DEFAULT_WL = { window: 2500, level: 500 };
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-function getToken() {
-  return localStorage.getItem("token") || sessionStorage.getItem("token") || "";
-}
-function authHeaders(extra = {}) {
-  const t = getToken();
-  return t ? { Authorization: `Bearer ${t}`, ...extra } : extra;
-}
-function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
-function dist2(a, b) {
-  return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2);
-}
-function angleDeg(a, b, c) {
-  const ab  = { x: a.x - b.x, y: a.y - b.y };
-  const cb  = { x: c.x - b.x, y: c.y - b.y };
-  const dot = ab.x * cb.x + ab.y * cb.y;
-  const mag = dist2(a, b) * dist2(c, b);
-  return mag < 1e-9 ? 0 : Math.round((Math.acos(clamp(dot / mag, -1, 1)) * 180) / Math.PI);
-}
-
-// ─── Annotation reducer ───────────────────────────────────────────────────────
-function annoReducer(state, action) {
-  switch (action.type) {
-    case "LOAD":   return action.payload;
-    case "ADD":    return [...state, action.item];
-    case "REMOVE": return state.filter((_, i) => i !== action.index);
-    case "CLEAR":  return [];
-    default:       return state;
-  }
+function useScreen() {
+  const get = () => ({ w: window.innerWidth, h: window.innerHeight });
+  const [s, set] = useState(get);
+  useEffect(() => { const f = () => set(get()); window.addEventListener("resize", f); window.addEventListener("orientationchange", f);
+    return () => { window.removeEventListener("resize", f); window.removeEventListener("orientationchange", f); }; }, []);
+  return { ...s, phone: s.w < 760, tablet: s.w >= 760 && s.w < 1180, desktop: s.w >= 1180 };
 }
 
-// ─── Single MPR Canvas Panel ──────────────────────────────────────────────────
-function MPRPanel({
-  view, volumeData, sliceIndex, totalSlices,
-  wl, zoom, pan, crosshair,
-  activeTool, activeImplant, annotations,
-  onSliceChange, onWLChange, onZoomChange, onPanChange, onCrosshairChange,
-  onAnnotationAdd, onAnnotationRemove,
-  highlighted,
-  onClick,
-}) {
-  const canvasRef  = useRef(null);
-  const overlayRef = useRef(null);
-  const dragRef    = useRef(null);
-  const [hoverPos,      setHoverPos]      = useState(null);
-  const [drawingPoints, setDrawingPoints] = useState([]);
+/* ═════════════════════════════════════════════════════════════════════════
+   One 2-D view
+   ═════════════════════════════════════════════════════════════════════════ */
+function Pane({ kind, scene, cam, setCam, act, quick, onMax, maxed, active, onActivate, sliderOf }) {
+  const wrap = useRef(null), base = useRef(null), over = useRef(null);
+  const [size, setSize] = useState({ w: 300, h: 300 });
+  const ptrs = useRef(new Map());
+  const pinch = useRef(null);
+  const imgCache = useRef(null);
+  const raf = useRef(0);
+  const [hoverText, setHoverText] = useState("");
+  const { vol } = scene;
 
-  // ── Draw slice on canvas ─────────────────────────────────────────────────
   useEffect(() => {
-    if (!volumeData || !canvasRef.current) return;
-    const canvas = canvasRef.current;
-    const ctx    = canvas.getContext("2d");
-    const { width, height } = canvas;
-
-    const sliceData = volumeData.slices?.[view]?.[sliceIndex];
-    if (!sliceData) {
-      ctx.fillStyle = "#0a0a0f";
-      ctx.fillRect(0, 0, width, height);
-      ctx.fillStyle = "#1e293b";
-      ctx.font = "13px monospace";
-      ctx.fillText("No slice data", width / 2 - 46, height / 2);
-      return;
-    }
-
-    const img = new Image();
-    img.onload = () => {
-      ctx.save();
-      ctx.clearRect(0, 0, width, height);
-      ctx.fillStyle = "#000";
-      ctx.fillRect(0, 0, width, height);
-      ctx.translate(pan.x + width / 2, pan.y + height / 2);
-      ctx.scale(zoom, zoom);
-      ctx.translate(-width / 2, -height / 2);
-      ctx.drawImage(img, 0, 0, width, height);
-      ctx.restore();
-    };
-    img.src = `data:image/jpeg;base64,${sliceData}`;
-  }, [volumeData, view, sliceIndex, zoom, pan]);
-
-  // ── Draw annotations + crosshair on overlay ──────────────────────────────
-  useEffect(() => {
-    const canvas = overlayRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    // Crosshair
-    if (crosshair) {
-      const cx = crosshair.x * canvas.width;
-      const cy = crosshair.y * canvas.height;
-      ctx.save();
-      ctx.globalAlpha = 0.5;
-      ctx.setLineDash([4, 4]);
-      ctx.lineWidth = 1;
-      ctx.strokeStyle = VIEW_COLORS[view === "axial" ? "coronal" : "axial"];
-      ctx.beginPath(); ctx.moveTo(0, cy); ctx.lineTo(canvas.width, cy); ctx.stroke();
-      ctx.strokeStyle = VIEW_COLORS["sagittal"];
-      ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, canvas.height); ctx.stroke();
-      ctx.restore();
-    }
-
-    // Saved annotations
-    annotations.filter(a => a.view === view).forEach((a) => {
-      ctx.save();
-      ctx.strokeStyle = a.color || "#facc15";
-      ctx.fillStyle   = a.color || "#facc15";
-      ctx.lineWidth   = 1.5;
-      ctx.font        = "11px 'JetBrains Mono', monospace";
-
-      if (a.type === "distance" && a.points?.length >= 2) {
-        const [p1, p2] = a.points;
-        ctx.beginPath();
-        ctx.moveTo(p1.x * canvas.width, p1.y * canvas.height);
-        ctx.lineTo(p2.x * canvas.width, p2.y * canvas.height);
-        ctx.stroke();
-        [p1, p2].forEach(p => {
-          ctx.beginPath();
-          ctx.arc(p.x * canvas.width, p.y * canvas.height, 3, 0, Math.PI * 2);
-          ctx.fill();
-        });
-        const mx = ((p1.x + p2.x) / 2) * canvas.width;
-        const my = ((p1.y + p2.y) / 2) * canvas.height - 6;
-        ctx.fillText(a.measurement, mx, my);
-      }
-
-      if (a.type === "angle" && a.points?.length >= 3) {
-        const [p1, p2, p3] = a.points.map(p => ({ x: p.x * canvas.width, y: p.y * canvas.height }));
-        ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.lineTo(p3.x, p3.y); ctx.stroke();
-        [p1, p2, p3].forEach(p => { ctx.beginPath(); ctx.arc(p.x, p.y, 3, 0, Math.PI * 2); ctx.fill(); });
-        ctx.fillText(`${a.measurement}°`, p2.x + 6, p2.y - 6);
-      }
-
-      if (a.type === "hu" && a.point) {
-        const px = a.point.x * canvas.width;
-        const py = a.point.y * canvas.height;
-        ctx.beginPath(); ctx.arc(px, py, 5, 0, Math.PI * 2);
-        ctx.strokeStyle = "#22d3ee"; ctx.stroke();
-        ctx.fillStyle = "#22d3ee";
-        ctx.fillText(`${a.hu} HU`, px + 8, py - 5);
-      }
-
-      if (a.type === "implant" && a.point) {
-        const px = a.point.x * canvas.width;
-        const py = a.point.y * canvas.height;
-        const scaleX = canvas.width  / 512;
-        const scaleY = canvas.height / 512;
-        const dPx = (a.implant.diameter / 2) * scaleX * 30;
-        const lPx = a.implant.length * scaleY * 10;
-        ctx.strokeStyle = a.implant.color;
-        ctx.lineWidth = 1.5;
-        ctx.strokeRect(px - dPx, py - lPx, dPx * 2, lPx);
-        ctx.fillStyle = a.implant.color + "33";
-        ctx.fillRect(px - dPx, py - lPx, dPx * 2, lPx);
-        ctx.fillStyle = a.implant.color;
-        ctx.fillText(`${a.implant.brand} Ø${a.implant.diameter}×${a.implant.length}`, px - dPx, py - lPx - 4);
-      }
-
-      if (a.type === "ian" && a.points?.length >= 2) {
-        ctx.strokeStyle = "#f97316";
-        ctx.lineWidth = 2;
-        ctx.setLineDash([3, 2]);
-        ctx.beginPath();
-        const pts = a.points.map(p => ({ x: p.x * canvas.width, y: p.y * canvas.height }));
-        ctx.moveTo(pts[0].x, pts[0].y);
-        pts.slice(1).forEach(p => ctx.lineTo(p.x, p.y));
-        ctx.stroke();
-        pts.forEach(p => { ctx.beginPath(); ctx.arc(p.x, p.y, 2.5, 0, Math.PI * 2); ctx.fillStyle = "#f97316"; ctx.fill(); });
-        ctx.fillStyle = "#f97316"; ctx.setLineDash([]);
-        ctx.fillText("IAN", pts[0].x + 4, pts[0].y - 5);
-      }
-
-      ctx.restore();
-    });
-
-    // In-progress drawing
-    if (drawingPoints.length > 0) {
-      ctx.save();
-      ctx.strokeStyle = "#facc15";
-      ctx.fillStyle   = "#facc15";
-      ctx.lineWidth   = 1.5;
-      const pts = drawingPoints.map(p => ({ x: p.x * canvas.width, y: p.y * canvas.height }));
-      if (pts.length >= 2) {
-        ctx.beginPath(); ctx.moveTo(pts[0].x, pts[0].y);
-        pts.slice(1).forEach(p => ctx.lineTo(p.x, p.y));
-        if (hoverPos) ctx.lineTo(hoverPos.x, hoverPos.y);
-        ctx.stroke();
-      }
-      pts.forEach(p => { ctx.beginPath(); ctx.arc(p.x, p.y, 3, 0, Math.PI * 2); ctx.fill(); });
-      ctx.restore();
-    }
-  }, [annotations, crosshair, drawingPoints, hoverPos, view]);
-
-  // ── Interaction ──────────────────────────────────────────────────────────
-  const getCanvasPos = useCallback((e) => {
-    const canvas = overlayRef.current;
-    if (!canvas) return { x: 0, y: 0 };
-    const rect = canvas.getBoundingClientRect();
-    return {
-      x: clamp((e.clientX - rect.left)  / rect.width,  0, 1),
-      y: clamp((e.clientY - rect.top)   / rect.height, 0, 1),
-    };
+    const el = wrap.current; if (!el) return undefined;
+    const ro = new ResizeObserver(([e]) => { const r = e.contentRect; setSize({ w: Math.max(50, r.width), h: Math.max(50, r.height) }); });
+    ro.observe(el); return () => ro.disconnect();
   }, []);
+  const dpr = Math.min(window.devicePixelRatio || 1, scene.phone ? 2 : 1.5);
+  let W = Math.round(size.w * dpr), H = Math.round(size.h * dpr);
+  const maxPx = scene.phone ? 1.1e6 : 1.6e6;
+  if (W * H > maxPx) { const k = Math.sqrt(maxPx / (W * H)); W = Math.round(W * k); H = Math.round(H * k); }
+  const f = W / size.w;                                  // device px per css px
 
-  const onMouseDown = useCallback((e) => {
-    onClick?.();   // activate this panel
-    const pos = getCanvasPos(e);
+  const view = useMemo(() => makeView(kind, vol, { cursor: scene.cursor, arch: scene.arch, crossS: scene.plan.crossS, crossWidth: scene.plan.crossWidth, panoOffset: scene.plan.panoOffset }),
+    [kind, vol, scene.cursor, scene.arch, scene.plan.crossS, scene.plan.crossWidth, scene.plan.panoOffset]);
+  const camNow = useMemo(() => (view ? (cam || { scale: fitScale(view, vol, W, H), panX: 0, panY: 0 }) : null), [cam, view, vol, W, H]);
 
-    if (e.button === 2) {
-      dragRef.current = { type: "wl", startX: e.clientX, startY: e.clientY, startWL: { ...wl } };
+  // draw
+  useEffect(() => {
+    cancelAnimationFrame(raf.current);
+    raf.current = requestAnimationFrame(() => {
+      const b = base.current, o = over.current; if (!b || !o) return;
+      if (b.width !== W || b.height !== H) { b.width = W; b.height = H; o.width = W; o.height = H; }
+      const ctx = b.getContext("2d"), octx = o.getContext("2d");
+      octx.clearRect(0, 0, W, H);
+      if (!view) {
+        ctx.fillStyle = "#020617"; ctx.fillRect(0, 0, W, H);
+        ctx.fillStyle = "#94a3b8"; ctx.font = `600 ${13 * f}px system-ui, sans-serif`; ctx.textAlign = "center";
+        const msg = kind === "pano" || kind === "cross" ? ["Draw the arch first:", "tool 〰 Arch → tap along the jaw", "on the Axial view → Done"] : ["…"];
+        msg.forEach((m, i) => ctx.fillText(m, W / 2, H / 2 - 12 * f + i * 20 * f)); ctx.textAlign = "left";
+        return;
+      }
+      const slab = kind === "pano" ? scene.plan.panoSlab : kind === "cross" ? scene.plan.crossSlab : scene.slab;
+      if (quick) {
+        const hw = Math.max(1, Math.round(W / 2)), hh = Math.max(1, Math.round(H / 2));
+        const c2 = { scale: camNow.scale / 2, panX: camNow.panX / 2, panY: camNow.panY / 2 };
+        const img = renderView(view, vol, c2, hw, hh, scene.lut, { slab, mip: scene.mip && kind !== "cross", quick: true, img: imgCache.current?.q });
+        imgCache.current = { ...(imgCache.current || {}), q: img };
+        const tmp = imgCache.current.tc || document.createElement("canvas");
+        tmp.width = hw; tmp.height = hh; tmp.getContext("2d").putImageData(img, 0, 0); imgCache.current.tc = tmp;
+        ctx.imageSmoothingEnabled = true; ctx.drawImage(tmp, 0, 0, W, H);
+      } else {
+        const img = renderView(view, vol, camNow, W, H, scene.lut, { slab, mip: scene.mip && kind !== "cross", img: imgCache.current?.f });
+        imgCache.current = { ...(imgCache.current || {}), f: img };
+        ctx.putImageData(img, 0, 0);
+      }
+      drawOverlay(octx, view, camNow, W, H, { ...scene, dpr: f, panoSlab: scene.plan.panoSlab, crossSlab: scene.plan.crossSlab, crossS: scene.plan.crossS, crossWidth: scene.plan.crossWidth });
+    });
+    return () => cancelAnimationFrame(raf.current);
+  }, [W, H, view, camNow, quick, scene.lut, scene.plan, scene.temp, scene.selectedId, scene.slab, scene.mip, scene.cursor, scene.arch, f, kind, vol]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // wheel (needs a non-passive listener)
+  useEffect(() => {
+    const el = over.current; if (!el) return undefined;
+    const onWheel = (e) => {
+      e.preventDefault();
+      if (!view) return;
+      const r = el.getBoundingClientRect(), x = (e.clientX - r.left) * (W / r.width), y = (e.clientY - r.top) * (H / r.height);
+      if (e.ctrlKey || e.metaKey || scene.tool === "zoom") {
+        const k = Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0015));
+        const s2 = clamp(camNow.scale * k, 0.3, 80);
+        setCam(kind, { scale: s2, panX: x - W / 2 - ((x - W / 2 - camNow.panX) / camNow.scale) * s2, panY: y - H / 2 - ((y - H / 2 - camNow.panY) / camNow.scale) * s2 });
+      } else act("wheel", { kind, view, dir: Math.sign(e.deltaY), shift: e.shiftKey });
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  });
+
+  const info = (e) => {
+    const r = over.current.getBoundingClientRect();
+    const x = (e.clientX - r.left) * (W / r.width), y = (e.clientY - r.top) * (H / r.height);
+    return { kind, view, cam: camNow, W, H, x, y, f, world: view ? toWorld(view, camNow, W, H, x, y) : null, button: e.button, cssDX: 0 };
+  };
+  const onDown = (e) => {
+    onActivate?.(kind);
+    over.current.setPointerCapture?.(e.pointerId);
+    ptrs.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (ptrs.current.size === 2 && view) {
+      act("cancel-drag");
+      const [a, b] = [...ptrs.current.values()];
+      const r = over.current.getBoundingClientRect();
+      const mid = { x: ((a.x + b.x) / 2 - r.left) * (W / r.width), y: ((a.y + b.y) / 2 - r.top) * (H / r.height) };
+      pinch.current = { d0: Math.hypot(a.x - b.x, a.y - b.y), mid0: mid, cam0: { ...camNow } };
       return;
     }
-
-    switch (activeTool) {
-      case TOOLS.SCROLL:
-      case TOOLS.PAN:
-        dragRef.current = { type: activeTool, startX: e.clientX, startY: e.clientY, startPan: { ...pan }, startSlice: sliceIndex };
-        break;
-      case TOOLS.ZOOM:
-        dragRef.current = { type: "zoom", startY: e.clientY, startZoom: zoom };
-        break;
-      case TOOLS.DISTANCE:
-        if (drawingPoints.length === 0) {
-          setDrawingPoints([pos]);
-        } else {
-          const p1  = drawingPoints[0];
-          const cv  = overlayRef.current;
-          const pxD = dist2({ x: p1.x * cv.width, y: p1.y * cv.height }, { x: pos.x * cv.width, y: pos.y * cv.height });
-          const mm  = (pxD * 0.3).toFixed(1);
-          onAnnotationAdd({ type: "distance", view, points: [p1, pos], measurement: `${mm}mm`, color: "#facc15" });
-          setDrawingPoints([]);
-        }
-        break;
-      case TOOLS.ANGLE: {
-        const newPts = [...drawingPoints, pos];
-        if (newPts.length < 3) {
-          setDrawingPoints(newPts);
-        } else {
-          const cv     = overlayRef.current;
-          const canPts = newPts.map(p => ({ x: p.x * cv.width, y: p.y * cv.height }));
-          const deg    = angleDeg(canPts[0], canPts[1], canPts[2]);
-          onAnnotationAdd({ type: "angle", view, points: newPts, measurement: deg, color: "#4ade80" });
-          setDrawingPoints([]);
-        }
-        break;
-      }
-      case TOOLS.HU: {
-        const huEst = Math.round(-1000 + (pos.x + pos.y) * 1500);
-        onAnnotationAdd({ type: "hu", view, point: pos, hu: huEst, color: "#22d3ee" });
-        break;
-      }
-      case TOOLS.IMPLANT:
-        if (activeImplant) {
-          onAnnotationAdd({ type: "implant", view, point: pos, implant: activeImplant });
-          onCrosshairChange(pos);
-        }
-        break;
-      case TOOLS.IAN:
-        setDrawingPoints(prev => [...prev, pos]);
-        break;
-      case TOOLS.ERASE: {
-        const cw = overlayRef.current?.width  || 512;
-        const ch = overlayRef.current?.height || 512;
-        const cx = pos.x * cw;
-        const cy = pos.y * ch;
-        const hitIdx = annotations.findIndex(a => {
-          if (a.view !== view) return false;
-          if (a.point) {
-            return dist2({ x: cx, y: cy }, { x: a.point.x * cw, y: a.point.y * ch }) < 20;
-          }
-          if (a.points) {
-            return a.points.some(p => dist2({ x: cx, y: cy }, { x: p.x * cw, y: p.y * ch }) < 20);
-          }
-          return false;
-        });
-        if (hitIdx !== -1) onAnnotationRemove(hitIdx);
-        break;
-      }
-      default:
-        onCrosshairChange(pos);
+    if (ptrs.current.size === 1 && view) act("down", { ...info(e), clientX: e.clientX, clientY: e.clientY, pointerType: e.pointerType });
+  };
+  const onMove = (e) => {
+    if (!ptrs.current.has(e.pointerId)) {
+      if (view && e.pointerType === "mouse") { const w = info(e).world; const hu = w ? vol.huAt(w) : null; setHoverText(hu == null ? "" : `${hu} HU`); }
+      return;
     }
-  }, [activeTool, drawingPoints, pan, sliceIndex, zoom, wl, view, activeImplant, annotations,
-      onAnnotationAdd, onAnnotationRemove, onCrosshairChange, getCanvasPos, onClick]);
-
-  const onMouseMove = useCallback((e) => {
-    const pos = getCanvasPos(e);
-    setHoverPos({ x: pos.x * (overlayRef.current?.width || 512), y: pos.y * (overlayRef.current?.height || 512) });
-
-    if (!dragRef.current) return;
-    const { type } = dragRef.current;
-
-    if (type === "wl") {
-      const dX = e.clientX - dragRef.current.startX;
-      const dY = e.clientY - dragRef.current.startY;
-      onWLChange({
-        window: clamp(dragRef.current.startWL.window + dX * 10, 1, 6000),
-        level:  dragRef.current.startWL.level  - dY * 5,
+    ptrs.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pinch.current && ptrs.current.size >= 2) {
+      const [a, b] = [...ptrs.current.values()];
+      const r = over.current.getBoundingClientRect();
+      const mid = { x: ((a.x + b.x) / 2 - r.left) * (W / r.width), y: ((a.y + b.y) / 2 - r.top) * (H / r.height) };
+      const p = pinch.current, s2 = clamp(p.cam0.scale * (Math.hypot(a.x - b.x, a.y - b.y) / (p.d0 || 1)), 0.3, 80);
+      setCam(kind, {
+        scale: s2,
+        panX: mid.x - W / 2 - ((p.mid0.x - W / 2 - p.cam0.panX) / p.cam0.scale) * s2,
+        panY: mid.y - H / 2 - ((p.mid0.y - H / 2 - p.cam0.panY) / p.cam0.scale) * s2,
       });
-    } else if (type === TOOLS.PAN) {
-      onPanChange({
-        x: dragRef.current.startPan.x + (e.clientX - dragRef.current.startX),
-        y: dragRef.current.startPan.y + (e.clientY - dragRef.current.startY),
-      });
-    } else if (type === TOOLS.SCROLL) {
-      const delta = Math.round((e.clientY - dragRef.current.startY) / 3);
-      onSliceChange(clamp(dragRef.current.startSlice + delta, 0, totalSlices - 1));
-    } else if (type === "zoom") {
-      onZoomChange(clamp(dragRef.current.startZoom - (e.clientY - dragRef.current.startY) / 200, 0.3, 8));
+      act("interacting");
+      return;
     }
-  }, [getCanvasPos, onWLChange, onPanChange, onSliceChange, onZoomChange, totalSlices]);
+    if (view) act("move", { ...info(e), clientX: e.clientX, clientY: e.clientY });
+  };
+  const onUp = (e) => {
+    ptrs.current.delete(e.pointerId);
+    if (ptrs.current.size < 2) pinch.current = null;
+    if (ptrs.current.size === 0 && view) act("up", info(e));
+  };
 
-  const onMouseUp   = useCallback(() => { dragRef.current = null; }, []);
-
-  const onWheel = useCallback((e) => {
-    e.preventDefault();
-    if (activeTool === TOOLS.ZOOM || e.ctrlKey) {
-      onZoomChange(clamp(zoom + (e.deltaY < 0 ? 0.1 : -0.1), 0.3, 8));
-    } else {
-      onSliceChange(clamp(sliceIndex + (e.deltaY > 0 ? 1 : -1), 0, totalSlices - 1));
-    }
-  }, [activeTool, zoom, sliceIndex, totalSlices, onZoomChange, onSliceChange]);
-
-  const onDblClick = useCallback(() => {
-    if (activeTool === TOOLS.IAN && drawingPoints.length >= 2) {
-      onAnnotationAdd({ type: "ian", view, points: drawingPoints, color: "#f97316" });
-      setDrawingPoints([]);
-    }
-  }, [activeTool, drawingPoints, view, onAnnotationAdd]);
-
-  const cursor = useMemo(() => ({
-    [TOOLS.SCROLL]:   "ns-resize",
-    [TOOLS.PAN]:      "grab",
-    [TOOLS.ZOOM]:     "zoom-in",
-    [TOOLS.WL]:       "ew-resize",
-    [TOOLS.DISTANCE]: "crosshair",
-    [TOOLS.ANGLE]:    "crosshair",
-    [TOOLS.HU]:       "cell",
-    [TOOLS.IMPLANT]:  "copy",
-    [TOOLS.IAN]:      "crosshair",
-    [TOOLS.ERASE]:    "not-allowed",
-  }[activeTool] || "default"), [activeTool]);
-
+  const sl = sliderOf(kind, view);
   return (
-    <div
-      style={{
-        ...styles.panelWrap,
-        border: highlighted ? `2px solid ${VIEW_COLORS[view]}` : "2px solid #1e293b",
-      }}
-    >
-      <div style={{ ...styles.panelLabel, color: VIEW_COLORS[view] }}>
-        {VIEW_LABELS[view]}&nbsp;
-        <span style={{ opacity: 0.5, fontSize: 11 }}>
-          {sliceIndex + 1} / {totalSlices}
+    <div className={`cv-pane ${active ? "active" : ""}`} style={{ "--vc": COLORS[kind] }}>
+      <div className="cv-pane-head">
+        <span className="cv-pane-title" style={{ color: COLORS[kind] }}>{VIEW_TITLE[kind]}</span>
+        {sl && <span className="cv-pane-pos">{sl.text}</span>}
+        <span style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
+          <button type="button" className="cv-mini" title="Fit to view" onClick={() => setCam(kind, null)}>⊡</button>
+          {onMax && <button type="button" className="cv-mini" title={maxed ? "Back to all views" : "Enlarge this view"} onClick={() => onMax(kind)}>{maxed ? "⤡" : "⤢"}</button>}
         </span>
       </div>
-
-      <canvas
-        ref={canvasRef}
-        className="cbct-panel-canvas"
-        width={512} height={512}
-        style={styles.panelCanvas}
-      />
-      <canvas
-        ref={overlayRef}
-        width={512} height={512}
-        style={{ ...styles.panelCanvas, ...styles.panelOverlay, cursor }}
-        onMouseDown={onMouseDown}
-        onMouseMove={onMouseMove}
-        onMouseUp={onMouseUp}
-        onMouseLeave={onMouseUp}
-        onWheel={onWheel}
-        onDoubleClick={onDblClick}
-        onContextMenu={e => e.preventDefault()}
-      />
-
-      <input
-        type="range" min={0} max={Math.max(0, totalSlices - 1)} value={sliceIndex}
-        onChange={e => onSliceChange(Number(e.target.value))}
-        style={styles.sliceSlider}
-      />
-      <div style={styles.wlOverlay}>
-        W:{Math.round(wl.window)} L:{Math.round(wl.level)}
+      <div ref={wrap} className="cv-pane-body">
+        <canvas ref={base} className="cv-canvas" />
+        <canvas ref={over} className="cv-canvas cv-over" style={{ cursor: scene.cursorCss }}
+          onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp} onPointerLeave={() => setHoverText("")}
+          onDoubleClick={() => onMax?.(kind)} onContextMenu={(e) => e.preventDefault()} />
+        {hoverText && <div className="cv-hover">{hoverText}</div>}
       </div>
-      <button
-        style={styles.resetPanBtn}
-        onClick={() => { onZoomChange(1); onPanChange({ x: 0, y: 0 }); }}
-        title="Reset zoom/pan"
-      >⊡</button>
+      {sl && (
+        <input className="cv-slider" type="range" min={sl.min} max={sl.max} step={sl.step} value={sl.value}
+          onChange={(e) => sl.set(Number(e.target.value))} aria-label={`${VIEW_TITLE[kind]} position`} />
+      )}
     </div>
   );
 }
 
-// ─── Main CBCTViewer component ────────────────────────────────────────────────
-export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
-  const [volumeMeta, setVolumeMeta] = useState(null);
-  const [volumeData, setVolumeData] = useState(null);
-  const [loading,    setLoading]    = useState(true);
-  const [loadingMsg, setLoadingMsg] = useState("Loading volume…");
-  const [error,      setError]      = useState(null);
-
-  const [activeTool,    setActiveTool]    = useState(TOOLS.SCROLL);
-  const [activeImplant, setActiveImplant] = useState(IMPLANTS[0]);
-  const [showImplants,  setShowImplants]  = useState(false);
-  const [showSidebar,   setShowSidebar]   = useState(true);
-  // activePanel: which panel is focused for keyboard nav & "focus" layout
-  const [activePanel,   setActivePanel]   = useState("axial");
-
-  const [wl,      setWl]      = useState(DEFAULT_WL);
-  const [slices,  setSlices]  = useState({ axial: 0, coronal: 0, sagittal: 0 });
-  const [zooms,   setZooms]   = useState({ axial: 1, coronal: 1, sagittal: 1 });
-  const [pans,    setPans]    = useState({
-    axial:    { x: 0, y: 0 },
-    coronal:  { x: 0, y: 0 },
-    sagittal: { x: 0, y: 0 },
-  });
-  const [crosshair,   setCrosshair]   = useState({ x: 0.5, y: 0.5 });
-  const [annotations, dispatch]       = useReducer(annoReducer, []);
-  const [cineActive,  setCineActive]  = useState(false);
-  const [cineView,    setCineView]    = useState("axial");
-  const [saved,       setSaved]       = useState(false);
-  // "quad" = 3 MPR + 3D preview | "focus" = single panel
-  const [layout,      setLayout]      = useState("quad");
-  const cineRef = useRef(null);
-
-  // ── Load volume ────────────────────────────────────────────────────────────
+/* ═════════════════════════════════════════════════════════════════════════
+   3-D view
+   ═════════════════════════════════════════════════════════════════════════ */
+function Pane3D({ scene, settings, setSettings, onMax, maxed, rendererRef, active, onActivate }) {
+  const wrap = useRef(null), cv = useRef(null), over = useRef(null);
+  const [size, setSize] = useState({ w: 300, h: 300 });
+  const [err, setErr] = useState("");
+  const ptrs = useRef(new Map()); const drag = useRef(null);
+  const [tick, setTick] = useState(0);
+  const [moving, setMoving] = useState(false);
+  const idle = useRef(0);
   useEffect(() => {
-    if (!volumeId) return;
-    setLoading(true);
+    const el = wrap.current; if (!el) return undefined;
+    const ro = new ResizeObserver(([e]) => setSize({ w: Math.max(50, e.contentRect.width), h: Math.max(50, e.contentRect.height) }));
+    ro.observe(el); return () => ro.disconnect();
+  }, []);
+  const dpr = Math.min(window.devicePixelRatio || 1, scene.phone ? 1.5 : 1.25);
+  const W = Math.round(size.w * dpr), H = Math.round(size.h * dpr);
+  useEffect(() => {
+    if (!webgl2Supported()) { setErr("3-D needs a newer browser (WebGL 2). The other views work normally."); return undefined; }
+    try { rendererRef.current = new Renderer3D(cv.current, scene.vol); setTick((t) => t + 1); }
+    catch (e) { setErr("3-D could not start on this device. The other views work normally."); console.error(e); }
+    return () => { rendererRef.current?.dispose(); rendererRef.current = null; };
+  }, [scene.vol]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    const R = rendererRef.current; if (!R) return;
+    const c = cv.current, o = over.current;
+    if (c.width !== W || c.height !== H) { c.width = W; c.height = H; o.width = W; o.height = H; }
+    R.draw({ mode: settings.mode, thresholdHu: settings.thr, quick: moving, clip: { lo: [0, settings.clipFront, settings.clipBottom], hi: [1, 1, settings.clipTop] } });
+    const g = o.getContext("2d"); g.clearRect(0, 0, W, H);
+    const f = W / size.w;
+    // nerves and implants on top
+    for (const n of scene.plan.nerves || []) {
+      if (n.points.length < 2) continue;
+      g.strokeStyle = COLORS.nerve; g.lineWidth = 3 * f; g.beginPath();
+      n.points.forEach((p, i) => { const s = R.project(p, W, H); i ? g.lineTo(s.x, s.y) : g.moveTo(s.x, s.y); }); g.stroke();
+    }
+    for (const im of scene.plan.implants || []) {
+      const a = R.project(im.top, W, H), b = R.project(implantApex(im), W, H);
+      const gap = implantNerveGap(im, scene.plan.nerves);
+      g.strokeStyle = gap && gap.gap < scene.plan.safety ? COLORS.warn : im.id === scene.selectedId ? COLORS.implantSel : COLORS.implant;
+      const wpx = Math.max(4 * f, (im.diameter / R.mm) * (W / (2.2 / R.zoom)) * 1.15);
+      g.lineWidth = wpx; g.lineCap = "round"; g.beginPath(); g.moveTo(a.x, a.y); g.lineTo(b.x, b.y); g.stroke();
+      g.fillStyle = "#fff"; g.font = `700 ${11 * f}px system-ui`; g.fillText(im.tooth ? `#${im.tooth}` : "", b.x + 6 * f, b.y);
+    }
+  }, [W, H, settings, tick, moving, scene.plan, scene.selectedId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-    const fetchMeta   = fetch(`${apiBase}/cbct/${volumeId}`,         { headers: authHeaders() }).then(r => r.ok ? r.json() : Promise.reject("Failed to load metadata"));
-    // Slices: a scan kept in cloud storage (Cloudflare R2) is downloaded straight from
-    // there with a private one-hour link from the server - tens of MB that then do not
-    // pass through the server. Anything else (or if that fails) loads through the server.
-    const viaServer = () => fetch(`${apiBase}/cbct/${volumeId}/slices`, { headers: authHeaders() })
-      .then(r => r.ok ? r.json() : Promise.reject("Failed to load slices"));
-    const fetchSlices = fetch(`${apiBase}/cbct/${volumeId}/link`, { headers: authHeaders() })
-      .then(r => (r.ok ? r.json() : null))
-      .catch(() => null)
-      .then(link => {
-        if (!link || !link.url) return viaServer();
-        return fetch(link.url)
-          .then(r => (r.ok ? r.json() : Promise.reject(new Error(`cloud ${r.status}`))))
-          .then(slices => ({ slices }))
-          .catch(() => viaServer());
-      });
+  const kick = () => { setMoving(true); clearTimeout(idle.current); idle.current = setTimeout(() => setMoving(false), 160); setTick((t) => t + 1); };
+  useEffect(() => {
+    const el = over.current; if (!el) return undefined;
+    const onWheel = (e) => { e.preventDefault(); const R = rendererRef.current; if (!R) return; R.zoom = clamp(R.zoom * Math.exp(-e.deltaY * 0.0015), 0.4, 6); kick(); };
+    el.addEventListener("wheel", onWheel, { passive: false }); return () => el.removeEventListener("wheel", onWheel);
+  });
+  const onDown = (e) => { onActivate?.("3d"); over.current.setPointerCapture?.(e.pointerId); ptrs.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const R = rendererRef.current; if (!R) return;
+    const v = [...ptrs.current.values()];
+    drag.current = v.length === 2 ? { d0: Math.hypot(v[0].x - v[1].x, v[0].y - v[1].y), z0: R.zoom } : { x: e.clientX, y: e.clientY, yaw: R.yaw, pitch: R.pitch }; };
+  const onMove = (e) => {
+    if (!ptrs.current.has(e.pointerId)) return;
+    ptrs.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const R = rendererRef.current, d = drag.current; if (!R || !d) return;
+    const v = [...ptrs.current.values()];
+    if (v.length >= 2 && d.d0) R.zoom = clamp(d.z0 * Math.hypot(v[0].x - v[1].x, v[0].y - v[1].y) / d.d0, 0.4, 6);
+    else if (d.yaw !== undefined) { R.yaw = d.yaw + (e.clientX - d.x) * 0.01; R.pitch = clamp(d.pitch + (e.clientY - d.y) * 0.01, -1.5, 1.5); }
+    kick();
+  };
+  const onUp = (e) => { ptrs.current.delete(e.pointerId); drag.current = null; kick(); };
+  const preset = (yaw, pitch) => { const R = rendererRef.current; if (!R) return; R.yaw = yaw; R.pitch = pitch; kick(); };
+  return (
+    <div className={`cv-pane ${active ? "active" : ""}`} style={{ "--vc": COLORS["3d"] }}>
+      <div className="cv-pane-head">
+        <span className="cv-pane-title" style={{ color: COLORS["3d"] }}>3-D</span>
+        <select className="cv-sel" value={settings.mode} onChange={(e) => setSettings((s) => ({ ...s, mode: e.target.value }))} aria-label="3-D style">
+          <option value="bone">Bone surface</option><option value="mip">X-ray (MIP)</option><option value="soft">See-through</option>
+        </select>
+        <span style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
+          <button type="button" className="cv-mini" title="Front" onClick={() => preset(0, 0.1)}>F</button>
+          <button type="button" className="cv-mini" title="Patient's right" onClick={() => preset(-Math.PI / 2, 0.1)}>R</button>
+          <button type="button" className="cv-mini" title="Patient's left" onClick={() => preset(Math.PI / 2, 0.1)}>L</button>
+          <button type="button" className="cv-mini" title="From below / above" onClick={() => preset(0, 1.45)}>⊙</button>
+          {onMax && <button type="button" className="cv-mini" onClick={() => onMax("3d")} title={maxed ? "Back" : "Enlarge"}>{maxed ? "⤡" : "⤢"}</button>}
+        </span>
+      </div>
+      <div ref={wrap} className="cv-pane-body">
+        <canvas ref={cv} className="cv-canvas" />
+        <canvas ref={over} className="cv-canvas cv-over" style={{ cursor: "grab" }} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp} />
+        {err && <div className="cv-3derr">{err}</div>}
+      </div>
+      <div className="cv-3dbar">
+        <label title="Which densities show as bone">Bone level<input type="range" min={-300} max={2000} step={25} value={settings.thr} onChange={(e) => setSettings((s) => ({ ...s, thr: Number(e.target.value) }))} /></label>
+        <label title="Cut away from the top">Top<input type="range" min={0.05} max={1} step={0.01} value={settings.clipTop} onChange={(e) => setSettings((s) => ({ ...s, clipTop: Math.max(Number(e.target.value), s.clipBottom + 0.05) }))} /></label>
+        <label title="Cut away from the bottom">Bottom<input type="range" min={0} max={0.95} step={0.01} value={settings.clipBottom} onChange={(e) => setSettings((s) => ({ ...s, clipBottom: Math.min(Number(e.target.value), s.clipTop - 0.05) }))} /></label>
+        <label title="Cut away from the front">Front<input type="range" min={0} max={0.9} step={0.01} value={settings.clipFront} onChange={(e) => setSettings((s) => ({ ...s, clipFront: Number(e.target.value) }))} /></label>
+      </div>
+    </div>
+  );
+}
 
-    setLoadingMsg("Loading DICOM metadata…");
-    fetchMeta
-      .then(meta => {
-        setVolumeMeta(meta);
-        // Start at the middle slice of each plane
-        setSlices({
-          axial:    Math.floor((meta.num_slices      || 100) / 2),
-          coronal:  Math.floor((meta.coronal_slices  || 100) / 2),
-          sagittal: Math.floor((meta.sagittal_slices || 100) / 2),
-        });
-        // Load saved annotations
-        return fetch(`${apiBase}/cbct/${volumeId}/annotations`, { headers: authHeaders() });
-      })
-      .then(r => r.ok ? r.json() : [])
-      .then(saved => {
-        if (Array.isArray(saved) && saved.length > 0) {
-          dispatch({ type: "LOAD", payload: saved });
-        }
-      })
-      .catch(() => {});
+/* ═════════════════════════════════════════════════════════════════════════
+   Main viewer
+   ═════════════════════════════════════════════════════════════════════════ */
+export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
+  const screen = useScreen();
+  const [meta, setMeta] = useState(null);
+  const [vol, setVol] = useState(null);
+  const [progress, setProgress] = useState({ p: 0, msg: "Opening the scan…" });
+  const [error, setError] = useState("");
+  const [mode, setMode] = useState("mpr");
+  const [tool, setTool] = useState("nav");
+  const [cursor, setCursor] = useState([0, 0, 0]);
+  const [wl, setWl] = useState({ w: 4000, l: 1200 });
+  const [invert, setInvert] = useState(false);
+  const [slab, setSlab] = useState(0);
+  const [mip, setMip] = useState(false);
+  const [cams, setCams] = useState({});
+  const [plan, setPlanRaw] = useState(EMPTY_PLAN);
+  const [selectedId, setSelectedId] = useState(null);
+  const [temp, setTemp] = useState(null);
+  const [maxView, setMaxView] = useState(null);
+  const [activeView, setActiveView] = useState("axial");
+  const [panelOpen, setPanelOpen] = useState(false);
+  const [quick, setQuick] = useState(false);
+  const [toast, setToast] = useState(null);
+  const [saveState, setSaveState] = useState("");
+  const [dirty, setDirty] = useState(false);
+  const [three, setThree] = useState({ mode: "bone", thr: 450, clipTop: 1, clipBottom: 0, clipFront: 0 });
+  const [busy, setBusy] = useState("");
+  const legacy = useRef([]);
+  const hist = useRef({ past: [], future: [] });
+  const drag = useRef(null);
+  const quickTimer = useRef(0);
+  const renderer3d = useRef(null);
+  const toastTimer = useRef(0);
 
-    setLoadingMsg("Loading slice images…");
-    fetchSlices
-      .then(data => { setVolumeData(data); setLoading(false); })
-      .catch(() => {
-        setVolumeData({ slices: { axial: [], coronal: [], sagittal: [] } });
-        setLoading(false);
-      });
+  const say = useCallback((text, kind = "info") => { setToast({ text, kind }); clearTimeout(toastTimer.current); toastTimer.current = setTimeout(() => setToast(null), 3800); }, []);
+
+  /* plan changes with undo */
+  const setPlan = useCallback((upd, { record = true } = {}) => {
+    setPlanRaw((old) => {
+      const next = typeof upd === "function" ? upd(old) : upd;
+      if (record && next !== old) { hist.current.past.push(old); if (hist.current.past.length > 60) hist.current.past.shift(); hist.current.future = []; }
+      return next;
+    });
+    setDirty(true);
+  }, []);
+  const undo = () => { const h = hist.current; if (!h.past.length) return; setPlanRaw((cur) => { h.future.push(cur); return h.past.pop(); }); setDirty(true); };
+  const redo = () => { const h = hist.current; if (!h.future.length) return; setPlanRaw((cur) => { h.past.push(cur); return h.future.pop(); }); setDirty(true); };
+
+  /* ── load ── */
+  useEffect(() => {
+    if (!volumeId) return undefined;
+    let alive = true;
+    (async () => {
+      try {
+        const m = await fetch(`${apiBase}/cbct/${volumeId}`, { headers: authHeaders() }).then((r) => (r.ok ? r.json() : Promise.reject(new Error(r.status === 401 ? "Please sign in again." : "This scan could not be found."))));
+        if (!alive) return; setMeta(m);
+        const v = await loadVolume(apiBase, volumeId, m, (p, msg) => alive && setProgress({ p, msg }));
+        if (!alive) return;
+        setVol(v);
+        setCursor([v.X / 2, v.Y / 2, v.Z / 2]);
+        if (v.source === "slices") setWl({ w: 2500, l: 500 });
+        // saved plan + older annotations
+        const ann = await fetch(`${apiBase}/cbct/${volumeId}/annotations`, { headers: authHeaders() }).then((r) => (r.ok ? r.json() : [])).catch(() => []);
+        if (!alive) return;
+        const saved = (Array.isArray(ann) ? ann : []).find((a) => a && a.type === "plan" && a.version >= 2);
+        legacy.current = (Array.isArray(ann) ? ann : []).filter((a) => a && a.type !== "plan");
+        if (saved && saved.plan) { setPlanRaw({ ...EMPTY_PLAN, ...saved.plan }); if ((saved.plan.archPoints || []).length > 1 || (saved.plan.implants || []).length) setMode("implant"); }
+      } catch (e) { if (alive) setError(e.message || "The scan could not be opened."); }
+    })();
+    return () => { alive = false; };
   }, [volumeId, apiBase]);
 
-  // ── Cine ───────────────────────────────────────────────────────────────────
   useEffect(() => {
-    if (cineActive) {
-      cineRef.current = setInterval(() => {
-        setSlices(prev => {
-          const total = volumeMeta?.[`${cineView}_slices`] || volumeMeta?.num_slices || 100;
-          return { ...prev, [cineView]: (prev[cineView] + 1) % total };
-        });
-      }, 80);
-    }
-    return () => clearInterval(cineRef.current);
-  }, [cineActive, cineView, volumeMeta]);
+    const warn = (e) => { if (dirty) { e.preventDefault(); e.returnValue = ""; } };
+    window.addEventListener("beforeunload", warn); return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
 
-  // ── Keyboard shortcuts ─────────────────────────────────────────────────────
-  useEffect(() => {
-    const handler = (e) => {
-      if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
-      switch (e.key) {
-        case "s": case "S": setActiveTool(TOOLS.SCROLL);   break;
-        case "p": case "P": setActiveTool(TOOLS.PAN);      break;
-        case "z": case "Z": setActiveTool(TOOLS.ZOOM);     break;
-        case "w": case "W": setActiveTool(TOOLS.WL);       break;
-        case "d": case "D": setActiveTool(TOOLS.DISTANCE); break;
-        case "a": case "A": setActiveTool(TOOLS.ANGLE);    break;
-        case "h": case "H": setActiveTool(TOOLS.HU);       break;
-        case "i": case "I":
-          setActiveTool(TOOLS.IMPLANT);
-          setShowImplants(true);
-          break;
-        case "n": case "N": setActiveTool(TOOLS.IAN);      break;
-        case "e": case "E": setActiveTool(TOOLS.ERASE);    break;
-        case " ": setCineActive(v => !v); e.preventDefault(); break;
-        // Arrow keys scroll the active panel
-        case "ArrowUp":
-          setSlices(prev => ({
-            ...prev,
-            [activePanel]: clamp(prev[activePanel] - 1, 0, (totalSlices[activePanel] || 1) - 1),
-          }));
-          e.preventDefault();
-          break;
-        case "ArrowDown":
-          setSlices(prev => ({
-            ...prev,
-            [activePanel]: clamp(prev[activePanel] + 1, 0, (totalSlices[activePanel] || 1) - 1),
-          }));
-          e.preventDefault();
-          break;
-        // Tab cycles through panels
-        case "Tab":
-          setActivePanel(p => {
-            const idx = VIEWS.indexOf(p);
-            return VIEWS[(idx + 1) % VIEWS.length];
-          });
-          e.preventDefault();
-          break;
-        case "Escape":
-          if (onClose) onClose();
-          break;
+  const arch = useMemo(() => buildArch(plan.archPoints), [plan.archPoints]);
+  const lut = useMemo(() => (vol ? makeLut(vol, wl.w, wl.l, invert) : null), [vol, wl, invert]);
+  const views = mode === "implant" ? ["pano", "axial", "cross", "3d"] : ["axial", "coronal", "sagittal", "3d"];
+  useEffect(() => { if (!views.includes(activeView)) setActiveView(views[0]); }, [mode]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const bumpQuick = () => { setQuick(true); clearTimeout(quickTimer.current); quickTimer.current = setTimeout(() => setQuick(false), 170); };
+  const setCam = useCallback((kind, cam) => { setCams((c) => ({ ...c, [kind]: cam })); if (cam) bumpQuick(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const implantById = (id) => plan.implants.find((i) => i.id === id);
+  const selectImplant = (id, focus = true) => {
+    setSelectedId(id);
+    const im = plan.implants.find((i) => i.id === id);
+    if (im && focus) {
+      const mid = add(im.top, mul(im.axis, im.length / 2));
+      if (arch) { const { s } = archNearest(arch, mid[0], mid[1]); setPlan((p) => ({ ...p, crossS: s }), { record: false }); }
+      setCursor(mid);
+    }
+  };
+
+  /* default implant for a new placement */
+  const lastImplant = () => lsGet("cbct-last-implant", { system: "Straumann", diameter: 4.1, length: 10 });
+  const apexDir = () => [0, 0, (plan.jaw === "upper" ? 1 : -1) * vol.zSign];
+
+  /* ── everything a tap / drag does ── */
+  const act = (type, P = {}) => {
+    if (!vol) return;
+    if (type === "interacting") { bumpQuick(); return; }
+    if (type === "cancel-drag") { drag.current = null; return; }
+    const { kind, view, world } = P;
+    if (type === "wheel") {
+      bumpQuick();
+      const d = P.dir;
+      if (kind === "axial") setCursor((c) => [c[0], c[1], clamp(c[2] + d * vol.sz * vol.zSign * -1, 0, vol.Z)]);
+      else if (kind === "coronal") setCursor((c) => [c[0], clamp(c[1] + d * vol.sy, 0, vol.Y), c[2]]);
+      else if (kind === "sagittal") setCursor((c) => [clamp(c[0] + d * vol.sx, 0, vol.X), c[1], c[2]]);
+      else if (kind === "cross" && arch) setPlan((p) => ({ ...p, crossS: clamp(p.crossS + d * p.crossStep, 0, arch.length) }), { record: false });
+      else if (kind === "pano") setPlan((p) => ({ ...p, panoOffset: clamp(p.panoOffset + d * 0.5, -20, 20) }), { record: false });
+      return;
+    }
+    if (type === "down") {
+      const S = { plan, selectedId };
+      if (P.button === 2 || tool === "wl") { drag.current = { mode: "wl", x: P.clientX, y: P.clientY, wl0: wl }; return; }
+      if (P.button === 1 || tool === "pan") { drag.current = { mode: "pan", x: P.x, y: P.y, cam0: { ...P.cam } }; return; }
+      if (tool === "zoom") { drag.current = { mode: "zoom", y: P.y, x: P.x, cam0: { ...P.cam } }; return; }
+      const hit = hitTest(view, P.cam, P.W, P.H, S, P.x, P.y, P.f);
+      if (tool === "erase") {
+        if (!hit) return;
+        if (hit.type.startsWith("implant")) { setPlan((p) => ({ ...p, implants: p.implants.filter((i) => i.id !== hit.id) })); say("Implant removed."); }
+        else if (hit.type === "nerve-point") setPlan((p) => ({ ...p, nerves: p.nerves.map((n) => (n.id === hit.id ? { ...n, points: n.points.filter((_, k) => k !== hit.index) } : n)).filter((n) => n.points.length > 0) }));
+        else if (hit.type === "measure") setPlan((p) => ({ ...p, measures: p.measures.filter((m) => m.id !== hit.id) }));
+        return;
       }
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [activePanel, onClose]);
-
-  // ── Save annotations ────────────────────────────────────────────────────────
-  const saveAnnotations = async () => {
-    try {
-      await fetch(`${apiBase}/cbct/${volumeId}/annotations`, {
-        method:  "POST",
-        headers: authHeaders({ "Content-Type": "application/json" }),
-        body:    JSON.stringify(annotations),
-      });
-      setSaved(true);
-      setTimeout(() => setSaved(false), 2000);
-    } catch {}
-  };
-
-  // ── Client-side screenshot ─────────────────────────────────────────────────
-  const takeScreenshot = () => {
-    const canvases = document.querySelectorAll(".cbct-panel-canvas");
-    if (!canvases.length) return;
-    const cols = layout === "quad" ? 2 : 1;
-    const sz   = 512;
-    const out  = document.createElement("canvas");
-    out.width  = sz * Math.min(canvases.length, cols);
-    out.height = sz * Math.ceil(canvases.length / cols);
-    const ctx  = out.getContext("2d");
-    ctx.fillStyle = "#000";
-    ctx.fillRect(0, 0, out.width, out.height);
-    canvases.forEach((c, i) => {
-      ctx.drawImage(c, (i % cols) * sz, Math.floor(i / cols) * sz, sz, sz);
-    });
-    const link     = document.createElement("a");
-    link.download  = `cbct_${volumeId}_${Date.now()}.png`;
-    link.href      = out.toDataURL("image/png");
-    link.click();
-  };
-
-  // ── Server-side export PNG ─────────────────────────────────────────────────
-  const serverExport = async () => {
-    try {
-      const params = new URLSearchParams({
-        ax:  slices.axial,
-        cor: slices.coronal,
-        sag: slices.sagittal,
-      });
-      const res  = await fetch(`${apiBase}/cbct/${volumeId}/export/png?${params}`, { headers: authHeaders() });
-      if (!res.ok) throw new Error(`Server ${res.status}`);
-      const blob = await res.blob();
-      const url  = URL.createObjectURL(blob);
-      const a    = document.createElement("a");
-      a.href     = url;
-      a.download = `cbct_${volumeId}_export.png`;
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch (e) {
-      console.error("Export failed:", e);
+      if (hit && (tool === "nav" || tool === "implant") && hit.type.startsWith("implant")) {
+        const im = implantById(hit.id);
+        if (hit.id !== selectedId) selectImplant(hit.id, kind !== "cross" && kind !== "pano");
+        drag.current = { mode: hit.type === "implant-apex" ? "tilt" : "move", id: hit.id, w0: world, im0: im, kind, view, moved: false };
+        return;
+      }
+      if (hit && tool === "nav" && hit.type === "nerve-point") {
+        setSelectedId(hit.id);
+        drag.current = { mode: "nerve-point", id: hit.id, index: hit.index, moved: false };
+        return;
+      }
+      if (hit && tool === "nav" && hit.type === "measure") { setSelectedId(hit.id); return; }
+      if (tool === "arch") {
+        if (kind !== "axial") { say("Draw the arch on the AXIAL view (choose a slice through the roots).", "warn"); return; }
+        setTemp((t) => ({ kind: "arch", points: [...(t?.kind === "arch" ? t.points : []), [world[0], world[1]]] }));
+        return;
+      }
+      if (tool === "nerve") {
+        setTemp((t) => ({ kind: "nerve", side: t?.side || (world[0] > vol.X / 2 ? "L" : "R"), diameter: t?.diameter || 2, points: [...(t?.kind === "nerve" ? t.points : []), world] }));
+        return;
+      }
+      if (tool === "implant") {
+        if (kind === "3d") return;
+        const d = lastImplant();
+        const s = arch ? archNearest(arch, world[0], world[1]).s : 0;
+        const im = { id: uid(), tooth: arch ? guessTooth(arch, s, plan.jaw) : "", system: d.system, diameter: d.diameter, length: d.length, top: world, axis: apexDir(), note: "" };
+        setPlan((p) => ({ ...p, implants: [...p.implants, im] }));
+        setSelectedId(im.id);
+        if (arch && kind !== "cross") setPlan((p) => ({ ...p, crossS: s }), { record: false });
+        setTool("nav");
+        say(`Implant placed${im.tooth ? ` at #${im.tooth}` : ""}. Drag the yellow dot to move it, the orange dot to tilt it.`);
+        return;
+      }
+      if (tool === "dist" || tool === "angle") {
+        const need = tool === "dist" ? 2 : 3;
+        const pts = [...(temp?.kind === tool ? temp.points : []), world];
+        if (pts.length >= need) {
+          const value = tool === "dist" ? r1(dist(pts[0], pts[1]))
+            : Math.round(deg(Math.acos(clamp(dot(norm(sub(pts[0], pts[1])), norm(sub(pts[2], pts[1]))), -1, 1))));
+          setPlan((p) => ({ ...p, measures: [...p.measures, { id: uid(), type: tool, view: kind, points: pts, value }] }));
+          setTemp(null);
+        } else setTemp({ kind: tool, points: pts });
+        return;
+      }
+      if (tool === "hu") {
+        const v = vol.huAt(world);
+        if (v != null) setPlan((p) => ({ ...p, measures: [...p.measures, { id: uid(), type: "hu", view: kind, points: [world], value: v }] }));
+        return;
+      }
+      // navigate
+      setSelectedId(null);
+      drag.current = { mode: "cursor" };
+      moveCursor(kind, view, world);
+      return;
     }
+    if (type === "move") {
+      const d = drag.current; if (!d) return;
+      bumpQuick();
+      if (d.mode === "wl") {
+        const dx = P.clientX - d.x, dy = P.clientY - d.y;
+        setWl({ w: clamp(d.wl0.w + dx * 10, 50, 8000), l: clamp(d.wl0.l - dy * 6, -1000, 4000) });
+      } else if (d.mode === "pan") setCams((c) => ({ ...c, [kind]: { ...d.cam0, panX: d.cam0.panX + (P.x - d.x), panY: d.cam0.panY + (P.y - d.y) } }));
+      else if (d.mode === "zoom") {
+        const s2 = clamp(d.cam0.scale * Math.exp(-(P.y - d.y) * 0.005), 0.3, 80);
+        setCams((c) => ({ ...c, [kind]: { scale: s2, panX: d.x - P.W / 2 - ((d.x - P.W / 2 - d.cam0.panX) / d.cam0.scale) * s2, panY: d.y - P.H / 2 - ((d.y - P.H / 2 - d.cam0.panY) / d.cam0.scale) * s2 } }));
+      } else if (d.mode === "cursor") moveCursor(kind, view, world);
+      else if (d.mode === "move" && world && d.w0) {
+        const delta = sub(world, d.w0);
+        const top = add(d.im0.top, delta);
+        setPlan((p) => ({ ...p, implants: p.implants.map((i) => (i.id === d.id ? { ...i, top } : i)) }), { record: !d.moved });
+        d.moved = true;
+      } else if (d.mode === "tilt" && world) {
+        const im = d.im0;
+        const apex0 = implantApex(im);
+        const dep = view.plane(apex0)[2];
+        const target = view.planar ? add(world, mul(view.N, dep)) : world;
+        let axis = norm(sub(target, im.top));
+        if (dot(axis, im.axis) < 0.2) return;                      // keep it sensible
+        setPlan((p) => ({ ...p, implants: p.implants.map((i) => (i.id === d.id ? { ...i, axis } : i)) }), { record: !d.moved });
+        d.moved = true;
+      } else if (d.mode === "nerve-point" && world) {
+        setPlan((p) => ({ ...p, nerves: p.nerves.map((n) => (n.id === d.id ? { ...n, points: n.points.map((q, k) => (k === d.index ? world : q)) } : n)) }), { record: !d.moved });
+        d.moved = true;
+      }
+      return;
+    }
+    if (type === "up") { drag.current = null; setQuick(false); }
+  };
+  const moveCursor = (kind, view, world) => {
+    if (!world) return;
+    if (kind === "axial") setCursor((c) => [clamp(world[0], 0, vol.X), clamp(world[1], 0, vol.Y), c[2]]);
+    else if (kind === "coronal") setCursor((c) => [clamp(world[0], 0, vol.X), c[1], clamp(world[2], 0, vol.Z)]);
+    else if (kind === "sagittal") setCursor((c) => [c[0], clamp(world[1], 0, vol.Y), clamp(world[2], 0, vol.Z)]);
+    else if (kind === "pano" && arch) { const a = view.plane(world)[0]; setPlan((p) => ({ ...p, crossS: clamp(a, 0, arch.length) }), { record: false }); setCursor([world[0], world[1], clamp(world[2], 0, vol.Z)]); }
+    else if (kind === "cross") setCursor([world[0], world[1], clamp(world[2], 0, vol.Z)]);
   };
 
-  // ── Derived ────────────────────────────────────────────────────────────────
-  const totalSlices = {
-    axial:    volumeMeta?.num_slices      || 100,
-    coronal:  volumeMeta?.coronal_slices  || 100,
-    sagittal: volumeMeta?.sagittal_slices || 100,
+  /* finishing drawings */
+  const finishArch = () => {
+    if (!temp || temp.kind !== "arch" || temp.points.length < 3) { say("Tap at least 3 points along the jaw on the axial view.", "warn"); return; }
+    const a = buildArch(temp.points);
+    setPlan((p) => ({ ...p, archPoints: a.points, crossS: a.length / 2 }));
+    setTemp(null); setTool("nav");
+    setCams((c) => ({ ...c, pano: null, cross: null }));
+    say("Arch ready — the panoramic and cross-section views are made from it.");
+  };
+  const finishNerve = () => {
+    if (!temp || temp.kind !== "nerve" || temp.points.length < 2) { say("Tap at least 2 points along the canal.", "warn"); return; }
+    const n = { id: uid(), side: temp.side, diameter: temp.diameter || 2, points: temp.points };
+    setPlan((p) => ({ ...p, nerves: [...p.nerves, n] }));
+    setTemp(null); setTool("nav"); setSelectedId(n.id);
+    say("Nerve saved. It now shows in every view; implants closer than the safety margin turn red.");
+  };
+  const cancelTemp = () => { setTemp(null); };
+
+  /* keyboard (computers) */
+  useEffect(() => {
+    const onKey = (e) => {
+      if (/INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) return;
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") { e.preventDefault(); redo(); return; }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") { e.preventDefault(); save(); return; }
+      if (e.key === "Escape") { if (temp) cancelTemp(); else if (maxView) setMaxView(null); else setSelectedId(null); return; }
+      if (e.key === "Enter" && temp) { temp.kind === "arch" ? finishArch() : temp.kind === "nerve" ? finishNerve() : null; return; }
+      if ((e.key === "Delete" || e.key === "Backspace") && selectedId) { removeSelected(); return; }
+      if (e.key === "ArrowUp" || e.key === "ArrowDown") { act("wheel", { kind: activeView, dir: e.key === "ArrowUp" ? -1 : 1 }); e.preventDefault(); return; }
+      const t = Object.entries(TOOLS).find(([, v]) => v.key.toLowerCase() === e.key.toLowerCase());
+      if (t && !e.ctrlKey && !e.metaKey && !e.altKey) { if (!t[1].implant || mode === "implant") setTool(t[0]); }
+    };
+    window.addEventListener("keydown", onKey); return () => window.removeEventListener("keydown", onKey);
+  });
+  const removeSelected = () => {
+    if (!selectedId) return;
+    setPlan((p) => ({ ...p, implants: p.implants.filter((i) => i.id !== selectedId), nerves: p.nerves.filter((n) => n.id !== selectedId), measures: p.measures.filter((m) => m.id !== selectedId) }));
+    setSelectedId(null);
   };
 
-  // In focus mode only the active panel is shown; in quad all three + 3D
-  const visibleViews = layout === "focus" ? [activePanel] : VIEWS;
+  /* ── save ── */
+  const save = async () => {
+    setSaveState("saving");
+    try {
+      const body = [...legacy.current, { type: "plan", view: "3d", version: 2, plan: { ...plan, archPoints: plan.archPoints } }];
+      const r = await fetch(`${apiBase}/cbct/${volumeId}/annotations`, { method: "POST", headers: authHeaders({ "Content-Type": "application/json" }), body: JSON.stringify(body) });
+      if (!r.ok) throw new Error(String(r.status));
+      setSaveState("saved"); setDirty(false); setTimeout(() => setSaveState(""), 2200);
+    } catch { setSaveState("error"); say("The plan could not be saved. Check the internet and try again.", "err"); }
+  };
 
-  // ── Loading / error screens ────────────────────────────────────────────────
-  if (loading) return (
-    <div style={styles.loadingScreen}>
-      <div style={styles.loadingInner}>
-        <div style={styles.loadingSpinner} />
-        <div style={styles.loadingMsg}>{loadingMsg}</div>
-        <div style={styles.loadingSub}>Volume #{volumeId}</div>
+  /* older scans opened from the slice pictures: make the full-quality 3-D block on the server */
+  const rebuild = async () => {
+    setBusy("Making the full-quality 3-D scan… (up to a minute)");
+    try {
+      const r = await fetch(`${apiBase}/cbct/${volumeId}/volume/rebuild`, { method: "POST", headers: authHeaders() });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || `Server ${r.status}`);
+      if (dirty) await save();
+      window.location.reload();
+    } catch (e) { say(e.message || "Could not rebuild.", "err"); }
+    finally { setBusy(""); }
+  };
+
+  /* ── pictures for the report ── */
+  const snapshot = (kind, { W = 900, H = 600, center = null, mm = null, st = {} } = {}) => {
+    const stt = { cursor: st.cursor || cursor, arch, crossS: st.crossS ?? plan.crossS, crossWidth: plan.crossWidth, panoOffset: plan.panoOffset };
+    const view = makeView(kind, vol, stt);
+    if (!view) return null;
+    let cam = { scale: fitScale(view, vol, W, H), panX: 0, panY: 0 };
+    if (mm) cam.scale = Math.min(W, H) / mm;
+    if (center) { const [a, b] = view.plane(center); cam.panX = -(a - view.a0) * cam.scale; cam.panY = -(b - view.b0) * cam.scale; }
+    const c = document.createElement("canvas"); c.width = W; c.height = H;
+    const g = c.getContext("2d");
+    const lutR = makeLut(vol, wl.w, wl.l, false);
+    g.putImageData(renderView(view, vol, cam, W, H, lutR, { slab: kind === "pano" ? plan.panoSlab : kind === "cross" ? plan.crossSlab : 0 }), 0, 0);
+    drawOverlay(g, view, cam, W, H, { vol, plan, arch, cursor: stt.cursor, selectedId: null, temp: null, report: true, crossS: stt.crossS, crossWidth: plan.crossWidth, panoSlab: plan.panoSlab, crossSlab: plan.crossSlab, dpr: 1.4 });
+    return c.toDataURL("image/jpeg", 0.9);
+  };
+  const reportImages = () => {
+    const out = { implants: [] };
+    if (arch) {
+      const W = 1400, H = Math.round(clamp((W * vol.Z) / arch.length, 380, 760));
+      out.pano = snapshot("pano", { W, H });
+    }
+    for (const im of plan.implants) {
+      const mid = add(im.top, mul(im.axis, im.length / 2));
+      const s = arch ? archNearest(arch, mid[0], mid[1]).s : plan.crossS;
+      out.implants.push({
+        cross: arch ? snapshot("cross", { W: 600, H: 600, center: mid, mm: 34, st: { crossS: s, cursor: mid } }) : snapshot("coronal", { W: 600, H: 600, center: mid, mm: 40, st: { cursor: mid } }),
+        axial: snapshot("axial", { W: 600, H: 600, center: mid, mm: 40, st: { cursor: mid } }),
+      });
+    }
+    const R = renderer3d.current;
+    if (R) {
+      try {
+        R.draw({ mode: three.mode, thresholdHu: three.thr, clip: { lo: [0, three.clipFront, three.clipBottom], hi: [1, 1, three.clipTop] } });
+        const c = document.createElement("canvas"); c.width = R.canvas.width; c.height = R.canvas.height;
+        const g = c.getContext("2d"); g.drawImage(R.canvas, 0, 0);
+        const over = R.canvas.parentElement?.querySelector(".cv-over"); if (over) g.drawImage(over, 0, 0);
+        out.three = c.toDataURL("image/jpeg", 0.88);
+      } catch { /* 3-D not available */ }
+    }
+    return out;
+  };
+  const doReport = async (kind) => {
+    if (!vol) return;
+    const pre = kind === "pdf" ? window.open("", "_blank") : null;
+    if (pre) pre.document.write("<p style='font-family:system-ui;padding:20px'>Making the report…</p>");
+    setBusy("Making the report…");
+    await new Promise((r) => setTimeout(r, 30));
+    try {
+      const images = reportImages();
+      if (kind === "pdf") openReport(buildReportHTML({ meta, plan, vol, images }), pre);
+      else if (kind === "png") { const blob = await reportPNG({ meta, plan, vol, images }); downloadBlob(blob, `implant-plan-${volumeId}.png`); }
+      else if (kind === "json") downloadBlob(new Blob([JSON.stringify(planFile({ meta, plan, vol, volumeId }), null, 2)], { type: "application/json" }), `implant-plan-${volumeId}.json`);
+    } catch (e) { console.error(e); say("The report could not be made.", "err"); }
+    finally { setBusy(""); }
+  };
+  const screenShot = () => {
+    const panes = [...document.querySelectorAll(".cv-pane")];
+    if (!panes.length) return;
+    const rects = panes.map((p) => p.getBoundingClientRect());
+    const x0 = Math.min(...rects.map((r) => r.left)), y0 = Math.min(...rects.map((r) => r.top));
+    const x1 = Math.max(...rects.map((r) => r.right)), y1 = Math.max(...rects.map((r) => r.bottom));
+    const k = 1.5;
+    const c = document.createElement("canvas"); c.width = (x1 - x0) * k; c.height = (y1 - y0) * k;
+    const g = c.getContext("2d"); g.fillStyle = "#000"; g.fillRect(0, 0, c.width, c.height);
+    panes.forEach((p, i) => p.querySelectorAll("canvas").forEach((cv) => {
+      const r = cv.getBoundingClientRect(); g.drawImage(cv, (r.left - x0) * k, (r.top - y0) * k, r.width * k, r.height * k);
+    }));
+    c.toBlob((b) => downloadBlob(b, `cbct-${volumeId}-screen.png`), "image/png");
+  };
+
+  /* ── loading / error ── */
+  if (error) return (
+    <div className="cv-full"><style>{CSS}</style>
+      <div className="cv-center"><div style={{ fontSize: 40 }}>⚠️</div><div style={{ color: "#fca5a5", fontWeight: 700 }}>{error}</div>
+        {onClose && <button className="cv-btn" onClick={onClose}>Close</button>}</div></div>
+  );
+  if (!vol) return (
+    <div className="cv-full"><style>{CSS}</style>
+      <div className="cv-center">
+        <div className="cv-spin" />
+        <div style={{ color: "#93c5fd", fontWeight: 700 }}>{progress.msg}</div>
+        <div className="cv-prog"><i style={{ width: `${Math.round(progress.p * 100)}%` }} /></div>
+        <div style={{ color: "#64748b", fontSize: 12 }}>Scan #{volumeId}{meta?.patient_name ? ` · ${meta.patient_name}` : ""} · {budgetForDevice().label} quality</div>
       </div>
     </div>
   );
 
-  if (error) return (
-    <div style={styles.loadingScreen}>
-      <div style={{ color: "#ef4444", fontSize: 18 }}>⚠️ {error}</div>
-    </div>
-  );
+  /* ── scene shared by the views ── */
+  const scene = {
+    vol, plan, arch, cursor, lut, slab, mip, selectedId, temp, tool, phone: screen.phone,
+    cursorCss: { nav: "crosshair", pan: "grab", zoom: "zoom-in", wl: "ew-resize", dist: "crosshair", angle: "crosshair", hu: "cell", arch: "copy", nerve: "copy", implant: "copy", erase: "not-allowed" }[tool],
+  };
+  const sliderOf = (kind) => {
+    if (kind === "axial") {
+      const n = Math.round(vol.zUp ? cursor[2] / vol.sz : (vol.Z - cursor[2]) / vol.sz);
+      return { min: 0, max: vol.Z, step: vol.sz, value: vol.zUp ? cursor[2] : vol.Z - cursor[2], text: `${n} / ${vol.nz}`, set: (v) => { bumpQuick(); setCursor((c) => [c[0], c[1], vol.zUp ? v : vol.Z - v]); } };
+    }
+    if (kind === "coronal") return { min: 0, max: vol.Y, step: vol.sy, value: cursor[1], text: `${Math.round(cursor[1] / vol.sy)} / ${vol.ny}`, set: (v) => { bumpQuick(); setCursor((c) => [c[0], v, c[2]]); } };
+    if (kind === "sagittal") return { min: 0, max: vol.X, step: vol.sx, value: cursor[0], text: `${Math.round(cursor[0] / vol.sx)} / ${vol.nx}`, set: (v) => { bumpQuick(); setCursor((c) => [v, c[1], c[2]]); } };
+    if (kind === "cross" && arch) return { min: 0, max: arch.length, step: plan.crossStep, value: plan.crossS, text: `${r1(plan.crossS)} / ${r1(arch.length)} mm`, set: (v) => { bumpQuick(); setPlan((p) => ({ ...p, crossS: v }), { record: false }); } };
+    if (kind === "pano" && arch) return { min: -20, max: 20, step: 0.5, value: plan.panoOffset, text: `curve ${plan.panoOffset > 0 ? "+" : ""}${plan.panoOffset} mm`, set: (v) => { bumpQuick(); setPlan((p) => ({ ...p, panoOffset: v }), { record: false }); } };
+    return null;
+  };
+  const shown = screen.phone ? [activeView] : maxView ? [maxView] : views;
+  const gridClass = screen.phone || maxView ? "one" : mode === "implant" ? "implant" : "quad";
+  const sel = plan.implants.find((i) => i.id === selectedId);
+  const selNerve = plan.nerves.find((n) => n.id === selectedId);
+  const toolList = Object.entries(TOOLS).filter(([, v]) => !v.implant || mode === "implant");
 
-  const toolBtns = [
-    { key: TOOLS.SCROLL,   icon: "↕", label: "Scroll (S)" },
-    { key: TOOLS.PAN,      icon: "✥", label: "Pan (P)" },
-    { key: TOOLS.ZOOM,     icon: "⊕", label: "Zoom (Z)" },
-    { key: TOOLS.WL,       icon: "◑", label: "W/L (W)" },
-    { key: TOOLS.DISTANCE, icon: "↔", label: "Distance (D)" },
-    { key: TOOLS.ANGLE,    icon: "∠", label: "Angle (A)" },
-    { key: TOOLS.HU,       icon: "⬤", label: "HU Probe (H)" },
-    { key: TOOLS.IMPLANT,  icon: "⊥", label: "Implant (I)" },
-    { key: TOOLS.IAN,      icon: "~", label: "IAN Nerve (N)" },
-    { key: TOOLS.ERASE,    icon: "⌫", label: "Erase (E)" },
-  ];
+  const panel = (
+    <Panel {...{ mode, plan, setPlan, arch, vol, tool, setTool, temp, setTemp, finishArch, finishNerve, cancelTemp, sel, selNerve, selectImplant, setSelectedId, selectedId,
+      wl, setWl, invert, setInvert, slab, setSlab, mip, setMip, removeSelected, say, setCursor, legacyCount: legacy.current.length, rebuild }} />
+  );
 
   return (
-    <div style={styles.root}>
-      {/* ── Top bar ── */}
-      <div style={styles.topBar}>
-        <div style={styles.topLeft}>
-          <div style={styles.logo}>🦷 CBCT Viewer</div>
-          {volumeMeta && (
-            <div style={styles.metaChip}>
-              <span style={styles.metaField}>{volumeMeta.patient_name || "Anonymous"}</span>
-              <span style={styles.metaDot}>·</span>
-              <span style={styles.metaField}>{volumeMeta.study_date || ""}</span>
-              <span style={styles.metaDot}>·</span>
-              <span style={styles.metaField}>{volumeMeta.num_slices} slices</span>
-              {volumeMeta.voxel_spacing?.x > 0 && (
-                <>
-                  <span style={styles.metaDot}>·</span>
-                  <span style={styles.metaField}>{volumeMeta.voxel_spacing.x.toFixed(2)} mm/vx</span>
-                </>
-              )}
-            </div>
-          )}
+    <div className={`cv-root ${screen.phone ? "phone" : screen.tablet ? "tablet" : "desktop"}`}>
+      <style>{CSS}</style>
+      {/* top bar */}
+      <div className="cv-top">
+        <div className="cv-brand">🦷<span className="cv-hide-phone"> CBCT Planner</span></div>
+        {meta && <div className="cv-meta cv-hide-phone">{meta.patient_name || "Patient"} · {meta.study_date || ""} · {vol.nx}×{vol.ny}×{vol.nz} · {r1(vol.sx)} mm{vol.source === "slices" ? " · from slices" : ""}</div>}
+        <div className="cv-seg" role="tablist" aria-label="Mode">
+          <button type="button" className={mode === "mpr" ? "on" : ""} onClick={() => { setMode("mpr"); setMaxView(null); if (TOOLS[tool].implant) setTool("nav"); }}>MPR</button>
+          <button type="button" className={mode === "implant" ? "on" : ""} onClick={() => { setMode("implant"); setMaxView(null); if (!arch) { setActiveView("axial"); setTool("arch"); say("Step 1: draw the arch — tap along the jaw on the AXIAL view, then press Done."); } }}>{screen.phone ? "Implants" : "Implant planning"}</button>
         </div>
+        <div className="cv-topr">
+          {!screen.phone && <button type="button" className="cv-btn ghost" onClick={undo} title="Undo (Ctrl+Z)" disabled={!hist.current.past.length}>↶</button>}
+          {!screen.phone && <button type="button" className="cv-btn ghost" onClick={redo} title="Redo (Ctrl+Y)" disabled={!hist.current.future.length}>↷</button>}
+          <button type="button" className={`cv-btn ${saveState === "saved" ? "ok" : dirty ? "primary" : "ghost"}`} onClick={save} title="Save the plan with this scan (Ctrl+S)">
+            {saveState === "saving" ? "Saving…" : saveState === "saved" ? "✓ Saved" : `💾${screen.phone ? "" : " Save"}`}
+          </button>
+          <Menu label={`⬇${screen.phone ? "" : " Download"}`} items={[
+            ["📄 Report — Print / Save as PDF", () => doReport("pdf")],
+            ["🖼 Report as picture (PNG)", () => doReport("png")],
+            ["📐 Plan file (implant positions)", () => doReport("json")],
+            ["📷 Picture of the screen", screenShot],
+          ]} />
+          {(screen.phone || screen.tablet) && <button type="button" className={`cv-btn ${panelOpen ? "primary" : "ghost"}`} onClick={() => setPanelOpen((v) => !v)}>☰</button>}
+          {onClose && <button type="button" className="cv-btn ghost" onClick={() => { if (!dirty || window.confirm("The plan has changes that are not saved. Close anyway?")) onClose(); }} title="Close">✕</button>}
+        </div>
+      </div>
 
-        <div style={styles.topRight}>
-          {/* Panel tabs (always visible for quick switching) */}
-          {VIEWS.map(v => (
-            <button
-              key={v}
-              style={{
-                ...styles.topBtn,
-                ...(activePanel === v && layout === "focus" ? styles.topBtnActive : {}),
-                color: VIEW_COLORS[v],
-                fontSize: 10,
-              }}
-              onClick={() => { setActivePanel(v); setLayout("focus"); }}
-              title={`Focus ${v} panel`}
-            >
-              {VIEW_LABELS[v]}
+      {screen.phone && (
+        <div className="cv-viewtabs">
+          {views.map((v) => <button key={v} type="button" className={activeView === v ? "on" : ""} style={{ "--vc": COLORS[v] }} onClick={() => setActiveView(v)}>{VIEW_TITLE[v]}</button>)}
+        </div>
+      )}
+
+      <div className="cv-body">
+        <div className="cv-tools" role="toolbar" aria-label="Tools">
+          {toolList.map(([k, t]) => (
+            <button key={k} type="button" className={`cv-tool ${tool === k ? "on" : ""}`} title={`${t.label} (${t.key}) — ${t.hint}`} onClick={() => { setTool(k); if (temp && temp.kind !== k) setTemp(null);
+              if (k === "arch") { setActiveView("axial"); } if (k === "nerve" || k === "implant") { if (screen.phone) setActiveView(arch ? (k === "nerve" ? "pano" : "cross") : "axial"); } }}>
+              <span className="cv-ti">{t.icon}</span><span className="cv-tl">{t.label}</span>
             </button>
           ))}
-
-          <div style={styles.topSep} />
-
-          <button
-            style={{ ...styles.topBtn, ...(cineActive ? styles.topBtnActive : {}) }}
-            onClick={() => setCineActive(v => !v)}
-            title="Play/Pause cine (Space)"
-          >{cineActive ? "⏸ Cine" : "▶ Cine"}</button>
-
-          <select
-            value={cineView}
-            onChange={e => setCineView(e.target.value)}
-            style={styles.select}
-          >
-            {VIEWS.map(v => <option key={v} value={v}>{v.toUpperCase()}</option>)}
-          </select>
-
-          <button
-            style={styles.topBtn}
-            onClick={() => setLayout(l => l === "quad" ? "focus" : "quad")}
-            title="Toggle layout (quad / focus)"
-          >{layout === "quad" ? "⊞ Quad" : "⊡ Focus"}</button>
-
-          {/* Client-side screenshot */}
-          <button style={styles.topBtn} onClick={takeScreenshot} title="Canvas screenshot">📷</button>
-          {/* Server-side export */}
-          <button style={styles.topBtn} onClick={serverExport}   title="Export PNG (server)">⬇</button>
-
-          <button
-            style={{ ...styles.topBtn, ...(saved ? styles.topBtnSaved : {}) }}
-            onClick={saveAnnotations}
-            title="Save annotations"
-          >{saved ? "✓ Saved" : "💾 Save"}</button>
-
-          <button
-            style={{ ...styles.topBtn, background: "#1e293b" }}
-            onClick={() => setShowSidebar(v => !v)}
-            title="Toggle sidebar (B)"
-          >☰</button>
-
-          {onClose && (
-            <button
-              style={{ ...styles.topBtn, color: "#ef4444" }}
-              onClick={onClose}
-              title="Close (Esc)"
-            >✕</button>
-          )}
-        </div>
-      </div>
-
-      <div style={styles.body}>
-        {/* ── Toolbar ── */}
-        <div style={styles.toolbar}>
-          {toolBtns.map(({ key, icon, label }) => (
-            <button
-              key={key}
-              title={label}
-              style={{ ...styles.toolBtn, ...(activeTool === key ? styles.toolBtnActive : {}) }}
-              onClick={() => {
-                setActiveTool(key);
-                if (key === TOOLS.IMPLANT) setShowImplants(true);
-              }}
-            >{icon}</button>
-          ))}
-          <div style={styles.toolSep} />
-          <button style={styles.toolBtn} onClick={() => dispatch({ type: "CLEAR" })} title="Clear all annotations">🗑</button>
-          <div style={styles.toolSep} />
-          {/* W/L presets */}
-          {[
-            { label: "Bone",  w: 3500, l: 700 },
-            { label: "Soft",  w: 350,  l: 50  },
-            { label: "Brain", w: 80,   l: 40  },
-          ].map(p => (
-            <button
-              key={p.label}
-              style={styles.presetBtn}
-              title={`${p.label} window`}
-              onClick={() => setWl({ window: p.w, level: p.l })}
-            >{p.label}</button>
-          ))}
         </div>
 
-        {/* ── Implant picker ── */}
-        {showImplants && (
-          <div style={styles.implantPicker}>
-            <div style={styles.implantPickerTitle}>
-              Select Implant
-              <button style={styles.implantClose} onClick={() => setShowImplants(false)}>✕</button>
-            </div>
-            {IMPLANTS.map((imp, i) => (
-              <div
-                key={i}
-                style={{
-                  ...styles.implantRow,
-                  background:  activeImplant === imp ? "#1d4ed822"   : "transparent",
-                  borderLeft:  activeImplant === imp ? `3px solid ${imp.color}` : "3px solid transparent",
-                }}
-                onClick={() => { setActiveImplant(imp); setActiveTool(TOOLS.IMPLANT); setShowImplants(false); }}
-              >
-                <span style={{ color: imp.color, fontWeight: 700 }}>⊥</span>
-                <span style={styles.implantName}>{imp.brand}</span>
-                <span style={styles.implantDims}>Ø{imp.diameter} × {imp.length}mm</span>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* ── Viewer grid ── */}
-        <div style={{
-          ...styles.viewerGrid,
-          gridTemplateColumns: layout === "quad" ? "1fr 1fr" : "1fr",
-          gridTemplateRows:    layout === "quad" ? "1fr 1fr" : "1fr",
-        }}>
-          {visibleViews.map(view => (
-            <MPRPanel
-              key={view}
-              view={view}
-              volumeData={volumeData}
-              sliceIndex={slices[view]}
-              totalSlices={totalSlices[view]}
-              wl={wl}
-              zoom={zooms[view]}
-              pan={pans[view]}
-              crosshair={crosshair}
-              activeTool={activeTool}
-              activeImplant={activeImplant}
-              annotations={annotations}
-              highlighted={activePanel === view}
-              onClick={() => setActivePanel(view)}
-              onSliceChange={v => setSlices(prev => ({ ...prev, [view]: clamp(v, 0, totalSlices[view] - 1) }))}
-              onWLChange={setWl}
-              onZoomChange={v => setZooms(prev => ({ ...prev, [view]: v }))}
-              onPanChange={v  => setPans(prev  => ({ ...prev, [view]: v }))}
-              onCrosshairChange={setCrosshair}
-              onAnnotationAdd={item  => dispatch({ type: "ADD",    item  })}
-              onAnnotationRemove={index => dispatch({ type: "REMOVE", index })}
-            />
-          ))}
-
-          {/* 3D preview placeholder (quad only) */}
-          {layout === "quad" && (
-            <div style={styles.panel3D}>
-              <div style={styles.panel3DLabel}>3D</div>
-              <div style={styles.panel3DContent}>
-                <div style={styles.panel3DGlobe}>
-                  {volumeMeta ? (
-                    <>
-                      <div style={styles.panel3DTitle}>Volume Preview</div>
-                      <div style={styles.panel3DStat}>{volumeMeta.num_slices} axial slices</div>
-                      <div style={styles.panel3DStat}>
-                        {volumeMeta.dimensions?.rows}×{volumeMeta.dimensions?.cols} px
-                      </div>
-                      <div style={styles.panel3DStat}>
-                        {volumeMeta.voxel_spacing?.x?.toFixed(2)} mm/vx
-                      </div>
-                      <div style={styles.panel3DHint}>
-                        3D rendering available in<br />full desktop mode
-                      </div>
-                    </>
-                  ) : (
-                    <div style={styles.panel3DHint}>No volume loaded</div>
-                  )}
-                </div>
-                <div style={styles.crosshairIndicator}>
-                  AX {slices.axial+1} · COR {slices.coronal+1} · SAG {slices.sagittal+1}
-                </div>
-              </div>
-            </div>
-          )}
+        <div className={`cv-grid ${gridClass}`}>
+          {shown.map((k) => (k === "3d"
+            ? <Pane3D key={k} scene={scene} settings={three} setSettings={setThree} onMax={screen.phone ? null : (v) => setMaxView((m) => (m ? null : v))} maxed={!!maxView} rendererRef={renderer3d} active={activeView === k} onActivate={setActiveView} />
+            : <Pane key={k} kind={k} scene={scene} cam={cams[k]} setCam={setCam} act={act} quick={quick} sliderOf={sliderOf}
+                onMax={screen.phone ? null : (v) => setMaxView((m) => (m ? null : v))} maxed={!!maxView} active={activeView === k} onActivate={setActiveView} />))}
         </div>
 
-        {/* ── Right sidebar ── */}
-        {showSidebar && (
-          <div style={styles.sidebar}>
-            <div style={styles.sidebarSection}>
-              <div style={styles.sidebarTitle}>Window / Level</div>
-              <div style={styles.wlRow}>
-                <label style={styles.wlLabel}>W</label>
-                <input type="range" min={1} max={6000} value={wl.window}
-                  onChange={e => setWl(prev => ({ ...prev, window: Number(e.target.value) }))}
-                  style={styles.wlRange} />
-                <span style={styles.wlVal}>{Math.round(wl.window)}</span>
-              </div>
-              <div style={styles.wlRow}>
-                <label style={styles.wlLabel}>L</label>
-                <input type="range" min={-1000} max={3000} value={wl.level}
-                  onChange={e => setWl(prev => ({ ...prev, level: Number(e.target.value) }))}
-                  style={styles.wlRange} />
-                <span style={styles.wlVal}>{Math.round(wl.level)}</span>
-              </div>
-            </div>
-
-            <div style={styles.sidebarSection}>
-              <div style={styles.sidebarTitle}>Slice Navigator</div>
-              {VIEWS.map(v => (
-                <div key={v} style={styles.sliceRow}>
-                  <span style={{ ...styles.sliceLabel, color: VIEW_COLORS[v] }}>{VIEW_LABELS[v]}</span>
-                  <input
-                    type="range" min={0} max={totalSlices[v] - 1} value={slices[v]}
-                    onChange={e => setSlices(prev => ({ ...prev, [v]: Number(e.target.value) }))}
-                    style={styles.wlRange}
-                  />
-                  <span style={styles.wlVal}>{slices[v]+1}/{totalSlices[v]}</span>
-                </div>
-              ))}
-            </div>
-
-            <div style={styles.sidebarSection}>
-              <div style={styles.sidebarTitle}>
-                Annotations
-                <span style={styles.annoBadge}>{annotations.length}</span>
-              </div>
-              {annotations.length === 0 ? (
-                <div style={styles.annoEmpty}>No annotations yet.</div>
-              ) : (
-                <div style={styles.annoList}>
-                  {annotations.map((a, i) => (
-                    <div key={i} style={styles.annoItem}>
-                      <span style={{ ...styles.annoType, color: a.color || "#facc15" }}>
-                        {a.type === "distance" ? "↔" : a.type === "angle" ? "∠" : a.type === "hu" ? "⬤" : a.type === "implant" ? "⊥" : "~"}
-                      </span>
-                      <span style={styles.annoText}>
-                        {a.type === "distance" ? a.measurement  :
-                         a.type === "angle"    ? `${a.measurement}°` :
-                         a.type === "hu"       ? `${a.hu} HU`   :
-                         a.type === "implant"  ? a.implant?.brand :
-                         "IAN"}
-                        <span style={styles.annoView}> [{VIEW_LABELS[a.view]}]</span>
-                      </span>
-                      <button
-                        style={styles.annoDelBtn}
-                        onClick={() => dispatch({ type: "REMOVE", index: i })}
-                      >✕</button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <div style={styles.sidebarSection}>
-              <div style={styles.sidebarTitle}>Active Implant</div>
-              <div style={{ color: activeImplant.color, fontSize: 12, fontWeight: 600 }}>
-                {activeImplant.brand}
-              </div>
-              <div style={{ color: "#64748b", fontSize: 11 }}>
-                Ø{activeImplant.diameter} × {activeImplant.length}mm
-              </div>
-              <button style={styles.changeImplantBtn} onClick={() => setShowImplants(true)}>
-                Change implant
-              </button>
-            </div>
-
-            <div style={styles.sidebarSection}>
-              <div style={styles.sidebarTitle}>Keyboard Shortcuts</div>
-              <div style={styles.kbGrid}>
-                {[
-                  ["S", "Scroll"],   ["P", "Pan"],     ["Z", "Zoom"],
-                  ["W", "W/L"],      ["D", "Distance"],["A", "Angle"],
-                  ["H", "HU"],       ["I", "Implant"], ["N", "IAN"],
-                  ["E", "Erase"],    ["Space", "Cine"],["Tab", "Next panel"],
-                  ["↑↓", "Scroll active"],
-                ].map(([k, v]) => (
-                  <React.Fragment key={k}>
-                    <kbd style={styles.kbd}>{k}</kbd>
-                    <span style={styles.kbLabel}>{v}</span>
-                  </React.Fragment>
-                ))}
-              </div>
-            </div>
+        {(screen.desktop || panelOpen) && (
+          <div className={`cv-panel ${screen.desktop ? "" : "sheet"}`}>
+            {!screen.desktop && <div className="cv-sheet-head"><b>Plan &amp; settings</b><button type="button" className="cv-btn ghost" onClick={() => setPanelOpen(false)}>Close</button></div>}
+            {panel}
           </div>
         )}
       </div>
+
+      {/* hints / drawing controls */}
+      <div className="cv-hint">
+        {temp ? (
+          <>
+            <span>{temp.kind === "arch" ? `Arch: ${temp.points.length} point${temp.points.length === 1 ? "" : "s"} — keep tapping along the jaw on the Axial view.`
+              : temp.kind === "nerve" ? `Nerve (${temp.side === "L" ? "left" : "right"}): ${temp.points.length} point${temp.points.length === 1 ? "" : "s"} — tap along the canal.`
+              : `${TOOLS[temp.kind]?.label}: ${temp.points.length} point${temp.points.length === 1 ? "" : "s"}…`}</span>
+            <span className="cv-hint-btns">
+              <button type="button" className="cv-btn ghost sm" onClick={() => setTemp((t) => ({ ...t, points: t.points.slice(0, -1) }))} disabled={!temp.points.length}>Undo point</button>
+              {temp.kind === "arch" && <button type="button" className="cv-btn primary sm" onClick={finishArch}>Done</button>}
+              {temp.kind === "nerve" && <button type="button" className="cv-btn primary sm" onClick={finishNerve}>Done</button>}
+              <button type="button" className="cv-btn ghost sm" onClick={cancelTemp}>Cancel</button>
+            </span>
+          </>
+        ) : (
+          <>
+            <span>{TOOLS[tool]?.hint}{!screen.phone && " · Two fingers / wheel: zoom · Right-drag: contrast"}</span>
+            {screen.phone && <span className="cv-hint-btns"><button type="button" className="cv-btn ghost sm" onClick={undo} disabled={!hist.current.past.length}>↶ Undo</button></span>}
+          </>
+        )}
+      </div>
+      {toast && <div className={`cv-toast ${toast.kind}`} role="status">{toast.text}</div>}
+      {busy && <div className="cv-busy"><div className="cv-spin" />{busy}</div>}
     </div>
   );
 }
 
-// ─── Styles ──────────────────────────────────────────────────────────────────
-const C = {
-  bg:      "#020617",
-  surface: "#0f172a",
-  border:  "#1e293b",
-  text:    "#e2e8f0",
-  muted:   "#64748b",
-  blue:    "#3b82f6",
-  green:   "#22c55e",
-};
+/* ═════════════════════════════════════════════════════════════════════════
+   Side panel: arch, nerve, implants, measurements, display
+   ═════════════════════════════════════════════════════════════════════════ */
+function Panel(P) {
+  const { mode, plan, setPlan, arch, vol, tool, setTool, temp, setTemp, finishArch, finishNerve, sel, selNerve, selectImplant, setSelectedId, selectedId,
+    wl, setWl, invert, setInvert, slab, setSlab, mip, setMip, removeSelected, setCursor, rebuild } = P;
+  const upd = (id, patch) => setPlan((p) => ({ ...p, implants: p.implants.map((i) => (i.id === id ? { ...i, ...patch } : i)) }));
+  const rows = useMemo(() => (mode === "implant" ? implantRows(plan, vol) : []), [mode, plan, vol]);
+  const tiltBy = (im, dir, a) => {
+    let k;
+    if (dir === "bl") { if (arch) { const { s } = archNearest(arch, im.top[0], im.top[1]); const c = archAt(arch, s); k = [c.tx, c.ty, 0]; } else k = [1, 0, 0]; }
+    else { if (arch) { const { s } = archNearest(arch, im.top[0], im.top[1]); const c = archAt(arch, s); k = [c.nx, c.ny, 0]; } else k = [0, 1, 0]; }
+    upd(im.id, { axis: norm(rotate(im.axis, norm(k), rad(a))) });
+  };
+  const saveDefault = (im) => lsSet("cbct-last-implant", { system: im.system, diameter: im.diameter, length: im.length });
+  return (
+    <div className="cv-panel-in">
+      {mode === "implant" && (
+        <>
+          <Sec title="1 · Arch" done={!!arch}>
+            <div className="cv-row">
+              <span className="cv-lbl">Jaw</span>
+              <div className="cv-seg sm">
+                {["upper", "lower"].map((j) => <button key={j} type="button" className={plan.jaw === j ? "on" : ""} onClick={() => setPlan((p) => ({ ...p, jaw: j }))}>{j === "upper" ? "Upper" : "Lower"}</button>)}
+              </div>
+            </div>
+            {temp?.kind === "arch" ? (
+              <div className="cv-row"><button type="button" className="cv-btn primary" onClick={finishArch}>Done ({temp.points.length})</button><button type="button" className="cv-btn ghost" onClick={() => setTemp(null)}>Cancel</button></div>
+            ) : (
+              <div className="cv-row">
+                <button type="button" className={`cv-btn ${arch ? "ghost" : "primary"}`} onClick={() => { setTool("arch"); setTemp({ kind: "arch", points: [] }); }}>{arch ? "Redraw arch" : "〰 Draw arch"}</button>
+                {arch && <span className="cv-small">{r1(arch.length)} mm long</span>}
+              </div>
+            )}
+            {!arch && <p className="cv-help">Choose an axial slice through the roots, then tap along the middle of the jaw from one end to the other.</p>}
+            {arch && (
+              <>
+                <Range label="Panoramic thickness" unit="mm" min={0} max={30} step={1} value={plan.panoSlab} set={(v) => setPlan((p) => ({ ...p, panoSlab: v }), { record: false })} />
+                <Range label="Cross-section width" unit="mm" min={20} max={70} step={5} value={plan.crossWidth} set={(v) => setPlan((p) => ({ ...p, crossWidth: v }), { record: false })} />
+                <Range label="Cross-section thickness" unit="mm" min={0} max={5} step={0.5} value={plan.crossSlab} set={(v) => setPlan((p) => ({ ...p, crossSlab: v }), { record: false })} />
+                <div className="cv-row">
+                  <span className="cv-lbl">Step</span>
+                  <div className="cv-seg sm">{[0.5, 1, 2, 5].map((s) => <button key={s} type="button" className={plan.crossStep === s ? "on" : ""} onClick={() => setPlan((p) => ({ ...p, crossStep: s }), { record: false })}>{s}</button>)}</div>
+                  <button type="button" className="cv-btn ghost sm" onClick={() => setPlan((p) => ({ ...p, crossS: clamp(p.crossS - p.crossStep, 0, arch.length) }), { record: false })}>◀</button>
+                  <button type="button" className="cv-btn ghost sm" onClick={() => setPlan((p) => ({ ...p, crossS: clamp(p.crossS + p.crossStep, 0, arch.length) }), { record: false })}>▶</button>
+                </div>
+              </>
+            )}
+          </Sec>
 
-const styles = {
-  root: {
-    display: "flex", flexDirection: "column",
-    width: "100vw", height: "100vh",
-    background: C.bg, color: C.text,
-    fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
-    overflow: "hidden", userSelect: "none",
-  },
-  topBar: {
-    display: "flex", justifyContent: "space-between", alignItems: "center",
-    height: 48, padding: "0 16px",
-    background: C.surface, borderBottom: `1px solid ${C.border}`,
-    flexShrink: 0,
-  },
-  topLeft:  { display: "flex", alignItems: "center", gap: 16 },
-  topRight: { display: "flex", alignItems: "center", gap: 4 },
-  topSep:   { width: 1, height: 20, background: C.border, margin: "0 4px" },
-  logo:     { fontSize: 15, fontWeight: 700, color: C.blue, letterSpacing: "-0.5px" },
-  metaChip: { display: "flex", gap: 6, alignItems: "center" },
-  metaField:{ color: C.muted, fontSize: 11 },
-  metaDot:  { color: C.border, fontSize: 11 },
-  topBtn: {
-    background: C.border, border: "none", color: C.text,
-    padding: "5px 10px", borderRadius: 6, fontSize: 11,
-    cursor: "pointer", fontFamily: "inherit",
-  },
-  topBtnActive: { background: C.blue,    color: "#fff" },
-  topBtnSaved:  { background: "#15803d", color: "#fff" },
-  select: {
-    background: C.border, border: "none", color: C.text,
-    padding: "4px 8px", borderRadius: 6, fontSize: 11,
-    cursor: "pointer", fontFamily: "inherit",
-  },
-  body: {
-    display: "flex", flex: 1, overflow: "hidden", position: "relative",
-  },
-  toolbar: {
-    display: "flex", flexDirection: "column", gap: 4,
-    width: 44, padding: "8px 4px",
-    background: C.surface, borderRight: `1px solid ${C.border}`,
-    flexShrink: 0, overflowY: "auto",
-  },
-  toolBtn: {
-    background: "transparent", border: "none", color: C.muted,
-    width: 36, height: 36, borderRadius: 8, fontSize: 16,
-    cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
-    transition: "all 0.15s", fontFamily: "inherit",
-  },
-  toolBtnActive: { background: "#1d4ed8", color: "#93c5fd" },
-  toolSep:       { height: 1, background: C.border, margin: "4px 0" },
-  presetBtn: {
-    background: "transparent", border: "none", color: C.muted,
-    fontSize: 9, cursor: "pointer", fontFamily: "inherit",
-    padding: "2px 0", textAlign: "center",
-  },
-  viewerGrid: {
-    flex: 1, display: "grid", gap: 2, overflow: "hidden", background: "#000",
-  },
-  panelWrap: {
-    position: "relative", background: "#000", overflow: "hidden",
-    transition: "border-color 0.2s",
-  },
-  panelLabel: {
-    position: "absolute", top: 8, left: 10, zIndex: 10,
-    fontSize: 11, fontWeight: 700, letterSpacing: 1,
-    textShadow: "0 1px 4px rgba(0,0,0,0.8)",
-  },
-  panelCanvas: {
-    position: "absolute", top: 0, left: 0,
-    width: "100%", height: "100%", objectFit: "contain",
-  },
-  panelOverlay: { zIndex: 5 },
-  sliceSlider: {
-    position: "absolute", bottom: 4, left: "50%", transform: "translateX(-50%)",
-    width: "80%", zIndex: 10, accentColor: C.blue, cursor: "pointer",
-  },
-  wlOverlay: {
-    position: "absolute", bottom: 24, right: 6, zIndex: 10,
-    color: C.muted, fontSize: 9, fontFamily: "monospace",
-    textShadow: "0 1px 2px #000",
-  },
-  resetPanBtn: {
-    position: "absolute", top: 6, right: 6, zIndex: 10,
-    background: "rgba(0,0,0,0.4)", border: "none", color: C.muted,
-    fontSize: 14, width: 22, height: 22, borderRadius: 4, cursor: "pointer",
-    display: "flex", alignItems: "center", justifyContent: "center",
-  },
-  panel3D: {
-    position: "relative", background: "#020617", overflow: "hidden",
-    border: `2px solid ${C.border}`,
-  },
-  panel3DLabel: {
-    position: "absolute", top: 8, left: 10, zIndex: 10,
-    fontSize: 11, fontWeight: 700, color: "#a78bfa", letterSpacing: 1,
-  },
-  panel3DContent: {
-    width: "100%", height: "100%",
-    display: "flex", alignItems: "center", justifyContent: "center",
-    flexDirection: "column", gap: 8,
-  },
-  panel3DGlobe: {
-    border: "1px solid #1e3a5f", borderRadius: "50%", width: 180, height: 180,
-    display: "flex", flexDirection: "column",
-    alignItems: "center", justifyContent: "center", gap: 4,
-    background: "radial-gradient(circle at 40% 40%, #0c1a2e 0%, #020617 70%)",
-    boxShadow: "0 0 60px #1d4ed822",
-  },
-  panel3DTitle: { color: "#a78bfa", fontSize: 12, fontWeight: 700, marginBottom: 4 },
-  panel3DStat:  { color: "#475569", fontSize: 10 },
-  panel3DHint:  { color: "#334155", fontSize: 10, marginTop: 8, textAlign: "center", lineHeight: 1.5 },
-  crosshairIndicator: {
-    position: "absolute", bottom: 10, left: "50%", transform: "translateX(-50%)",
-    color: "#334155", fontSize: 10, fontFamily: "monospace",
-  },
-  implantPicker: {
-    position: "absolute", top: 52, left: 48, zIndex: 100,
-    background: C.surface, border: `1px solid ${C.border}`,
-    borderRadius: 10, padding: 12, width: 240,
-    boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
-  },
-  implantPickerTitle: {
-    fontSize: 12, fontWeight: 700, color: C.text, marginBottom: 8,
-    display: "flex", justifyContent: "space-between",
-  },
-  implantClose: {
-    background: "none", border: "none", color: C.muted, cursor: "pointer", fontSize: 14, padding: 0,
-  },
-  implantRow: {
-    display: "flex", alignItems: "center", gap: 8,
-    padding: "6px 8px", borderRadius: 6, cursor: "pointer",
-    marginBottom: 2, transition: "background 0.1s",
-  },
-  implantName: { color: C.text, fontSize: 11, flex: 1 },
-  implantDims: { color: C.muted, fontSize: 10 },
-  sidebar: {
-    width: 220, background: C.surface, borderLeft: `1px solid ${C.border}`,
-    overflowY: "auto", flexShrink: 0,
-    display: "flex", flexDirection: "column", gap: 0,
-  },
-  sidebarSection: { padding: "12px 14px", borderBottom: `1px solid ${C.border}` },
-  sidebarTitle: {
-    fontSize: 10, fontWeight: 700, color: C.muted,
-    letterSpacing: 1, textTransform: "uppercase", marginBottom: 8,
-    display: "flex", alignItems: "center", gap: 6,
-  },
-  wlRow:    { display: "flex", alignItems: "center", gap: 6, marginBottom: 6 },
-  wlLabel:  { color: C.muted, fontSize: 10, width: 10 },
-  wlRange:  { flex: 1, accentColor: C.blue, cursor: "pointer" },
-  wlVal:    { color: C.muted, fontSize: 10, width: 36, textAlign: "right" },
-  sliceRow: { display: "flex", alignItems: "center", gap: 6, marginBottom: 5 },
-  sliceLabel: { fontSize: 10, fontWeight: 700, width: 28 },
-  annoBadge: {
-    background: "#1d4ed8", color: "#93c5fd",
-    fontSize: 9, padding: "1px 6px", borderRadius: 8, marginLeft: 4,
-  },
-  annoEmpty: { color: "#334155", fontSize: 11 },
-  annoList:  { display: "flex", flexDirection: "column", gap: 4 },
-  annoItem: {
-    display: "flex", alignItems: "center", gap: 6,
-    background: "#0f172a", borderRadius: 6, padding: "4px 6px",
-  },
-  annoType:   { fontSize: 12, width: 14 },
-  annoText:   { flex: 1, color: C.text, fontSize: 10 },
-  annoView:   { color: C.muted },
-  annoDelBtn: {
-    background: "none", border: "none", color: "#475569",
-    cursor: "pointer", fontSize: 11, padding: 0,
-  },
-  changeImplantBtn: {
-    marginTop: 6, background: C.border, border: "none",
-    color: C.muted, fontSize: 10, padding: "4px 8px",
-    borderRadius: 5, cursor: "pointer", fontFamily: "inherit",
-  },
-  kbGrid: {
-    display: "grid", gridTemplateColumns: "auto 1fr",
-    gap: "4px 8px", alignItems: "center",
-  },
-  kbd:     { background: C.border, color: C.text, padding: "1px 5px", borderRadius: 3, fontSize: 9, fontFamily: "monospace" },
-  kbLabel: { color: C.muted, fontSize: 10 },
-  loadingScreen: {
-    display: "flex", alignItems: "center", justifyContent: "center",
-    width: "100vw", height: "100vh", background: C.bg,
-    flexDirection: "column", gap: 16,
-  },
-  loadingInner:  { display: "flex", flexDirection: "column", alignItems: "center", gap: 12 },
-  loadingSpinner: {
-    width: 40, height: 40, borderRadius: "50%",
-    border: `3px solid ${C.border}`, borderTop: `3px solid ${C.blue}`,
-    animation: "spin 0.8s linear infinite",
-  },
-  loadingMsg: { color: C.blue,  fontSize: 14 },
-  loadingSub: { color: C.muted, fontSize: 11 },
-};
+          <Sec title="2 · Nerve canal" done={plan.nerves.length > 0}>
+            {temp?.kind === "nerve" ? (
+              <div className="cv-row">
+                <div className="cv-seg sm">{["R", "L"].map((s) => <button key={s} type="button" className={temp.side === s ? "on" : ""} onClick={() => setTemp((t) => ({ ...t, side: s }))}>{s === "R" ? "Right" : "Left"}</button>)}</div>
+                <button type="button" className="cv-btn primary sm" onClick={finishNerve}>Done ({temp.points.length})</button>
+                <button type="button" className="cv-btn ghost sm" onClick={() => setTemp(null)}>Cancel</button>
+              </div>
+            ) : (
+              <div className="cv-row">
+                <button type="button" className="cv-btn ghost" disabled={!arch} onClick={() => { setTool("nerve"); setTemp({ kind: "nerve", side: "R", diameter: 2, points: [] }); }}>⟿ Trace right</button>
+                <button type="button" className="cv-btn ghost" disabled={!arch} onClick={() => { setTool("nerve"); setTemp({ kind: "nerve", side: "L", diameter: 2, points: [] }); }}>⟿ Trace left</button>
+              </div>
+            )}
+            {plan.nerves.map((n) => (
+              <div key={n.id} className={`cv-item ${selectedId === n.id ? "sel" : ""}`} onClick={() => setSelectedId(n.id)}>
+                <span style={{ color: COLORS.nerve, fontWeight: 800 }}>⟿</span>
+                <span className="cv-grow">{n.side === "L" ? "Left" : "Right"} nerve · {n.points.length} points</span>
+                <select className="cv-sel" value={n.diameter || 2} onClick={(e) => e.stopPropagation()} onChange={(e) => setPlan((p) => ({ ...p, nerves: p.nerves.map((x) => (x.id === n.id ? { ...x, diameter: Number(e.target.value) } : x)) }))} aria-label="Canal diameter">
+                  {[1.5, 2, 2.5, 3, 3.5].map((d) => <option key={d} value={d}>Ø {d} mm</option>)}
+                </select>
+                <button type="button" className="cv-x" onClick={(e) => { e.stopPropagation(); setPlan((p) => ({ ...p, nerves: p.nerves.filter((x) => x.id !== n.id) })); }} aria-label="Delete nerve">✕</button>
+              </div>
+            ))}
+            {selNerve && <p className="cv-help">Drag the nerve's points (Navigate tool) in any view to correct it. Check it in the cross-sections.</p>}
+            <Range label="Safety margin" unit="mm" min={0.5} max={5} step={0.5} value={plan.safety} set={(v) => setPlan((p) => ({ ...p, safety: v }))} />
+            <label className="cv-check"><input type="checkbox" checked={plan.showSafety !== false} onChange={(e) => setPlan((p) => ({ ...p, showSafety: e.target.checked }), { record: false })} /> Show safety zone around implants</label>
+          </Sec>
+
+          <Sec title={`3 · Implants (${plan.implants.length})`} done={plan.implants.length > 0}>
+            <div className="cv-row">
+              <button type="button" className={`cv-btn ${tool === "implant" ? "primary" : "ghost"}`} disabled={!arch} onClick={() => setTool("implant")}>🔩 Place implant</button>
+              {tool === "implant" && <span className="cv-small">Tap the bone crest on the cross-section</span>}
+            </div>
+            {rows.map((r, i) => {
+              const im = plan.implants[i];
+              return (
+                <div key={im.id} className={`cv-item imp ${selectedId === im.id ? "sel" : ""} ${r.nerveWarn ? "bad" : ""}`} onClick={() => selectImplant(im.id)}>
+                  <b>#{im.tooth || "?"}</b>
+                  <span className="cv-grow">{im.system} Ø{im.diameter}×{im.length}</span>
+                  <span className={r.nerveWarn ? "cv-badv" : "cv-okv"} title="Distance to the nerve">{r.nerve === "no nerve traced" ? "—" : r.nerve}</span>
+                </div>
+              );
+            })}
+            {sel && (
+              <div className="cv-editor">
+                <div className="cv-row">
+                  <span className="cv-lbl">Tooth</span>
+                  <select className="cv-sel" value={sel.tooth || ""} onChange={(e) => upd(sel.id, { tooth: e.target.value })}>
+                    <option value="">—</option>{FDI.map((t) => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                  <select className="cv-sel grow" value={sel.system} onChange={(e) => { upd(sel.id, { system: e.target.value }); saveDefault({ ...sel, system: e.target.value }); }} aria-label="Implant system">
+                    {IMPLANT_SYSTEMS.map((s) => <option key={s}>{s}</option>)}
+                  </select>
+                </div>
+                <div className="cv-row">
+                  <span className="cv-lbl">Ø</span>
+                  <select className="cv-sel" value={sel.diameter} onChange={(e) => { const d = Number(e.target.value); upd(sel.id, { diameter: d }); saveDefault({ ...sel, diameter: d }); }}>
+                    {IMPLANT_DIAMETERS.map((d) => <option key={d} value={Number(d)}>{d} mm</option>)}
+                  </select>
+                  <span className="cv-lbl">L</span>
+                  <select className="cv-sel" value={sel.length} onChange={(e) => { const l = Number(e.target.value); upd(sel.id, { length: l }); saveDefault({ ...sel, length: l }); }}>
+                    {IMPLANT_LENGTHS.map((d) => <option key={d} value={Number(d)}>{d} mm</option>)}
+                  </select>
+                </div>
+                <div className="cv-row wrap">
+                  <span className="cv-lbl">Depth</span>
+                  <button type="button" className="cv-btn ghost sm" onClick={() => upd(sel.id, { top: add(sel.top, mul(sel.axis, -0.5)) })}>▲ 0.5</button>
+                  <button type="button" className="cv-btn ghost sm" onClick={() => upd(sel.id, { top: add(sel.top, mul(sel.axis, 0.5)) })}>▼ 0.5</button>
+                  <span className="cv-lbl">Tilt</span>
+                  <button type="button" className="cv-btn ghost sm" title="Towards the cheek / tongue" onClick={() => tiltBy(sel, "bl", -2)}>B ↶</button>
+                  <button type="button" className="cv-btn ghost sm" title="Towards the cheek / tongue" onClick={() => tiltBy(sel, "bl", 2)}>↷ L</button>
+                  <button type="button" className="cv-btn ghost sm" title="Towards the front / back" onClick={() => tiltBy(sel, "md", -2)}>M ↶</button>
+                  <button type="button" className="cv-btn ghost sm" title="Towards the front / back" onClick={() => tiltBy(sel, "md", 2)}>↷ D</button>
+                  <button type="button" className="cv-btn ghost sm" onClick={() => upd(sel.id, { axis: [0, 0, sel.axis[2] >= 0 ? 1 : -1] })}>Straight</button>
+                </div>
+                {(() => {
+                  const g = implantNerveGap(sel, plan.nerves), dn = implantDensity(sel, vol);
+                  const nb = plan.implants.filter((o) => o.id !== sel.id).map((o) => implantGap(sel, o));
+                  const near = nb.length ? Math.min(...nb) : null;
+                  return (
+                    <div className="cv-stats">
+                      <div className={g && g.gap < plan.safety ? "bad" : ""}><small>To nerve</small><b>{g ? (g.gap < 0 ? `INTO by ${r1(-g.gap)} mm` : `${r1(g.gap)} mm`) : "—"}</b></div>
+                      <div className={near != null && near < 3 ? "bad" : ""}><small>Next implant</small><b>{near != null ? `${r1(near)} mm` : "—"}</b></div>
+                      <div><small>Bone (approx.)</small><b>{dn ? `${dn.hu} HU · ${dn.cls}` : "—"}</b></div>
+                      <div><small>Tilt</small><b>{implantTilt(sel)}°</b></div>
+                    </div>
+                  );
+                })()}
+                <input className="cv-in" placeholder="Note (e.g. bone graft, sinus lift)" value={sel.note || ""} onChange={(e) => upd(sel.id, { note: e.target.value })} />
+                <div className="cv-row">
+                  <button type="button" className="cv-btn ghost sm" onClick={() => { const c = { ...sel, id: uid(), top: add(sel.top, [7, 0, 0]) }; setPlan((p) => ({ ...p, implants: [...p.implants, c] })); setSelectedId(c.id); }}>Duplicate</button>
+                  <button type="button" className="cv-btn danger sm" onClick={removeSelected}>Delete implant</button>
+                </div>
+              </div>
+            )}
+          </Sec>
+        </>
+      )}
+
+      <Sec title={`Measurements (${plan.measures.length})`}>
+        <div className="cv-row wrap">
+          {["dist", "angle", "hu"].map((k) => <button key={k} type="button" className={`cv-btn ${tool === k ? "primary" : "ghost"} sm`} onClick={() => setTool(k)}>{TOOLS[k].icon} {TOOLS[k].label}</button>)}
+        </div>
+        {plan.measures.map((m) => (
+          <div key={m.id} className={`cv-item ${selectedId === m.id ? "sel" : ""}`} onClick={() => { setSelectedId(m.id); setCursor(m.points[0]); }}>
+            <span>{m.type === "hu" ? "◉" : m.type === "angle" ? "∠" : "📏"}</span>
+            <span className="cv-grow">{m.type === "hu" ? `${m.value} HU` : m.type === "angle" ? `${m.value}°` : `${m.value} mm`}</span>
+            <span className="cv-small">{VIEW_TITLE[m.view]}</span>
+            <button type="button" className="cv-x" onClick={(e) => { e.stopPropagation(); setPlan((p) => ({ ...p, measures: p.measures.filter((x) => x.id !== m.id) })); }} aria-label="Delete">✕</button>
+          </div>
+        ))}
+      </Sec>
+
+      <Sec title="Display">
+        <div className="cv-row wrap">{PRESETS.map((p) => <button key={p.name} type="button" className={`cv-btn sm ${wl.w === p.w && wl.l === p.l ? "primary" : "ghost"}`} onClick={() => setWl({ w: p.w, l: p.l })}>{p.name}</button>)}</div>
+        <Range label="Contrast (window)" min={50} max={8000} step={50} value={wl.w} set={(v) => setWl((x) => ({ ...x, w: v }))} />
+        <Range label="Brightness (level)" min={-1000} max={4000} step={25} value={wl.l} set={(v) => setWl((x) => ({ ...x, l: v }))} />
+        <label className="cv-check"><input type="checkbox" checked={invert} onChange={(e) => setInvert(e.target.checked)} /> Invert (black bone)</label>
+        {mode === "mpr" && (
+          <>
+            <Range label="Slice thickness" unit="mm" min={0} max={20} step={1} value={slab} set={setSlab} />
+            <label className="cv-check"><input type="checkbox" checked={mip} onChange={(e) => setMip(e.target.checked)} /> Brightest point (MIP) in thick slices</label>
+          </>
+        )}
+      </Sec>
+      {vol.source === "slices" && (
+        <div className="cv-sec" style={{ padding: 10 }}>
+          <p className="cv-help">This older scan was opened from its slice pictures (density values are approximate). For full quality:</p>
+          <button type="button" className="cv-btn ghost sm" style={{ marginTop: 6 }} onClick={rebuild}>Rebuild from the original DICOM</button>
+        </div>
+      )}
+      <p className="cv-help" style={{ marginTop: 6 }}>Planning aid — confirm clinically. CBCT grey values (HU) are approximate.</p>
+    </div>
+  );
+}
+
+function Sec({ title, done, children }) {
+  const [open, setOpen] = useState(true);
+  return (
+    <div className="cv-sec">
+      <button type="button" className="cv-sec-h" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
+        <span>{done ? "✅ " : ""}{title}</span><span>{open ? "▾" : "▸"}</span>
+      </button>
+      {open && <div className="cv-sec-b">{children}</div>}
+    </div>
+  );
+}
+function Range({ label, unit = "", min, max, step, value, set }) {
+  return (
+    <label className="cv-range">
+      <span>{label}</span><b>{value}{unit ? ` ${unit}` : ""}</b>
+      <input type="range" min={min} max={max} step={step} value={value} onChange={(e) => set(Number(e.target.value))} />
+    </label>
+  );
+}
+function Menu({ label, items }) {
+  const [open, setOpen] = useState(false);
+  useEffect(() => { if (!open) return undefined; const f = () => setOpen(false); setTimeout(() => window.addEventListener("click", f), 0); return () => window.removeEventListener("click", f); }, [open]);
+  return (
+    <span className="cv-menu">
+      <button type="button" className="cv-btn ghost" onClick={() => setOpen((o) => !o)} aria-expanded={open}>{label}</button>
+      {open && <div className="cv-menu-list">{items.map(([t, fn]) => <button key={t} type="button" onClick={() => { setOpen(false); fn(); }}>{t}</button>)}</div>}
+    </span>
+  );
+}
+
+/* ═════════════════════════════════════════════════════════════════════════ */
+const CSS = `
+.cv-root,.cv-full{position:fixed;inset:0;display:flex;flex-direction:column;background:#020617;color:#e2e8f0;font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;overflow:hidden;touch-action:none;user-select:none;-webkit-user-select:none}
+.cv-center{margin:auto;display:flex;flex-direction:column;align-items:center;gap:12px;text-align:center;padding:20px}
+.cv-spin{width:36px;height:36px;border-radius:50%;border:3px solid #1e293b;border-top-color:#3b82f6;animation:cvspin .8s linear infinite}
+@keyframes cvspin{to{transform:rotate(360deg)}}
+.cv-prog{width:min(320px,80vw);height:6px;background:#1e293b;border-radius:6px;overflow:hidden}.cv-prog i{display:block;height:100%;background:linear-gradient(90deg,#2563eb,#38bdf8);transition:width .3s}
+.cv-top{display:flex;align-items:center;gap:10px;padding:6px 10px;background:#0f172a;border-bottom:1px solid #1e293b;flex-shrink:0;min-height:46px}
+.cv-brand{font-weight:800;color:#60a5fa;white-space:nowrap}
+.cv-meta{font-size:11.5px;color:#94a3b8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1}
+.cv-topr{display:flex;gap:6px;align-items:center;margin-left:auto}
+.cv-seg{display:inline-flex;background:#1e293b;border-radius:9px;padding:2px}
+.cv-seg button{border:none;background:none;color:#94a3b8;font:600 12.5px system-ui,sans-serif;padding:6px 11px;border-radius:7px;cursor:pointer;white-space:nowrap}
+.cv-seg button.on{background:#2563eb;color:#fff}
+.cv-seg.sm button{padding:4px 9px;font-size:12px}
+.cv-btn{border:1px solid transparent;border-radius:8px;padding:7px 12px;font:600 12.5px system-ui,sans-serif;cursor:pointer;background:#1e293b;color:#e2e8f0;white-space:nowrap;touch-action:manipulation}
+.cv-btn.sm{padding:4px 9px;font-size:12px}
+.cv-btn.ghost{background:#0f172a;border-color:#334155}
+.cv-btn.primary{background:#2563eb;color:#fff}
+.cv-btn.ok{background:#15803d;color:#fff}
+.cv-btn.danger{background:#7f1d1d;color:#fecaca}
+.cv-btn:disabled{opacity:.4;cursor:default}
+.cv-menu{position:relative}
+.cv-menu-list{position:absolute;right:0;top:calc(100% + 6px);background:#0f172a;border:1px solid #334155;border-radius:10px;padding:6px;z-index:50;min-width:260px;box-shadow:0 12px 30px rgba(0,0,0,.5)}
+.cv-menu-list button{display:block;width:100%;text-align:left;border:none;background:none;color:#e2e8f0;padding:9px 10px;border-radius:7px;font:500 13px system-ui,sans-serif;cursor:pointer}
+.cv-menu-list button:hover{background:#1e293b}
+.cv-body{flex:1;display:flex;min-height:0;position:relative}
+.cv-tools{display:flex;flex-direction:column;gap:3px;padding:6px 4px;background:#0f172a;border-right:1px solid #1e293b;overflow-y:auto;flex-shrink:0;width:66px}
+.cv-tool{display:flex;flex-direction:column;align-items:center;gap:1px;border:none;background:none;color:#94a3b8;border-radius:8px;padding:6px 2px;cursor:pointer;touch-action:manipulation}
+.cv-tool .cv-ti{font-size:17px;line-height:1}.cv-tool .cv-tl{font-size:9.5px;font-weight:600}
+.cv-tool.on{background:#1d4ed8;color:#fff}
+.cv-grid{flex:1;display:grid;gap:3px;background:#000;min-width:0;min-height:0}
+.cv-grid.quad{grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr}
+.cv-grid.implant{grid-template-columns:1fr 1fr 1fr;grid-template-rows:44% 56%;grid-template-areas:"a a a" "b c d"}
+.cv-grid.implant > :nth-child(1){grid-area:a}.cv-grid.implant > :nth-child(2){grid-area:b}.cv-grid.implant > :nth-child(3){grid-area:c}.cv-grid.implant > :nth-child(4){grid-area:d}
+.cv-grid.one{grid-template-columns:1fr;grid-template-rows:1fr}
+.cv-pane{position:relative;display:flex;flex-direction:column;background:#000;min-width:0;min-height:0;border:1.5px solid #111827}
+.cv-pane.active{border-color:var(--vc)}
+.cv-pane-head{display:flex;align-items:center;gap:8px;padding:3px 6px;background:rgba(15,23,42,.92);font-size:12px;flex-shrink:0}
+.cv-pane-title{font-weight:800;letter-spacing:.03em}
+.cv-pane-pos{color:#64748b;font-size:11px}
+.cv-mini{border:none;background:#1e293b;color:#cbd5e1;border-radius:6px;min-width:24px;height:22px;font-size:12px;cursor:pointer;touch-action:manipulation}
+.cv-sel{background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:6px;padding:3px 5px;font-size:12px}
+.cv-sel.grow{flex:1;min-width:0}
+.cv-pane-body{position:relative;flex:1;min-height:0;overflow:hidden}
+.cv-canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+.cv-over{touch-action:none}
+.cv-hover{position:absolute;right:6px;top:6px;font-size:11px;color:#22d3ee;background:rgba(2,6,23,.7);padding:2px 6px;border-radius:5px;pointer-events:none}
+.cv-slider{width:100%;margin:0;accent-color:var(--vc);height:22px;background:#0f172a;flex-shrink:0}
+.cv-3dbar{display:flex;gap:10px;flex-wrap:wrap;padding:3px 8px;background:#0f172a;font-size:10.5px;color:#94a3b8;flex-shrink:0}
+.cv-3dbar label{display:flex;align-items:center;gap:4px}.cv-3dbar input{width:80px;accent-color:#a78bfa}
+.cv-3derr{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;padding:20px;color:#94a3b8;font-size:13px}
+.cv-panel{width:320px;flex-shrink:0;background:#0b1222;border-left:1px solid #1e293b;overflow-y:auto}
+.cv-panel.sheet{position:absolute;right:0;top:0;bottom:0;z-index:30;box-shadow:-10px 0 30px rgba(0,0,0,.5);width:min(360px,92vw)}
+.cv-sheet-head{display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border-bottom:1px solid #1e293b;position:sticky;top:0;background:#0b1222;z-index:2}
+.cv-panel-in{padding:8px}
+.cv-sec{border:1px solid #1e293b;border-radius:10px;margin-bottom:8px;overflow:hidden}
+.cv-sec-h{display:flex;justify-content:space-between;width:100%;border:none;background:#0f172a;color:#e2e8f0;font:700 13px system-ui,sans-serif;padding:9px 10px;cursor:pointer}
+.cv-sec-b{padding:8px 10px;display:flex;flex-direction:column;gap:7px}
+.cv-row{display:flex;align-items:center;gap:6px}.cv-row.wrap{flex-wrap:wrap}
+.cv-lbl{font-size:11.5px;color:#94a3b8;font-weight:600}
+.cv-small{font-size:11.5px;color:#94a3b8}
+.cv-help{font-size:11.5px;color:#94a3b8;margin:0;line-height:1.45}
+.cv-check{display:flex;gap:6px;align-items:center;font-size:12.5px;color:#cbd5e1}
+.cv-range{display:grid;grid-template-columns:1fr auto;gap:2px 8px;font-size:12px;color:#94a3b8}
+.cv-range b{color:#e2e8f0;font-weight:700}.cv-range input{grid-column:1/-1;width:100%;accent-color:#3b82f6}
+.cv-item{display:flex;align-items:center;gap:7px;padding:7px 8px;border-radius:8px;background:#0f172a;border:1px solid #1e293b;font-size:12.5px;cursor:pointer}
+.cv-item.sel{border-color:#facc15}.cv-item.bad{border-color:#ef4444}
+.cv-grow{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cv-x{border:none;background:none;color:#64748b;cursor:pointer;font-size:13px}
+.cv-okv{color:#4ade80;font-weight:700;font-size:12px}.cv-badv{color:#f87171;font-weight:800;font-size:12px}
+.cv-editor{border:1px solid #facc15;border-radius:10px;padding:8px;display:flex;flex-direction:column;gap:7px;background:#0f172a}
+.cv-stats{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.cv-stats div{background:#020617;border-radius:8px;padding:6px 8px;display:flex;flex-direction:column}
+.cv-stats small{font-size:10.5px;color:#64748b}.cv-stats b{font-size:13px}.cv-stats .bad b{color:#f87171}
+.cv-in{background:#020617;color:#e2e8f0;border:1px solid #334155;border-radius:8px;padding:7px 9px;font-size:12.5px;width:100%;box-sizing:border-box;user-select:text}
+.cv-hint{display:flex;align-items:center;gap:10px;justify-content:space-between;padding:6px 10px;background:#0f172a;border-top:1px solid #1e293b;font-size:12px;color:#94a3b8;flex-shrink:0;min-height:34px}
+.cv-hint-btns{display:flex;gap:6px;flex-shrink:0}
+.cv-toast{position:fixed;left:50%;bottom:64px;transform:translateX(-50%);background:#1e3a8a;color:#fff;padding:9px 14px;border-radius:10px;font-size:13px;z-index:60;max-width:92vw;box-shadow:0 8px 24px rgba(0,0,0,.4)}
+.cv-toast.warn{background:#92400e}.cv-toast.err{background:#991b1b}
+.cv-busy{position:fixed;inset:0;background:rgba(2,6,23,.7);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;z-index:70;color:#bfdbfe}
+.cv-viewtabs{display:flex;gap:4px;padding:4px 6px;background:#0f172a;border-bottom:1px solid #1e293b;overflow-x:auto;flex-shrink:0}
+.cv-viewtabs button{flex:1;border:none;border-radius:8px;padding:7px 6px;background:#1e293b;color:#cbd5e1;font:700 12.5px system-ui,sans-serif;white-space:nowrap}
+.cv-viewtabs button.on{background:var(--vc);color:#020617}
+/* phones: tools along the bottom, one view at a time */
+.cv-root.phone .cv-body{flex-direction:column}
+.cv-root.phone .cv-tools{flex-direction:row;width:auto;order:2;border-right:none;border-top:1px solid #1e293b;overflow-x:auto;overflow-y:hidden;padding:4px}
+.cv-root.phone .cv-tool{min-width:56px}
+.cv-root.phone .cv-hide-phone{display:none}
+.cv-root.phone .cv-top{gap:6px;padding:5px 6px}
+.cv-root.phone .cv-seg button{padding:6px 8px;font-size:12px}
+.cv-root.phone .cv-btn{padding:7px 9px}
+.cv-root.phone .cv-panel.sheet{left:0;right:0;top:auto;bottom:0;width:auto;max-height:62%;border-radius:14px 14px 0 0;border-left:none;border-top:1px solid #334155}
+.cv-root.phone .cv-hint{font-size:11.5px;flex-wrap:wrap}
+.cv-root.tablet .cv-grid.implant{grid-template-columns:1fr 1fr;grid-template-rows:40% 60%;grid-template-areas:"a a" "b c"}
+.cv-root.tablet .cv-grid.implant > :nth-child(4){display:none}
+`;

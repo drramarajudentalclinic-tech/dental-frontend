@@ -311,9 +311,9 @@ export default function CBCTSection({ visitId, apiBase = API }) {
                 <button
                   style={s.openBtn}
                   onClick={() => openViewer(vol.id)}
-                  title="Open full CBCT viewer in new tab"
+                  title="Open the CBCT viewer and implant planner in a new tab"
                 >
-                  🖥 View CBCT
+                  🖥 View / Plan
                 </button>
                 <button
                   style={s.exportBtn}
@@ -338,14 +338,14 @@ export default function CBCTSection({ visitId, apiBase = API }) {
       {/* ── Feature legend ── */}
       <div style={s.legend}>
         {[
-          ["↕", "Scroll slices"],
-          ["↔", "Distance measure"],
-          ["∠", "Angle measure"],
-          ["◑", "Window/Level"],
-          ["⊥", "Implant planning"],
-          ["~", "IAN nerve trace"],
-          ["⬤", "HU density probe"],
-          ["💾", "Save annotations"],
+          ["▦", "Axial · Coronal · Sagittal · 3-D"],
+          ["〰", "Panoramic + cross-sections"],
+          ["⟿", "Nerve canal in every view"],
+          ["🔩", "Implant planning (clinic systems)"],
+          ["⚠", "Nerve / implant distance alerts"],
+          ["📏", "Distance · angle · density (HU)"],
+          ["📄", "Report: PDF · picture · plan file"],
+          ["📱", "Phone · tablet · laptop · desktop"],
         ].map(([icon, label]) => (
           <div key={label} style={s.legendItem}>
             <span style={s.legendIcon}>{icon}</span>
