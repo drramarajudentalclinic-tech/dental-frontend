@@ -16,7 +16,8 @@ in vec2 uv; out vec4 color;
 uniform sampler3D vol;
 uniform mat4 invVP;
 uniform vec3 boxSize;      // physical size, largest side = 1
-uniform int mode;          // 0 bone, 1 mip, 2 soft
+uniform int mode;          // 0 bone, 1 mip, 2 soft, 3 colour (VR)
+uniform float softLo;
 uniform float thr;         // threshold (0..1 of the value range)
 uniform float steps;
 uniform vec3 clipLo; uniform vec3 clipHi;
@@ -42,6 +43,29 @@ void main(){
     if (flipZ > 0.5) tc.z = 1.0 - tc.z;
     float v = val(tc);
     if (mode == 1) { mx = max(mx, v); continue; }
+    if (mode == 3) {
+      // colour volume rendering: faint soft tissue, orange → ivory bone and teeth, lit
+      float soft = smoothstep(softLo, softLo + 0.03, v) * (1.0 - smoothstep(thr - 0.03, thr, v));
+      float bone = smoothstep(thr - 0.02, thr + 0.08, v);
+      float o = soft * 0.006 + bone * 0.30;
+      if (o > 0.002) {
+        vec3 g = vec3(val(tc + vec3(texel.x,0,0)) - val(tc - vec3(texel.x,0,0)),
+                      val(tc + vec3(0,texel.y,0)) - val(tc - vec3(0,texel.y,0)),
+                      val(tc + vec3(0,0,texel.z)) - val(tc - vec3(0,0,texel.z)));
+        if (flipZ > 0.5) g.z = -g.z;
+        vec3 n = normalize(-g + 1e-6);
+        vec3 l = normalize(-rd + vec3(0.25, 0.45, 0.5));
+        float lit = 0.32 + 0.8 * abs(dot(n, l));
+        float spec = pow(max(dot(reflect(-l, n), -rd), 0.0), 20.0) * 0.18 * bone;
+        vec3 c = bone > 0.02
+          ? mix(vec3(0.80, 0.42, 0.16), vec3(1.0, 0.94, 0.80), clamp((v - thr) * 3.2, 0.0, 1.0))
+          : vec3(0.85, 0.42, 0.36);
+        c = c * lit + spec;
+        acc += (1.0 - a) * o * c; a += (1.0 - a) * o;
+        if (a > 0.97) break;
+      }
+      continue;
+    }
     if (mode == 0) {
       if (v > thr) {
         // refine and shade
@@ -67,6 +91,7 @@ void main(){
   }
   if (mode == 1) { float g = clamp((mx - thr) / max(1.0 - thr, 0.01), 0.0, 1.0); color = vec4(vec3(g), 1.0); return; }
   if (mode == 0) { color = vec4(0.03, 0.05, 0.09, 1.0); return; }
+  if (mode == 3) { color = vec4(acc + (1.0 - a) * vec3(0.02, 0.03, 0.06), 1.0); return; }
   color = vec4(acc + (1.0 - a) * vec3(0.03, 0.05, 0.09), 1.0);
 }`;
 
@@ -144,7 +169,7 @@ export class Renderer3D {
     const m = Math.max(vol.X, vol.Y, vol.Z);
     this.box = [vol.X / m, vol.Y / m, vol.Z / m];
     this.mm = m;
-    this.u = Object.fromEntries(["vol", "invVP", "boxSize", "mode", "thr", "steps", "clipLo", "clipHi", "texel", "flipZ"].map((n) => [n, gl.getUniformLocation(prog, n)]));
+    this.u = Object.fromEntries(["vol", "invVP", "boxSize", "mode", "thr", "steps", "clipLo", "clipHi", "texel", "flipZ", "softLo"].map((n) => [n, gl.getUniformLocation(prog, n)]));
     this.yaw = 0; this.pitch = 0.15; this.zoom = 1;
   }
   /* box coordinates: x → right, y → front-to-back, z → head (flipped when the scan's z goes down) */
@@ -181,9 +206,10 @@ export class Renderer3D {
     const { inv } = this.matrices(W, H);
     gl.uniformMatrix4fv(this.u.invVP, false, inv);
     gl.uniform3fv(this.u.boxSize, this.box);
-    gl.uniform1i(this.u.mode, mode === "mip" ? 1 : mode === "soft" ? 2 : 0);
+    gl.uniform1i(this.u.mode, mode === "mip" ? 1 : mode === "soft" ? 2 : mode === "color" ? 3 : 0);
+    gl.uniform1f(this.u.softLo, Math.max(0, Math.min(1, vol.valueOfHu(-200) / 255)));
     gl.uniform1f(this.u.thr, Math.max(0, Math.min(1, vol.valueOfHu(thresholdHu) / 255)));
-    gl.uniform1f(this.u.steps, quick ? 160 : 420);
+    gl.uniform1f(this.u.steps, quick ? 180 : mode === "color" ? 520 : 420);
     gl.uniform3fv(this.u.clipLo, clip ? clip.lo : [0, 0, 0]);
     gl.uniform3fv(this.u.clipHi, clip ? clip.hi : [1, 1, 1]);
     gl.uniform3fv(this.u.texel, [1 / vol.nx, 1 / vol.ny, 1 / vol.nz]);

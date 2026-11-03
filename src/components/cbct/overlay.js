@@ -14,6 +14,7 @@ export const COLORS = {
 const LETTERS = {
   axial: ["R", "L", "A", "P"], coronal: ["R", "L", "S", "I"], sagittal: ["A", "P", "S", "I"],
   pano: ["R", "L", "S", "I"], cross: ["B", "L", "S", "I"],
+  tmjRs: ["A", "P", "S", "I"], tmjLs: ["A", "P", "S", "I"], tmjRc: ["R", "L", "S", "I"], tmjLc: ["R", "L", "S", "I"],
 };
 
 export function drawOverlay(ctx, view, cam, W, H, S, opts = {}) {
@@ -31,15 +32,25 @@ export function drawOverlay(ctx, view, cam, W, H, S, opts = {}) {
     ctx.fillStyle = color; ctx.fillText(txt, x, y);
   };
 
-  /* ── cross-hair (MPR) ── */
+  /* ── cross-hair (MPR): the other two planes, in their colours; round handles rotate them ── */
   if (showCross && cursor && ["axial", "coronal", "sagittal"].includes(view.kind) && !report) {
-    const c = P(cursor);
-    ctx.setLineDash([5 * f, 5 * f]); ctx.lineWidth = 1 * f; ctx.globalAlpha = 0.75;
-    const hcol = view.kind === "axial" ? COLORS.coronal : COLORS.axial;
-    const vcol = view.kind === "sagittal" ? COLORS.coronal : COLORS.sagittal;
-    ctx.strokeStyle = hcol; ctx.beginPath(); ctx.moveTo(0, c.y); ctx.lineTo(W, c.y); ctx.stroke();
-    ctx.strokeStyle = vcol; ctx.beginPath(); ctx.moveTo(c.x, 0); ctx.lineTo(c.x, H); ctx.stroke();
-    ctx.setLineDash([]); ctx.globalAlpha = 1;
+    const lines = crossLines(view, cam, W, H, S);
+    const gap = 14 * f;
+    ctx.lineWidth = 1.4 * f; ctx.globalAlpha = 0.9;
+    for (const L of lines) {
+      ctx.strokeStyle = COLORS[L.other];
+      ctx.beginPath();
+      ctx.moveTo(L.c.x - L.dx * 4000, L.c.y - L.dy * 4000); ctx.lineTo(L.c.x - L.dx * gap, L.c.y - L.dy * gap);
+      ctx.moveTo(L.c.x + L.dx * gap, L.c.y + L.dy * gap); ctx.lineTo(L.c.x + L.dx * 4000, L.c.y + L.dy * 4000);
+      ctx.stroke();
+      if (S.tool === "nav" && S.rotatable) {
+        for (const h of L.handles) {
+          ctx.beginPath(); ctx.arc(h.x, h.y, 6 * f, 0, 7);
+          ctx.fillStyle = "rgba(2,6,23,.6)"; ctx.fill(); ctx.stroke();
+        }
+      }
+    }
+    ctx.globalAlpha = 1;
   }
 
   /* ── arch + cross-section line on the axial view ── */
@@ -206,6 +217,26 @@ export function drawImplant(ctx, view, cam, W, H, im, sel, S, f, slabTol) {
   ctx.lineTo(T.x - px * w, T.y - py * w); ctx.closePath();
   ctx.fillStyle = hexA(col, cut ? 0.3 : 0.12); ctx.fill();
   ctx.strokeStyle = col; ctx.lineWidth = (sel ? 2.4 : 1.8) * f; ctx.stroke();
+  // abutment and crown above the implant (prosthetic outline)
+  if (S.plan.showProsthetic !== false && cut) {
+    const ah = (im.abutment ?? 4) * cam.scale, aw = w * 0.72;
+    const tx = T.x - ux * ah, ty = T.y - uy * ah;
+    ctx.fillStyle = hexA("#94a3b8", 0.35); ctx.strokeStyle = "#cbd5e1"; ctx.lineWidth = 1.2 * f;
+    ctx.beginPath(); ctx.moveTo(T.x + px * aw, T.y + py * aw); ctx.lineTo(tx + px * aw * 0.8, ty + py * aw * 0.8);
+    ctx.lineTo(tx - px * aw * 0.8, ty - py * aw * 0.8); ctx.lineTo(T.x - px * aw, T.y - py * aw); ctx.closePath(); ctx.fill(); ctx.stroke();
+    if (im.crown !== false) {
+      const ch = (im.crownHeight ?? 8) * cam.scale, cw = Math.max(w * 1.9, ((im.crownWidth ?? 8) / 2) * cam.scale);
+      const bx = tx + ux * 1.5 * cam.scale, by = ty + uy * 1.5 * cam.scale;
+      const ex = bx - ux * ch, ey = by - uy * ch;
+      ctx.fillStyle = "rgba(255,255,255,.10)"; ctx.strokeStyle = "rgba(255,255,255,.75)"; ctx.setLineDash([4 * f, 3 * f]);
+      ctx.beginPath();
+      ctx.moveTo(bx + px * aw, by + py * aw);
+      ctx.quadraticCurveTo(bx + px * cw - ux * ch * 0.25, by + py * cw - uy * ch * 0.25, ex + px * cw * 0.85, ey + py * cw * 0.85);
+      ctx.quadraticCurveTo(ex - ux * ch * 0.12, ey - uy * ch * 0.12, ex - px * cw * 0.85, ey - py * cw * 0.85);
+      ctx.quadraticCurveTo(bx - px * cw - ux * ch * 0.25, by - py * cw - uy * ch * 0.25, bx - px * aw, by - py * aw);
+      ctx.closePath(); ctx.fill(); ctx.stroke(); ctx.setLineDash([]);
+    }
+  }
   // threads
   ctx.lineWidth = 1 * f; ctx.strokeStyle = hexA(col, 0.8);
   const nT = Math.max(3, Math.floor(im.length / 1.0));
@@ -214,9 +245,9 @@ export function drawImplant(ctx, view, cam, W, H, im, sel, S, f, slabTol) {
     const cx = T.x + sx * t, cy = T.y + sy * t;
     ctx.beginPath(); ctx.moveTo(cx + px * ww, cy + py * ww); ctx.lineTo(cx - px * ww + ux * 2 * f, cy - py * ww + uy * 2 * f); ctx.stroke();
   }
-  // axis extension (where the abutment / drill would go)
+  // axis extension (the drill / screw direction)
   ctx.setLineDash([3 * f, 5 * f]); ctx.strokeStyle = hexA(col, 0.7);
-  ctx.beginPath(); ctx.moveTo(T.x, T.y); ctx.lineTo(T.x - ux * 8 * cam.scale, T.y - uy * 8 * cam.scale); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(T.x, T.y); ctx.lineTo(T.x - ux * 16 * cam.scale, T.y - uy * 16 * cam.scale); ctx.stroke();
   // safety zone
   if (S.plan.showSafety !== false && cut) {
     const m = (S.plan.safety ?? 2) * cam.scale;
@@ -252,9 +283,26 @@ export function hexA(hex, a) {
   return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
 }
 
+/* the reference lines of the other two MPR planes in this view */
+const OTHERS = { axial: [["coronal", "ey"], ["sagittal", "ex"]], coronal: [["axial", "ez"], ["sagittal", "ex"]], sagittal: [["axial", "ez"], ["coronal", "ey"]] };
+export function crossLines(view, cam, W, H, S) {
+  const F = S.frame || { ex: [1, 0, 0], ey: [0, 1, 0], ez: [0, 0, 1] };
+  const c = toScreen(view, cam, W, H, S.cursor);
+  const R = Math.min(W, H) * 0.36;
+  return (OTHERS[view.kind] || []).map(([other, ax]) => {
+    const d = norm(cross(view.N, F[ax]));
+    const q = toScreen(view, cam, W, H, add(S.cursor, mul(d, 10)));
+    let dx = q.x - c.x, dy = q.y - c.y; const l = Math.hypot(dx, dy) || 1; dx /= l; dy /= l;
+    return { other, ax, c, dx, dy, handles: [{ x: c.x + dx * R, y: c.y + dy * R }, { x: c.x - dx * R, y: c.y - dy * R }] };
+  });
+}
+
 /* hit test: what is under the finger / mouse in this view? */
 export function hitTest(view, cam, W, H, S, x, y, f = 1) {
   const R = 14 * f;
+  if (S.rotatable && S.cursor && ["axial", "coronal", "sagittal"].includes(view.kind)) {
+    for (const L of crossLines(view, cam, W, H, S)) for (const h of L.handles) if (Math.hypot(x - h.x, y - h.y) < R) return { type: "rotate", c: L.c };
+  }
   for (const im of S.plan.implants || []) {
     const T = toScreen(view, cam, W, H, im.top), A = toScreen(view, cam, W, H, implantApex(im));
     if (im.id === S.selectedId) {

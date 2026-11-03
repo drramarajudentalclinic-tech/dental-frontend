@@ -113,17 +113,48 @@ export function archNearest(arch, x, y) {
 /* ═════ VIEWS ═════
    A view = how screen pixels map to the scan. cam = { scale: screen px per mm,
    panX, panY } and the view's own centre in its plane (a0, b0). */
+export const IDENTITY_FRAME = { ex: [1, 0, 0], ey: [0, 1, 0], ez: [0, 0, 1] };
+const projU = (b, N, alt) => {
+  let u = sub(b, mul(N, dot(b, N)));
+  if (len(u) < 1e-3) u = sub(alt, mul(N, dot(alt, N)));
+  return norm(u);
+};
+/* a plane through point C with normal N; U follows `ub` (screen right), V points like `vb` (screen down) */
+function mprPlane(kind, vol, C, N, ub, vb) {
+  N = norm(N);
+  const U = projU(ub, N, vb);
+  let V = norm(cross(N, U));
+  if (dot(V, vb) < 0) V = mul(V, -1);
+  const Vc = [vol.X / 2, vol.Y / 2, vol.Z / 2];
+  const ext = (d) => Math.abs(d[0]) * vol.X + Math.abs(d[1]) * vol.Y + Math.abs(d[2]) * vol.Z;
+  const a0 = ext(U) / 2, b0 = ext(V) / 2;
+  const Q = add(Vc, mul(N, dot(sub(C, Vc), N)));
+  const O = sub(sub(Q, mul(U, a0)), mul(V, b0));
+  const v = planar(kind, O, U, V, a0, b0, N);
+  v.C = C; v.depthRange = ext(N) / 2; v.Vc = Vc;
+  v.plane = (p) => { const d = sub(p, O); return [dot(d, U), dot(d, V), dot(sub(p, C), N)]; };
+  return v;
+}
 export function makeView(kind, vol, st) {
   const up = [0, 0, -vol.zSign];                   // moving DOWN the screen = towards the feet
   const zTop = vol.zTop;
-  if (kind === "axial") {
-    return planar(kind, [0, 0, st.cursor[2]], [1, 0, 0], [0, 1, 0], vol.X / 2, vol.Y / 2, [0, 0, 1]);
-  }
-  if (kind === "coronal") {
-    return planar(kind, [0, st.cursor[1], zTop], [1, 0, 0], up, vol.X / 2, vol.Z / 2, [0, 1, 0]);
-  }
-  if (kind === "sagittal") {
-    return planar(kind, [st.cursor[0], 0, zTop], [0, 1, 0], up, vol.Y / 2, vol.Z / 2, [1, 0, 0]);
+  const F = st.frame || IDENTITY_FRAME;
+  const C = st.cursor;
+  if (kind === "axial") return mprPlane(kind, vol, C, F.ez, [1, 0, 0], [0, 1, 0]);
+  if (kind === "coronal") return mprPlane(kind, vol, C, F.ey, [1, 0, 0], up);
+  if (kind === "sagittal") return mprPlane(kind, vol, C, F.ex, [0, 1, 0], up);
+  if (kind.startsWith("tmj") && st.condyles) {
+    // TMJ: close-up sagittal (s) and coronal (c) through each condyle (R / L)
+    const side = kind[3], K = st.condyles[side];
+    if (!K) return null;
+    const fov = st.tmjFov || 36, off = (st.tmjOffset && st.tmjOffset[kind]) || 0;
+    const sag = kind[4] === "s";
+    const N = sag ? [1, 0, 0] : [0, 1, 0], U = sag ? [0, 1, 0] : [1, 0, 0];
+    const c = add(K, mul(N, off));
+    const O = sub(sub(c, mul(U, fov / 2)), mul(up, fov / 2));
+    const v = planar(kind, O, U, up, fov / 2, fov / 2, N);
+    v.centre = c;
+    return v;
   }
   if (kind === "cross" && st.arch) {
     const c = archAt(st.arch, st.crossS);
@@ -169,16 +200,20 @@ export function toWorld(view, cam, W, H, sx, sy) {
   return view.world(a, b);
 }
 export function fitScale(view, vol, W, H) {
-  const wa = view.kind === "axial" || view.kind === "coronal" ? vol.X : view.kind === "sagittal" ? vol.Y
-    : view.kind === "pano" ? view.arch.length : view.a0 * 2;
-  const hb = view.kind === "axial" ? vol.Y : vol.Z;
+  const wa = view.kind === "pano" ? view.arch.length : view.a0 * 2;
+  const hb = view.kind === "pano" ? vol.Z : view.b0 * 2;
   return Math.min(W / wa, H / hb) * 0.96;
+}
+/* rotate the MPR frame about one view's normal (the other two planes turn) */
+export function rotateFrame(F, axis, a) {
+  const k = norm(axis);
+  return { ex: norm(rotate(F.ex, k, a)), ey: norm(rotate(F.ey, k, a)), ez: norm(rotate(F.ez, k, a)) };
 }
 
 /* ═════ RENDER a view into ImageData ═════
    lut: 256 grey levels for the window / level. slab: thickness in mm
    (averaged, or brightest when mip). quick: nearest-neighbour while dragging. */
-export function renderView(view, vol, cam, W, H, lut, { slab = 0, mip = false, quick = false, img } = {}) {
+export function renderView(view, vol, cam, W, H, lut, { slab = 0, mip = false, quick = false, img, mask = null, maskColor = [34, 211, 238] } = {}) {
   const out = img && img.width === W && img.height === H ? img : new ImageData(W, H);
   const px = out.data;
   const isx = 1 / vol.sx, isy = 1 / vol.sy, isz = 1 / vol.sz;
@@ -212,7 +247,15 @@ export function renderView(view, vol, cam, W, H, lut, { slab = 0, mip = false, q
           v = cnt ? (mip ? mx : acc / cnt) : -1;
         }
         if (v < 0) { px[p] = px[p + 1] = px[p + 2] = 0; }
-        else { const g = lut[v | 0]; px[p] = px[p + 1] = px[p + 2] = g; }
+        else {
+          const g = lut[v | 0];
+          if (mask) {
+            const ix = (fx + 0.5) | 0, iy = (fy + 0.5) | 0, iz = (fz + 0.5) | 0;
+            if (ix >= 0 && iy >= 0 && iz >= 0 && ix < vol.nx && iy < vol.ny && iz < vol.nz && mask[iz * vol.nxy + iy * vol.nx + ix]) {
+              px[p] = (g + maskColor[0]) >> 1; px[p + 1] = (g + maskColor[1]) >> 1; px[p + 2] = (g + maskColor[2]) >> 1;
+            } else px[p] = px[p + 1] = px[p + 2] = g;
+          } else px[p] = px[p + 1] = px[p + 2] = g;
+        }
         px[p + 3] = 255; p += 4;
         fx += ux; fy += uy; fz += uz;
       }
