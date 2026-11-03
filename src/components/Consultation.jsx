@@ -1527,6 +1527,9 @@ export default function Consultation({
   }, [visitId]);
 
   const chartLogKey  = JSON.stringify(dentalChartLog);
+  // days that already have a saved consultation in this visit
+  const coveredDays  = new Set(records.map(r => consDay(r)).filter(Boolean));
+  const coveredKey   = [...coveredDays].sort().join(",");
   const findingsKey  = JSON.stringify(otherFindings);
 
   // Auto-fill dental chart diagnosis — fully derived from the real dental-chart
@@ -1537,7 +1540,9 @@ export default function Consultation({
   //   • every finding dated on the consultation date (the date chosen on the
   //     finding — yesterday, last week … — not the day it was typed in), and
   //   • every finding entered today, whatever date was chosen for it, so a
-  //     finding just recorded for an earlier day is never hidden.
+  //     finding just recorded for an earlier day is never hidden, and
+  //   • every finding of this visit whose day has no saved consultation yet
+  //     (e.g. a visit opened on 29 Oct and completed today).
   // Each entry keeps its own date; the Consultation date follows the chosen
   // date by itself until the doctor sets it by hand.
   useEffect(() => {
@@ -1547,7 +1552,7 @@ export default function Consultation({
     dentalChartLog.forEach(row => {
       const rowDate = chartDay(row) || today;
       const enteredToday = !row.created_at || localDay(row.created_at) === today;
-      if (rowDate !== day && !enteredToday) return;
+      if (rowDate !== day && !enteredToday && coveredDays.has(rowDate)) return;
       const condLabel = row.condition==="Other"&&row.other_text ? row.other_text : row.condition;
       const key = `${condLabel}|${rowDate}`;
       if (!condGroups[key]) condGroups[key] = { condLabel, date: rowDate, teeth: [], notes: [], ids: [] };
@@ -1574,7 +1579,7 @@ export default function Consultation({
 
     setDentalDiag(auto);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chartLogKey, consDate]);
+  }, [chartLogKey, consDate, coveredKey]);
 
   // Auto-fill other findings diagnosis — fully derived from the real findings
   // records, same reasoning as above.
@@ -1585,7 +1590,7 @@ export default function Consultation({
     otherFindings.forEach(f => {
       const fDate = findingDay(f) || today;
       const enteredToday = f.created_at ? localDay(f.created_at) === today : fDate === today;
-      if (fDate !== day && !enteredToday) return;
+      if (fDate !== day && !enteredToday && coveredDays.has(fDate)) return;
       auto.push({
         id:        `auto-finding-${f.id}`,
         auto:      true,
@@ -1598,7 +1603,7 @@ export default function Consultation({
 
     setFindingsDiag(auto);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [findingsKey, consDate]);
+  }, [findingsKey, consDate, coveredKey]);
 
   // The Consultation date follows the date chosen on the findings: if every
   // finding in Diagnosis is from one earlier day (e.g. all dated yesterday),
