@@ -586,8 +586,9 @@ export default function VisitPage() {
     };
     const saved = [];
     for (const toothNum of teeth) {
-      const res = await api.post(`/visits/${visitId}/dental-chart`, { tooth_number: toothNum, ...fd });
-      saved.push(res.data);
+      // chart_date: the date chosen in the Diagnosis window (today by default)
+      const res = await api.post(`/visits/${visitId}/dental-chart`, { tooth_number: toothNum, ...fd, ...(date ? { chart_date: date } : {}) });
+      saved.push(res.data && res.data.chart_date ? res.data : { ...res.data, chart_date: date || res.data?.chart_date });
     }
     setChartRecords(prev => [...prev, ...saved]);
   };

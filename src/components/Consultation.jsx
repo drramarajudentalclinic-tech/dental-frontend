@@ -187,6 +187,10 @@ function localDay(stamp) {
   if (isNaN(t)) return raw.split("T")[0];
   return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`;
 }
+// Date chosen on a dental-chart finding (chart_date), else the day it was saved.
+function chartDay(r) { return (r?.chart_date ? String(r.chart_date).slice(0, 10) : "") || localDay(r?.created_at); }
+// Date chosen on an "Other finding" (stored in its value field).
+function findingDay(f) { return f?.value ? String(f.value).slice(0, 10) : (localDay(f?.created_at) || ""); }
 // Day the consultation record was saved (decides "today" vs "past" for editing).
 function savedDay(r) { return localDay(r?.created_at || r?.updated_at); }
 // Date shown for a consultation: the date the doctor chose, else the day it was saved.
@@ -1529,27 +1533,37 @@ export default function Consultation({
   // records passed down from VisitPage. Manual "+ Add" entries from this panel are
   // now written straight to those same records (see onAddDentalRecord), so this
   // view is always in sync with the Dental Chart tab — no separate manual state.
+  // Which findings belong in this consultation's Diagnosis:
+  //   • every finding dated on the consultation date (the date chosen on the
+  //     finding — yesterday, last week … — not the day it was typed in), and
+  //   • every finding entered today, whatever date was chosen for it, so a
+  //     finding just recorded for an earlier day is never hidden.
+  // Each entry keeps its own date; the Consultation date follows the chosen
+  // date by itself until the doctor sets it by hand.
   useEffect(() => {
     const today = todayStr();
+    const day = consDate || today;
     const condGroups = {};
     dentalChartLog.forEach(row => {
-      const rowDate = row.created_at ? localDay(row.created_at) : today;
-      if (rowDate !== today) return;
+      const rowDate = chartDay(row) || today;
+      const enteredToday = !row.created_at || localDay(row.created_at) === today;
+      if (rowDate !== day && !enteredToday) return;
       const condLabel = row.condition==="Other"&&row.other_text ? row.other_text : row.condition;
-      if (!condGroups[condLabel]) condGroups[condLabel] = { teeth: [], notes: [], ids: [] };
-      condGroups[condLabel].teeth.push(row.tooth_number);
-      condGroups[condLabel].ids.push(row.id);
-      if (row.notes) condGroups[condLabel].notes.push(row.notes);
+      const key = `${condLabel}|${rowDate}`;
+      if (!condGroups[key]) condGroups[key] = { condLabel, date: rowDate, teeth: [], notes: [], ids: [] };
+      condGroups[key].teeth.push(row.tooth_number);
+      condGroups[key].ids.push(row.id);
+      if (row.notes) condGroups[key].notes.push(row.notes);
     });
 
     const auto = [];
-    Object.entries(condGroups).forEach(([condLabel, { teeth, notes, ids }]) => {
+    Object.values(condGroups).forEach(({ condLabel, date, teeth, notes, ids }) => {
       const sortedTeeth = [...teeth].sort((a,b)=>a-b);
       const noteStr = notes.length > 0 ? ` — ${notes.join("; ")}` : "";
       auto.push({
-        id:        `auto-chart-${condLabel.replace(/\s+/g,"-")}`,
+        id:        `auto-chart-${condLabel.replace(/\s+/g,"-")}-${date}`,
         auto:      true,
-        date:      today,
+        date,
         teeth:     sortedTeeth,
         recordIds: ids,           // real dental_chart row ids behind this grouped entry
         note:      `${condLabel}${noteStr}`,
@@ -1560,20 +1574,22 @@ export default function Consultation({
 
     setDentalDiag(auto);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chartLogKey]);
+  }, [chartLogKey, consDate]);
 
   // Auto-fill other findings diagnosis — fully derived from the real findings
   // records, same reasoning as above.
   useEffect(() => {
     const today = todayStr();
+    const day = consDate || today;
     const auto = [];
     otherFindings.forEach(f => {
-      const fDate = f.value ? f.value.split("T")[0] : today;
-      if (fDate !== today) return;
+      const fDate = findingDay(f) || today;
+      const enteredToday = f.created_at ? localDay(f.created_at) === today : fDate === today;
+      if (fDate !== day && !enteredToday) return;
       auto.push({
         id:        `auto-finding-${f.id}`,
         auto:      true,
-        date:      today,
+        date:      fDate,
         teeth:     [],
         findingId: f.id,          // real findings row id behind this entry
         note:      f.finding_type,
@@ -1582,7 +1598,19 @@ export default function Consultation({
 
     setFindingsDiag(auto);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [findingsKey]);
+  }, [findingsKey, consDate]);
+
+  // The Consultation date follows the date chosen on the findings: if every
+  // finding in Diagnosis is from one earlier day (e.g. all dated yesterday),
+  // the consultation is dated that day too — until the doctor picks a date.
+  useEffect(() => {
+    if (consDateSet) return;
+    const days = [...new Set([...dentalDiag, ...findingsDiag].map(e => e.date).filter(Boolean))];
+    const today = todayStr();
+    if (days.length === 1 && days[0] !== consDate) setConsDate(days[0]);
+    else if (days.length === 0 && consDate !== today && !advice.length && !treatDone.length) setConsDate(today);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dentalDiag, findingsDiag, consDateSet]);
 
   // FIX: Load history once on mount — no polling, no repeated fetches
   useEffect(() => {
@@ -1674,10 +1702,13 @@ export default function Consultation({
 
   // Combined diagnosis string for saving: dental chart + other findings
   const buildDiagnosisText = () => {
+    const day = consDate || todayStr();
+    // a finding dated differently from the consultation keeps its own date in the text
     const fmtEntry = e => {
+      const when = e.date && e.date !== day ? ` (${fmtDate(e.date)})` : "";
       if (e.teeth && e.teeth.length > 0)
-        return `${e.note} IRT ${e.teeth.sort((a,b)=>a-b).join(", ")}`;
-      return e.note;
+        return `${e.note} IRT ${[...e.teeth].sort((a,b)=>a-b).join(", ")}${when}`;
+      return `${e.note}${when}`;
     };
     const dentalParts   = dentalDiag.map(fmtEntry);
     const findingsParts = findingsDiag.map(fmtEntry);
