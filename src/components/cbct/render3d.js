@@ -100,8 +100,8 @@ float capHit(vec3 ro, vec3 rd, vec3 pa, vec3 pb, float ra){
   return -1.0;
 }
 vec3 kindCol(float k){
-  if (k < 0.5) return vec3(0.42, 0.66, 1.0);     // implant (titanium, blue like planning software)
-  if (k < 1.5) return vec3(1.0, 0.84, 0.30);     // selected
+  if (k < 0.5) return vec3(0.80, 0.70, 0.38);     // implant (gold titanium, like planning software)
+  if (k < 1.5) return vec3(1.0, 0.90, 0.45);     // selected
   if (k < 2.5) return vec3(1.0, 0.32, 0.28);     // too close to the nerve
   if (k < 3.5) return vec3(0.78, 0.80, 0.84);    // abutment / collar
   if (k < 4.5) return vec3(1.0, 0.62, 0.16);     // nerve canal

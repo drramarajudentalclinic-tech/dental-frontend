@@ -73,8 +73,8 @@ const PRESETS = [
 ];
 const FDI = [18, 17, 16, 15, 14, 13, 12, 11, 21, 22, 23, 24, 25, 26, 27, 28, 48, 47, 46, 45, 44, 43, 42, 41, 31, 32, 33, 34, 35, 36, 37, 38];
 const EMPTY_PLAN = {
-  jaw: "lower", archPoints: [], crossS: 0, crossWidth: 40, crossStep: 1, crossSlab: 1, panoSlab: 10, panoOffset: 0,
-  nerves: [], implants: [], measures: [], safety: 2, showSafety: true, showProsthetic: true,
+  jaw: "lower", archPoints: [], crossS: 0, crossWidth: 40, crossStep: 1, crossSlab: 1, panoSlab: 20, panoOffset: 0,
+  nerves: [], implants: [], measures: [], safety: 2, showSafety: false, showProsthetic: false,
   ceph: { points: {} }, tmj: { R: null, L: null, fov: 36 }, airway: { seed: null, zLo: null, zHi: null, thr: -400 },
   guide: {}, report: { show: {}, notes: {} },
 };
@@ -336,7 +336,7 @@ function Pane3D({ scene, settings, setSettings, onMax, maxed, rendererRef, activ
     const F3 = scene.fusion3d;
     R.setFusion(F3 ? { volB: F3.volB, T: F3.T, dist: F3.dist, mode: F3.mode } : null);
     if (F3) R.setObjects({});
-    else R.setObjects({ implants: scene.plan.implants || [], nerves: scene.plan.nerves || [], selectedId: scene.selectedId, showProsthetic: scene.plan.showProsthetic !== false,
+    else R.setObjects({ implants: scene.plan.implants || [], nerves: scene.plan.nerves || [], selectedId: scene.selectedId, showProsthetic: scene.plan.showProsthetic === true,
       points: scene.points3d || [],
       dangerIds: (scene.plan.implants || []).filter((im) => { const g = implantNerveGap(im, scene.plan.nerves); return g && g.gap < scene.plan.safety; }).map((im) => im.id) });
     R.draw({ mode: F3 ? "bone" : settings.mode, thresholdHu: F3 ? Math.min(settings.thr, 900) : settings.thr, quick: moving, clip: { lo: [settings.clipRight || 0, settings.clipFront, settings.clipBottom], hi: [1 - (settings.clipLeft || 0), 1, settings.clipTop] } });
@@ -1185,7 +1185,9 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
   );
 
   const scene = {
-    vol, plan, arch, cursor, lut, slab, mip, sharp, selectedId, temp, tool, phone: screen.phone, frame: mprFrame, tmjOffset, rotatable,
+    vol, plan, arch, cursor, lut, slab, mip, sharp, selectedId, temp, tool, phone: screen.phone,
+    info: meta ? { id: meta.patient_id, name: String(meta.patient_name || "").replace(/\^/g, " ").trim(), date: meta.study_date } : null,
+    wlInfo: wl, boneHu: three.thr, frame: mprFrame, tmjOffset, rotatable,
     mask: tab === "airway" && airway && !airway.error ? airway.mask : tab === "guide" && guide ? guide.vmask : null,
     maskColor: tab === "guide" ? [45, 212, 191] : undefined,
     guideMask: guide && (tab === "guide" || tab === "3d") ? guide.vmask : null,
@@ -1460,8 +1462,8 @@ function Panel(P) {
             ))}
             {selNerve && <p className="cv-help">Drag the nerve's points (Navigate) in any view to correct it.</p>}
             <Range label="Safety margin" unit="mm" min={0.5} max={5} step={0.5} value={plan.safety} set={(v) => setPlan((p) => ({ ...p, safety: v }))} />
-            <label className="cv-check"><input type="checkbox" checked={plan.showSafety !== false} onChange={(e) => setPlan((p) => ({ ...p, showSafety: e.target.checked }), { record: false })} /> Safety zone around implants</label>
-            <label className="cv-check"><input type="checkbox" checked={plan.showProsthetic !== false} onChange={(e) => setPlan((p) => ({ ...p, showProsthetic: e.target.checked }), { record: false })} /> Show abutment and crown</label>
+            <label className="cv-check"><input type="checkbox" checked={plan.showSafety === true} onChange={(e) => setPlan((p) => ({ ...p, showSafety: e.target.checked }), { record: false })} /> Safety zone around implants</label>
+            <label className="cv-check"><input type="checkbox" checked={plan.showProsthetic === true} onChange={(e) => setPlan((p) => ({ ...p, showProsthetic: e.target.checked }), { record: false })} /> Show abutment and crown</label>
           </Sec>
           <Sec title={`3 · Implants (${plan.implants.length})`} done={plan.implants.length > 0}>
             <div className="cv-row">

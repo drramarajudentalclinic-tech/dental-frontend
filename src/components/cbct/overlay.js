@@ -109,18 +109,33 @@ export function drawOverlay(ctx, view, cam, W, H, S, opts = {}) {
     const sel = selectedId === n.id;
     const pts = n.points.map(P);
     if (view.kind === "pano" || view.kind === "coronal" || view.kind === "sagittal" || n.id === "_t") {
-      // band along the nerve (only where it is in this slice / slab)
-      ctx.lineWidth = Math.max(2 * f, r * 2 * cam.scale);
-      ctx.strokeStyle = "rgba(249,115,22,.55)";
-      for (let k = 0; k + 1 < pts.length; k++) {
-        const tol = slabTol + r;
-        if (!(near(pts[k].d, tol) || near(pts[k + 1].d, tol) || pts[k].d * pts[k + 1].d < 0)) continue;
-        ctx.beginPath(); ctx.moveTo(pts[k].x, pts[k].y); ctx.lineTo(pts[k + 1].x, pts[k + 1].y); ctx.stroke();
-      }
+      // the canal: a smooth red tube (only where it is in this slice / slab)
+      const tol = slabTol + r;
+      const vis = (k) => near(pts[k].d, tol) || (k + 1 < pts.length && pts[k].d * pts[k + 1].d < 0) || (k > 0 && pts[k].d * pts[k - 1].d < 0);
+      ctx.lineCap = "round"; ctx.lineJoin = "round";
+      let run = [];
+      const flush = () => {
+        if (run.length >= 2) {
+          const path = () => {
+            ctx.beginPath(); ctx.moveTo(run[0].x, run[0].y);
+            for (let k = 0; k + 1 < run.length; k++) {           // Catmull-Rom → smooth curve
+              const p0 = run[Math.max(0, k - 1)], p1 = run[k], p2 = run[k + 1], p3 = run[Math.min(run.length - 1, k + 2)];
+              ctx.bezierCurveTo(p1.x + (p2.x - p0.x) / 6, p1.y + (p2.y - p0.y) / 6, p2.x - (p3.x - p1.x) / 6, p2.y - (p3.y - p1.y) / 6, p2.x, p2.y);
+            }
+          };
+          const wpx = Math.max(4 * f, r * 2 * cam.scale);
+          path(); ctx.strokeStyle = "rgba(127,0,0,.55)"; ctx.lineWidth = wpx + 2 * f; ctx.stroke();
+          path(); ctx.strokeStyle = sel ? "rgba(255,70,70,.95)" : "rgba(232,28,36,.88)"; ctx.lineWidth = wpx; ctx.stroke();
+          path(); ctx.strokeStyle = "rgba(255,160,150,.35)"; ctx.lineWidth = Math.max(1, wpx * 0.25); ctx.stroke();
+        }
+        run = [];
+      };
+      pts.forEach((p, k) => { if (view.kind === "pano" || n.id === "_t" || vis(k)) run.push(p); else flush(); });
+      flush();
     }
     // where the nerve passes through this slice: a circle of its size
     if (view.planar) {
-      ctx.strokeStyle = COLORS.nerve; ctx.lineWidth = 2 * f; ctx.fillStyle = "rgba(249,115,22,.35)";
+      ctx.strokeStyle = "rgba(127,0,0,.9)"; ctx.lineWidth = 1.5 * f; ctx.fillStyle = "rgba(232,28,36,.75)";
       for (let k = 0; k + 1 < n.points.length; k++) {
         const d0 = pts[k].d, d1 = pts[k + 1].d;
         if (d0 === d1 || d0 * d1 > 0) continue;
@@ -129,14 +144,14 @@ export function drawOverlay(ctx, view, cam, W, H, S, opts = {}) {
         ctx.beginPath(); ctx.arc(x, y, Math.max(3 * f, r * cam.scale), 0, 7); ctx.fill(); ctx.stroke();
       }
     }
-    // the tapped points
-    ctx.fillStyle = sel ? COLORS.implantSel : COLORS.nerve;
-    pts.forEach((s, i) => {
-      if (Math.abs(s.d) > slabTol + r + 1 && view.kind !== "pano") return;
-      ctx.beginPath(); ctx.arc(s.x, s.y, (sel || n.id === "_t" ? 3.5 : 2.2) * f, 0, 7); ctx.fill();
-    });
-    const first = pts.find((s) => view.kind === "pano" || Math.abs(s.d) <= slabTol + r);
-    if (first && n.id !== "_t") label(`Nerve ${n.side === "L" ? "L" : n.side === "R" ? "R" : ""}`.trim(), first.x + 6 * f, first.y - 6 * f, COLORS.nerve);
+    // the tapped points: only while editing (selected nerve, nerve tool, or being traced)
+    if ((sel || tool === "nerve" || n.id === "_t") && !report) {
+      ctx.fillStyle = "#fde68a"; ctx.strokeStyle = "#7f1d1d"; ctx.lineWidth = 1.2 * f;
+      pts.forEach((s) => {
+        if (Math.abs(s.d) > slabTol + r + 1 && view.kind !== "pano") return;
+        ctx.beginPath(); ctx.arc(s.x, s.y, 3.5 * f, 0, 7); ctx.fill(); ctx.stroke();
+      });
+    }
   }
 
   /* ── implants ── */
@@ -185,10 +200,41 @@ export function drawOverlay(ctx, view, cam, W, H, S, opts = {}) {
     }
   }
 
+  /* ── scan information in the corners, and the mm ruler under the panoramic ── */
+  if (!opts.noScale && !report && S.info && W > 330 * f) {
+    ctx.font = `500 ${10.5 * f}px system-ui, sans-serif`; ctx.fillStyle = "rgba(226,232,240,.82)";
+    const L1 = [S.info.id ? `ID: ${S.info.id}` : "", S.info.name || "", S.info.date || ""].filter(Boolean);
+    L1.forEach((t, i) => ctx.fillText(t, 8 * f, 14 * f + i * 13 * f));
+    ctx.textAlign = "right"; ctx.fillStyle = "rgba(147,197,253,.85)";
+    const slabMm = view.kind === "pano" ? S.panoSlab : view.kind === "cross" ? S.crossSlab : S.slab;
+    [view.kind === "pano" ? "Panoramic" : view.kind === "cross" ? "Cross-section" : "MPR", slabMm ? `TH: ${slabMm} mm` : "", S.boneHu != null ? `Threshold: ${S.boneHu}` : ""].filter(Boolean)
+      .forEach((t, i) => ctx.fillText(t, W - 8 * f, 14 * f + i * 13 * f));
+    if (S.wlInfo) {
+      ctx.fillStyle = "rgba(226,232,240,.82)";
+      const yb = H - (view.kind === "pano" ? 30 : 8) * f;
+      ctx.fillText(`WL: ${Math.round(S.wlInfo.l)}  WW: ${Math.round(S.wlInfo.w)}`, W - 8 * f, yb - 13 * f);
+      ctx.fillText(`Pixel ${(f / cam.scale).toFixed(3)} mm`, W - 8 * f, yb);
+    }
+    ctx.textAlign = "left";
+  }
+  if (view.kind === "pano" && !opts.noScale && !report) {
+    const yb = H - 2 * f, hb = 20 * f;
+    ctx.fillStyle = "rgba(10,14,22,.82)"; ctx.fillRect(0, yb - hb, W, hb);
+    const a0 = view.a0 - (W / 2 + cam.panX) / cam.scale, a1 = view.a0 + (W / 2 - cam.panX) / cam.scale;
+    const step = cam.scale > 6 ? 1 : 2, every = cam.scale > 2.5 ? 5 : 10;
+    ctx.strokeStyle = "rgba(250,204,21,.85)"; ctx.fillStyle = "#facc15"; ctx.font = `600 ${9.5 * f}px system-ui, sans-serif`; ctx.textAlign = "center"; ctx.lineWidth = 1 * f;
+    for (let mm = Math.max(0, Math.ceil(a0 / step) * step); mm <= Math.min(view.arch.length, a1); mm += step) {
+      const x = W / 2 + cam.panX + (mm - view.a0) * cam.scale, big = mm % every === 0;
+      ctx.beginPath(); ctx.moveTo(x, yb - hb); ctx.lineTo(x, yb - hb + (big ? 6 : 3) * f); ctx.stroke();
+      if (big) ctx.fillText(String(mm), x, yb - 3 * f);
+    }
+    ctx.textAlign = "left";
+  }
+
   /* ── scale bar + letters ── */
   if (!opts.noScale) {
     const mm = cam.scale >= 12 ? 5 : cam.scale >= 4 ? 10 : 20;
-    const bw = mm * cam.scale, x0 = 12 * f, y0 = H - 14 * f;
+    const bw = mm * cam.scale, x0 = 12 * f, y0 = H - (view.kind === "pano" && !report ? 32 : 14) * f;
     ctx.strokeStyle = "rgba(226,232,240,.85)"; ctx.lineWidth = 2 * f;
     ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x0 + bw, y0); ctx.moveTo(x0, y0 - 4 * f); ctx.lineTo(x0, y0 + 4 * f); ctx.moveTo(x0 + bw, y0 - 4 * f); ctx.lineTo(x0 + bw, y0 + 4 * f); ctx.stroke();
     ctx.fillStyle = "rgba(226,232,240,.9)"; ctx.font = font(10); ctx.fillText(`${mm} mm`, x0 + bw + 6 * f, y0 + 4 * f);
@@ -196,7 +242,7 @@ export function drawOverlay(ctx, view, cam, W, H, S, opts = {}) {
     if (L) {
       ctx.font = font(12, 800); ctx.fillStyle = "rgba(148,163,184,.85)";
       ctx.fillText(L[0], 8 * f, H / 2); ctx.fillText(L[1], W - 16 * f, H / 2);
-      ctx.fillText(L[2], W / 2 - 4 * f, 18 * f + (report ? 0 : 14 * f)); ctx.fillText(L[3], W / 2 - 4 * f, H - 8 * f);
+      ctx.fillText(L[2], W / 2 - 4 * f, 18 * f + (report ? 0 : 14 * f)); ctx.fillText(L[3], W / 2 - 4 * f, H - (view.kind === "pano" && !report ? 27 : 8) * f);
     }
   }
   ctx.restore();
@@ -220,54 +266,83 @@ export function drawImplant(ctx, view, cam, W, H, im, sel, S, f, slabTol) {
     if (!cut) { ctx.restore(); return; }
     const t = T.d === A.d ? 0.5 : Math.max(0, Math.min(1, T.d / (T.d - A.d)));
     const cx = T.x + sx * t, cy = T.y + sy * t;
-    ctx.fillStyle = hexA(col, 0.35); ctx.strokeStyle = col; ctx.lineWidth = 2 * f;
+    const rg = ctx.createRadialGradient(cx - r * cam.scale * 0.3, cy - r * cam.scale * 0.3, 1, cx, cy, r * cam.scale);
+    rg.addColorStop(0, danger ? "rgba(255,196,186,.7)" : "rgba(246,236,186,.7)"); rg.addColorStop(1, danger ? "rgba(110,30,26,.7)" : "rgba(120,100,40,.7)");
+    ctx.fillStyle = rg; ctx.strokeStyle = sel ? "#fde047" : danger ? "#ef4444" : "rgba(96,82,34,.95)"; ctx.lineWidth = (sel ? 2 : 1.4) * f;
     ctx.beginPath(); ctx.arc(cx, cy, r * cam.scale, 0, 7); ctx.fill(); ctx.stroke();
-    if (S.plan.showSafety !== false) {
+    if (S.plan.showSafety === true || danger) {
       ctx.setLineDash([4 * f, 4 * f]); ctx.strokeStyle = hexA(col, 0.6);
       ctx.beginPath(); ctx.arc(cx, cy, (r + (S.plan.safety ?? 2)) * cam.scale, 0, 7); ctx.stroke(); ctx.setLineDash([]);
     }
-    tag(ctx, im, cx + r * cam.scale + 4 * f, cy, col, f);
+    numBox(ctx, im.tooth || "?", cx, cy, f, sel, 1);
     ctx.restore(); return;
   }
   const ux = sx / sl, uy = sy / sl, px = -uy, py = ux;
   const sc = cam.scale, w = r * sc, wApex = radiusAt(im, 0.95) * sc;
-  ctx.globalAlpha = cut ? 1 : 0.35;
-  // body: the real outline of this implant line (tapered / parallel) with its threads
-  const N = Math.max(40, Math.round(im.length / 0.2)), pitch = im.diameter <= 3.3 ? 0.7 : 0.9, depth = Math.min(0.35, im.diameter * 0.08);
-  const side = [];
-  for (let i = 0; i <= N; i++) {
-    const t = i / N, ph = (t * im.length) / pitch;
-    const thr = t > 0.04 && t < 0.97 ? depth * Math.abs((((ph % 1) + 1) % 1) - 0.5) * 2 : 0;
-    side.push([T.x + sx * t, T.y + sy * t, (radiusAt(im, t) - thr) * sc]);
-  }
-  ctx.beginPath();
-  side.forEach(([x, y, rr], i) => (i ? ctx.lineTo(x + px * rr, y + py * rr) : ctx.moveTo(x + px * rr, y + py * rr)));
-  for (let i = side.length - 1; i >= 0; i--) { const [x, y, rr] = side[i]; ctx.lineTo(x - px * rr, y - py * rr); }
-  ctx.closePath();
+  // colours of a titanium implant in planning software: gold, see-through so the bone shows
+  const G = danger ? { base: [214, 84, 74], hi: [255, 196, 186], lo: [110, 30, 26], line: [255, 120, 110] }
+    : sel ? { base: [222, 196, 104], hi: [255, 246, 196], lo: [120, 96, 30], line: [253, 224, 71] }
+    : { base: [196, 176, 104], hi: [246, 236, 186], lo: [96, 82, 34], line: [214, 196, 120] };
+  const rgba = (c, a) => `rgba(${c[0]},${c[1]},${c[2]},${a})`;
+  const fade = cut ? 1 : 0.35;
+  const ell = 0.24;                                         // how round the cylinder looks (ellipse of the cross-cut)
+  // body outline from top to apex
+  const N = 48, side = [];
+  for (let i = 0; i <= N; i++) { const t = i / N; side.push([T.x + sx * t, T.y + sy * t, radiusAt(im, t) * sc]); }
+  const outline = () => {
+    ctx.beginPath();
+    side.forEach(([x, y, rr], i) => (i ? ctx.lineTo(x + px * rr, y + py * rr) : ctx.moveTo(x + px * rr, y + py * rr)));
+    const [ax, ay, ar] = side[N];                           // rounded apex
+    ctx.ellipse(ax, ay, ar, ar * ell * 1.6, Math.atan2(py, px), 0, Math.PI, false);
+    for (let i = N; i >= 0; i--) { const [x, y, rr] = side[i]; ctx.lineTo(x - px * rr, y - py * rr); }
+    ctx.closePath();
+  };
+  // shading across the cylinder (dark edges, bright stripe) → looks round
   const grd = ctx.createLinearGradient(T.x + px * w, T.y + py * w, T.x - px * w, T.y - py * w);
-  grd.addColorStop(0, hexA(col, cut ? 0.55 : 0.18)); grd.addColorStop(0.45, hexA("#ffffff", cut ? 0.55 : 0.2)); grd.addColorStop(1, hexA(col, cut ? 0.4 : 0.12));
-  ctx.fillStyle = grd; ctx.fill();
-  ctx.strokeStyle = col; ctx.lineWidth = (sel ? 2.2 : 1.5) * f; ctx.stroke();
+  grd.addColorStop(0, rgba(G.lo, 0.72 * fade)); grd.addColorStop(0.3, rgba(G.hi, 0.62 * fade));
+  grd.addColorStop(0.55, rgba(G.base, 0.5 * fade)); grd.addColorStop(1, rgba(G.lo, 0.72 * fade));
+  outline(); ctx.fillStyle = grd; ctx.fill();
+  ctx.strokeStyle = rgba(G.lo, 0.9 * fade); ctx.lineWidth = 1.1 * f; ctx.stroke();
+  // threads: curved lines across the body (front half of each turn)
+  const pitch = im.diameter <= 3.3 ? 0.7 : 0.85, ang = Math.atan2(py, px);
+  for (let k = 1; k * pitch < im.length * 0.94; k++) {
+    const t = (k * pitch) / im.length, rr = radiusAt(im, t) * sc * 0.98;
+    if (t < 0.06) continue;
+    const cx = T.x + sx * t, cy = T.y + sy * t;
+    ctx.beginPath(); ctx.ellipse(cx, cy, rr, rr * ell, ang, 0, Math.PI, false);
+    ctx.strokeStyle = rgba(G.lo, 0.75 * fade); ctx.lineWidth = Math.max(0.8, 1.1 * f); ctx.stroke();
+    ctx.beginPath(); ctx.ellipse(cx - ux * 0.9 * f, cy - uy * 0.9 * f, rr * 0.92, rr * ell * 0.92, ang, 0.25, Math.PI - 0.25, false);
+    ctx.strokeStyle = rgba(G.hi, 0.45 * fade); ctx.lineWidth = Math.max(0.6, 0.8 * f); ctx.stroke();
+  }
+  // platform (top) with the inner connection
+  ctx.beginPath(); ctx.ellipse(T.x, T.y, w, w * ell, ang, 0, Math.PI * 2);
+  ctx.fillStyle = rgba(G.hi, 0.55 * fade); ctx.fill(); ctx.strokeStyle = rgba(G.lo, 0.9 * fade); ctx.lineWidth = 1 * f; ctx.stroke();
+  ctx.beginPath(); ctx.ellipse(T.x, T.y, w * 0.45, w * ell * 0.45, ang, 0, Math.PI * 2);
+  ctx.fillStyle = rgba(G.lo, 0.55 * fade); ctx.fill();
   // tissue-level implants: the polished collar above the bone
   const collar = collarOf(im) * sc;
   if (collar > 0) {
     const cxp = T.x - ux * collar, cyp = T.y - uy * collar, cw = w + 0.35 * sc;
     ctx.beginPath(); ctx.moveTo(T.x + px * w, T.y + py * w); ctx.lineTo(cxp + px * cw, cyp + py * cw); ctx.lineTo(cxp - px * cw, cyp - py * cw); ctx.lineTo(T.x - px * w, T.y - py * w); ctx.closePath();
-    ctx.fillStyle = hexA("#e2e8f0", cut ? 0.55 : 0.2); ctx.fill(); ctx.stroke();
+    const cg = ctx.createLinearGradient(cxp + px * cw, cyp + py * cw, cxp - px * cw, cyp - py * cw);
+    cg.addColorStop(0, `rgba(120,130,140,${0.7 * fade})`); cg.addColorStop(0.35, `rgba(240,244,248,${0.7 * fade})`); cg.addColorStop(1, `rgba(120,130,140,${0.7 * fade})`);
+    ctx.fillStyle = cg; ctx.fill(); ctx.strokeStyle = `rgba(80,90,100,${0.9 * fade})`; ctx.stroke();
   }
-  // abutment and crown above the implant (prosthetic outline)
-  if (S.plan.showProsthetic !== false && cut) {
+  // abutment and crown above the implant (when switched on)
+  if (S.plan.showProsthetic === true && cut) {
     const ah = (im.abutment ?? 4) * cam.scale, aw = w * 0.72, cl = collarOf(im) * cam.scale;
     const T0 = { x: T.x - ux * cl, y: T.y - uy * cl };
     const tx = T0.x - ux * ah, ty = T0.y - uy * ah;
-    ctx.fillStyle = hexA("#94a3b8", 0.35); ctx.strokeStyle = "#cbd5e1"; ctx.lineWidth = 1.2 * f;
+    const ag = ctx.createLinearGradient(T0.x + px * aw, T0.y + py * aw, T0.x - px * aw, T0.y - py * aw);
+    ag.addColorStop(0, "rgba(110,120,130,.7)"); ag.addColorStop(0.35, "rgba(235,240,245,.7)"); ag.addColorStop(1, "rgba(110,120,130,.7)");
+    ctx.fillStyle = ag; ctx.strokeStyle = "rgba(70,80,90,.9)"; ctx.lineWidth = 1 * f;
     ctx.beginPath(); ctx.moveTo(T0.x + px * aw, T0.y + py * aw); ctx.lineTo(tx + px * aw * 0.8, ty + py * aw * 0.8);
     ctx.lineTo(tx - px * aw * 0.8, ty - py * aw * 0.8); ctx.lineTo(T0.x - px * aw, T0.y - py * aw); ctx.closePath(); ctx.fill(); ctx.stroke();
     if (im.crown !== false) {
       const ch = (im.crownHeight ?? 8) * cam.scale, cw = Math.max(w * 1.9, ((im.crownWidth ?? 8) / 2) * cam.scale);
       const bx = tx + ux * 1.5 * cam.scale, by = ty + uy * 1.5 * cam.scale;
       const ex = bx - ux * ch, ey = by - uy * ch;
-      ctx.fillStyle = "rgba(255,255,255,.10)"; ctx.strokeStyle = "rgba(255,255,255,.75)"; ctx.setLineDash([4 * f, 3 * f]);
+      ctx.fillStyle = "rgba(255,250,235,.16)"; ctx.strokeStyle = "rgba(255,250,235,.7)"; ctx.setLineDash([4 * f, 3 * f]);
       ctx.beginPath();
       ctx.moveTo(bx + px * aw, by + py * aw);
       ctx.quadraticCurveTo(bx + px * cw - ux * ch * 0.25, by + py * cw - uy * ch * 0.25, ex + px * cw * 0.85, ey + py * cw * 0.85);
@@ -276,18 +351,20 @@ export function drawImplant(ctx, view, cam, W, H, im, sel, S, f, slabTol) {
       ctx.closePath(); ctx.fill(); ctx.stroke(); ctx.setLineDash([]);
     }
   }
-  // thread lines across the body
-  ctx.lineWidth = 0.8 * f; ctx.strokeStyle = hexA(col, 0.55);
-  for (let k = 1; k * pitch < im.length * 0.96; k++) {
-    const t = (k * pitch) / im.length, ww = radiusAt(im, t) * sc - depth * sc;
-    const cx = T.x + sx * t, cy = T.y + sy * t;
-    ctx.beginPath(); ctx.moveTo(cx + px * ww, cy + py * ww); ctx.lineTo(cx - px * ww + ux * pitch * 0.5 * sc, cy - py * ww + uy * pitch * 0.5 * sc); ctx.stroke();
-  }
-  // axis extension (the drill / screw direction)
-  ctx.setLineDash([3 * f, 5 * f]); ctx.strokeStyle = hexA(col, 0.7);
-  ctx.beginPath(); ctx.moveTo(T.x, T.y); ctx.lineTo(T.x - ux * 16 * cam.scale, T.y - uy * 16 * cam.scale); ctx.stroke();
-  // safety zone
-  if (S.plan.showSafety !== false && cut) {
+  // the implant axis: a thin white line through the implant with an arrow, like planning software
+  const ext = 15 * sc, below = 4 * sc;
+  const ex = T.x - ux * ext, ey = T.y - uy * ext;
+  ctx.strokeStyle = `rgba(235,240,245,${0.85 * fade})`; ctx.lineWidth = 1 * f;
+  ctx.beginPath(); ctx.moveTo(A.x + ux * below, A.y + uy * below); ctx.lineTo(ex, ey); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(ex, ey); ctx.lineTo(ex + ux * 6 * f + px * 3 * f, ey + uy * 6 * f + py * 3 * f); ctx.moveTo(ex, ey); ctx.lineTo(ex + ux * 6 * f - px * 3 * f, ey + uy * 6 * f - py * 3 * f); ctx.stroke();
+  // diameter / length above the arrow
+  ctx.font = `${sel ? 800 : 600} ${11 * f}px system-ui, sans-serif`; ctx.textAlign = "center";
+  ctx.fillStyle = sel ? "#6ee7b7" : danger ? "#fca5a5" : "#67e8f9";
+  const lx = ex - ux * 4 * f, ly = ey - uy * 4 * f - 16 * f;
+  ctx.fillText(Number(im.diameter).toFixed(1), lx, ly); ctx.fillText(Number(im.length).toFixed(1), lx, ly + 13 * f);
+  ctx.textAlign = "left";
+  // safety zone (when switched on, or when too close to the nerve)
+  if ((S.plan.showSafety === true || danger) && cut) {
     const m = (S.plan.safety ?? 2) * cam.scale;
     ctx.strokeStyle = hexA(danger ? COLORS.warn : COLORS.safe, 0.7);
     ctx.beginPath();
@@ -302,8 +379,23 @@ export function drawImplant(ctx, view, cam, W, H, im, sel, S, f, slabTol) {
     ctx.beginPath(); ctx.arc(T.x, T.y, 7 * f, 0, 7); ctx.fill(); ctx.stroke();
     ctx.beginPath(); ctx.arc(A.x + ux * 4 * f, A.y + uy * 4 * f, 7 * f, 0, 7); ctx.fillStyle = "#fb923c"; ctx.fill(); ctx.stroke();
   }
-  tag(ctx, im, Math.max(T.x, A.x) + w + 6 * f, (T.y + A.y) / 2, col, f, gapInfo);
+  // tooth number in a small box in the middle of the implant
+  numBox(ctx, im.tooth || "?", (T.x + A.x) / 2, (T.y + A.y) / 2, f, sel, fade);
+  if (gapInfo && gapInfo.gap < (S.plan.safety ?? 2) && (sel || W > 900 * f || S.report)) {
+    ctx.font = `800 ${10.5 * f}px system-ui, sans-serif`; ctx.fillStyle = "#fca5a5"; ctx.textAlign = "center";
+    ctx.fillText(gapInfo.gap < 0 ? `INTO nerve ${(-gapInfo.gap).toFixed(1)} mm` : `${gapInfo.gap.toFixed(1)} mm to nerve`, A.x + ux * (below + 12 * f), A.y + uy * (below + 12 * f));
+    ctx.textAlign = "left";
+  }
   ctx.restore();
+}
+function numBox(ctx, txt, x, y, f, sel, fade) {
+  ctx.font = `${sel ? 800 : 700} ${11 * f}px system-ui, sans-serif`;
+  const w = ctx.measureText(String(txt)).width + 8 * f, h = 15 * f;
+  ctx.globalAlpha = Math.max(0.5, fade);
+  ctx.fillStyle = "rgba(15,40,48,.85)"; ctx.fillRect(x - w / 2, y - h / 2, w, h);
+  ctx.strokeStyle = sel ? "#6ee7b7" : "rgba(103,232,249,.7)"; ctx.lineWidth = 1 * f; ctx.strokeRect(x - w / 2, y - h / 2, w, h);
+  ctx.fillStyle = sel ? "#6ee7b7" : "#67e8f9"; ctx.textAlign = "center"; ctx.fillText(String(txt), x, y + 4 * f); ctx.textAlign = "left";
+  ctx.globalAlpha = 1;
 }
 function tag(ctx, im, x, y, col, f, gapInfo) {
   ctx.font = `700 ${11 * f}px system-ui, sans-serif`;
