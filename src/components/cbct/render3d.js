@@ -346,6 +346,30 @@ const cross3 = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], 
 const norm3 = (a) => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; };
 
 /* light [1 2 1] smoothing along x, y and z — for the 3-D view only (the slices stay sharp) */
+/* the 3-D view does not need more than ~400 points per side: bigger (full-detail) scans are
+   halved for the graphics card only (the slices keep every detail) */
+const TEX_MAX = 420;
+function halve(src, nx, ny, nz, pool = "mean") {
+  const mx = Math.ceil(nx / 2), my = Math.ceil(ny / 2), mz = Math.ceil(nz / 2), out = new Uint8Array(mx * my * mz), nxy = nx * ny;
+  for (let z = 0; z < mz; z++) for (let y = 0; y < my; y++) for (let x = 0; x < mx; x++) {
+    let s = 0, n = 0, m = 0;
+    for (let c = 0; c < 2; c++) for (let b = 0; b < 2; b++) for (let a = 0; a < 2; a++) {
+      const X = 2 * x + a, Y = 2 * y + b, Z = 2 * z + c; if (X >= nx || Y >= ny || Z >= nz) continue;
+      const v = src[Z * nxy + Y * nx + X]; s += v; n++; if (v > m) m = v;
+    }
+    out[(z * my + y) * mx + x] = pool === "max" ? m : Math.round(s / n);
+  }
+  return { nx: mx, ny: my, nz: mz, data: out };
+}
+/* texture for a scan: halved when big (averaging also smooths), else lightly smoothed */
+function texOf(vol) {
+  if (Math.max(vol.nx, vol.ny, vol.nz) > TEX_MAX) return halve(vol.data, vol.nx, vol.ny, vol.nz);
+  return { nx: vol.nx, ny: vol.ny, nz: vol.nz, data: smooth3(vol) };
+}
+function maskTex(vol, mask, smooth) {
+  if (Math.max(vol.nx, vol.ny, vol.nz) > TEX_MAX) { const h = halve(mask, vol.nx, vol.ny, vol.nz, smooth ? "mean" : "max"); return h; }
+  return { nx: vol.nx, ny: vol.ny, nz: vol.nz, data: smooth ? smooth3({ nx: vol.nx, ny: vol.ny, nz: vol.nz, data: mask }) : mask };
+}
 function smooth3(vol) {
   const { nx, ny, nz, data } = vol, nxy = nx * ny;
   const a = new Uint8Array(data.length), b = new Uint8Array(data.length);
@@ -388,7 +412,8 @@ export class Renderer3D {
     const loc = gl.getAttribLocation(prog, "p"); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
     const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_3D, tex);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    gl.texImage3D(gl.TEXTURE_3D, 0, gl.R8, vol.nx, vol.ny, vol.nz, 0, gl.RED, gl.UNSIGNED_BYTE, smooth3(vol));
+    const T0 = texOf(vol); this.tdim = [T0.nx, T0.ny, T0.nz];
+    gl.texImage3D(gl.TEXTURE_3D, 0, gl.R8, T0.nx, T0.ny, T0.nz, 0, gl.RED, gl.UNSIGNED_BYTE, T0.data);
     gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     for (const w of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T, gl.TEXTURE_WRAP_R]) gl.texParameteri(gl.TEXTURE_3D, w, gl.CLAMP_TO_EDGE);
     const m = Math.max(vol.X, vol.Y, vol.Z);
@@ -440,11 +465,11 @@ export class Renderer3D {
     gl.uniform1f(this.u.thr, v01(thresholdHu));
     gl.uniform1f(this.u.toothLo, v01(Math.max(thresholdHu + 400, 1500)));
     gl.uniform1f(this.u.airV, v01(mode === "xray" ? -150 : -850));
-    const full = Math.min(1100, Math.round(Math.max(vol.nx, vol.ny, vol.nz) * 2.4));
+    const full = Math.min(1100, Math.round(Math.max(...this.tdim) * 2.4));
     gl.uniform1f(this.u.steps, quick ? Math.min(260, full) : full);
     gl.uniform3fv(this.u.clipLo, clip ? clip.lo : [0, 0, 0]);
     gl.uniform3fv(this.u.clipHi, clip ? clip.hi : [1, 1, 1]);
-    gl.uniform3fv(this.u.texel, [1 / vol.nx, 1 / vol.ny, 1 / vol.nz]);
+    gl.uniform3fv(this.u.texel, [1 / this.tdim[0], 1 / this.tdim[1], 1 / this.tdim[2]]);
     gl.uniform1f(this.u.flipZ, vol.zUp ? 0 : 1);
     gl.uniform3fv(this.u.camR, right); gl.uniform3fv(this.u.camU, up);
     const O = this.objs;
@@ -476,7 +501,7 @@ export class Renderer3D {
       return t;
     };
     const prev = this.fusion;
-    if (!prev || prev.volB !== f.volB) { if (prev?.texB) gl.deleteTexture(prev.texB); f.texB = tex3(2, f.volB.nx, f.volB.ny, f.volB.nz, smooth3(f.volB), true); } else f.texB = prev.texB;
+    if (!prev || prev.volB !== f.volB) { if (prev?.texB) gl.deleteTexture(prev.texB); const TB = texOf(f.volB); f.texB = tex3(2, TB.nx, TB.ny, TB.nz, TB.data, true); } else f.texB = prev.texB;
     if (f.dist && (!prev || prev.dist !== f.dist)) { if (prev?.texD) gl.deleteTexture(prev.texD); f.texD = tex3(3, f.dist.gx, f.dist.gy, f.dist.gz, f.dist.data, true); } else f.texD = prev?.texD;
     // box (A) → texture coordinates of B, as one affine map: tc = M·p + C
     const A = this.vol, B = f.volB, m = this.mm, T = f.T;
@@ -503,7 +528,8 @@ export class Renderer3D {
     gl.activeTexture(gl.TEXTURE4);
     this.guideTex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_3D, this.guideTex);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    gl.texImage3D(gl.TEXTURE_3D, 0, gl.R8, vol.nx, vol.ny, vol.nz, 0, gl.RED, gl.UNSIGNED_BYTE, smooth3({ nx: vol.nx, ny: vol.ny, nz: vol.nz, data: v }));
+    const TG = maskTex(vol, v, true);
+    gl.texImage3D(gl.TEXTURE_3D, 0, gl.R8, TG.nx, TG.ny, TG.nz, 0, gl.RED, gl.UNSIGNED_BYTE, TG.data);
     gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     for (const w of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T, gl.TEXTURE_WRAP_R]) gl.texParameteri(gl.TEXTURE_3D, w, gl.CLAMP_TO_EDGE);
     gl.activeTexture(gl.TEXTURE0);
@@ -518,7 +544,8 @@ export class Renderer3D {
     gl.activeTexture(gl.TEXTURE1);
     this.airTex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_3D, this.airTex);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    gl.texImage3D(gl.TEXTURE_3D, 0, gl.R8, vol.nx, vol.ny, vol.nz, 0, gl.RED, gl.UNSIGNED_BYTE, mask);
+    const TA = maskTex(vol, mask, false);
+    gl.texImage3D(gl.TEXTURE_3D, 0, gl.R8, TA.nx, TA.ny, TA.nz, 0, gl.RED, gl.UNSIGNED_BYTE, TA.data);
     gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     for (const w of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T, gl.TEXTURE_WRAP_R]) gl.texParameteri(gl.TEXTURE_3D, w, gl.CLAMP_TO_EDGE);
     gl.activeTexture(gl.TEXTURE0);

@@ -56,15 +56,27 @@ function autoWindow(vol) {
   const lo = vol.hu(pct(0.03)) - 450, hi = vol.hu(pct(0.9985));
   return { w: Math.max(400, Math.round((hi - lo) / 50) * 50), l: Math.round((hi + lo) / 2 / 25) * 25 };
 }
-/* unsharp mask on a rendered slice (OnDemand-style "Sharpen") */
-function sharpenImage(img, amount = 0.7) {
-  const { width: W, height: H, data } = img, src = new Uint8ClampedArray(data);
-  for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) {
-    const i = (y * W + x) * 4;
-    for (let c = 0; c < 3; c++) {
-      const k = i + c, blur = (src[k - 4] + src[k + 4] + src[k - W * 4] + src[k + W * 4]) * 0.25;
-      data[k] = src[k] + (src[k] - blur) * amount;
-    }
+/* unsharp mask on a rendered slice (OnDemand-style "Sharpen"). The blur radius follows the zoom
+   (screen pixels per scan voxel), so edges stay crisp when a cross-section is enlarged. */
+function sharpenImage(img, amount = 0.8, pxPerVoxel = 1) {
+  const { width: W, height: H, data } = img, n = W * H;
+  const R = Math.max(1, Math.min(3, Math.round(pxPerVoxel * 0.6)));
+  const L = new Float32Array(n), T = new Float32Array(n), B = new Float32Array(n);
+  for (let i = 0, k = 0; i < n; i++, k += 4) L[i] = (data[k] + data[k + 1] + data[k + 2]) / 3;
+  const inv = 1 / (2 * R + 1);
+  for (let y = 0; y < H; y++) {                            // box blur along x
+    const o = y * W; let acc = 0;
+    for (let x = -R; x <= R; x++) acc += L[o + Math.min(W - 1, Math.max(0, x))];
+    for (let x = 0; x < W; x++) { T[o + x] = acc * inv; acc += L[o + Math.min(W - 1, x + R + 1)] - L[o + Math.max(0, x - R)]; }
+  }
+  for (let x = 0; x < W; x++) {                            // … and along y
+    let acc = 0;
+    for (let y = -R; y <= R; y++) acc += T[Math.min(H - 1, Math.max(0, y)) * W + x];
+    for (let y = 0; y < H; y++) { B[y * W + x] = acc * inv; acc += T[Math.min(H - 1, y + R + 1) * W + x] - T[Math.max(0, y - R) * W + x]; }
+  }
+  for (let i = 0, k = 0; i < n; i++, k += 4) {
+    const d = (L[i] - B[i]) * amount;
+    data[k] += d; data[k + 1] += d; data[k + 2] += d;       // Uint8Clamped keeps 0..255
   }
   return img;
 }
@@ -132,9 +144,9 @@ function Pane({ kind, scene, cam, setCam, act, quick, onMax, maxed, active, onAc
   const { vol } = scene;
   const strip = kind === "strip";
 
-  const dpr = Math.min(window.devicePixelRatio || 1, scene.phone ? 2 : 1.5);
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);   // full screen sharpness (also on high-resolution screens)
   let W = Math.round(size.w * dpr), H = Math.round(size.h * dpr);
-  const maxPx = scene.phone ? 1.1e6 : 1.7e6;
+  const maxPx = scene.phone ? 1.4e6 : 3.2e6;
   if (W * H > maxPx) { const k = Math.sqrt(maxPx / (W * H)); W = Math.round(W * k); H = Math.round(H * k); }
   const f = W / size.w;
   const subW = strip ? Math.floor(W / STRIP_N) : W;
@@ -196,7 +208,7 @@ function Pane({ kind, scene, cam, setCam, act, quick, onMax, maxed, active, onAc
           const F = scene.fusion && (kind === "axial" || kind === "coronal" || kind === "sagittal") ? scene.fusion : null;
           const img = F ? renderFusion(v, vol, F.volB, F.T, camNow, subW, H, scene.lut, F.lutB, { mode: F.mode, mix: F.mix, img: imgCache.current[key] })
             : renderView(v, vol, camNow, subW, H, scene.lut, { slab, mip: scene.mip && kind !== "cross", img: imgCache.current[key], mask: scene.mask, maskColor: scene.maskColor });
-          if (scene.sharp) sharpenImage(img, 0.75);
+          if (scene.sharp) sharpenImage(img, 0.65, camNow.scale * Math.min(vol.sx, vol.sy, vol.sz));
           imgCache.current[key] = img;
           ctx.putImageData(img, x0, 0);
         }
@@ -431,7 +443,7 @@ function LightboxPane({ scene, lb, setLb, setCursor, setPlan, arch }) {
   const { vol } = scene;
   const kind = lb.kind === "cross" && !arch ? "axial" : lb.kind;
   const n = lb.cols * lb.rows;
-  const dpr = Math.min(window.devicePixelRatio || 1, scene.phone ? 2 : 1.5);
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);   // full screen sharpness (also on high-resolution screens)
   let W = Math.round(size.w * dpr), H = Math.round(size.h * dpr);
   const maxPx = 2.2e6; if (W * H > maxPx) { const k = Math.sqrt(maxPx / (W * H)); W = Math.round(W * k); H = Math.round(H * k); }
   const f = W / size.w, cw = Math.floor(W / lb.cols), ch = Math.floor(H / lb.rows);
@@ -454,7 +466,7 @@ function LightboxPane({ scene, lb, setLb, setCursor, setPlan, arch }) {
         let cam = { scale: fitScale(v, vol, cw, ch), panX: 0, panY: 0 };
         if (kind === "cross") cam = { scale: Math.min(cw / scene.plan.crossWidth, ch / (scene.plan.crossWidth * 1.25)), panX: 0, panY: 0 };
         const img = renderView(v, vol, cam, cw, ch, scene.lut, { slab: kind === "cross" ? scene.plan.crossSlab : 0 });
-        if (scene.sharp) sharpenImage(img, 0.75);
+        if (scene.sharp) sharpenImage(img, 0.65, cam.scale * Math.min(vol.sx, vol.sy, vol.sz));
         const x0 = (i % lb.cols) * cw, y0 = Math.floor(i / lb.cols) * ch;
         g.putImageData(img, x0, y0);
         g.save(); g.beginPath(); g.rect(x0, y0, cw, ch); g.clip(); g.translate(x0, y0);
@@ -597,7 +609,8 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
   const [frame, setFrame] = useState(IDENTITY_FRAME);
   const [wl, setWl] = useState({ w: 4000, l: 1200 });
   const [invert, setInvert] = useState(false);
-  const [sharp, setSharp] = useState(false);
+  const [sharp, setSharpRaw] = useState(() => lsGet("cbct-sharp", true));     // on by default, like planning software
+  const setSharp = (v) => { setSharpRaw(v); lsSet("cbct-sharp", v); };
   const [autoWl, setAutoWl] = useState(null);
   const [slab, setSlab] = useState(0);
   const [mip, setMip] = useState(false);
@@ -657,7 +670,9 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
       try {
         const m = await fetch(`${apiBase}/cbct/${volumeId}`, { headers: authHeaders() }).then((r) => (r.ok ? r.json() : Promise.reject(new Error(r.status === 401 ? "Please sign in again." : "This scan could not be found."))));
         if (!alive) return; setMeta(m);
-        const v = await loadVolume(apiBase, volumeId, m, (p, msg) => alive && setProgress({ p, msg }));
+        const nat = Math.max(m?.dimensions?.cols || 0, m?.dimensions?.rows || 0, m?.dimensions?.depth || 0);
+        const wantHd = lsGet("cbct-hd", false) && window.innerWidth >= 1000 && nat > budgetForDevice().maxDim;
+        const v = await loadVolume(apiBase, volumeId, m, (p, msg) => alive && setProgress({ p, msg }), wantHd ? { maxDim: 720 } : {});
         if (!alive) return;
         setVol(v);
         setCursor([v.X / 2, v.Y / 2, v.Z / 2]);
@@ -946,6 +961,27 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
     if (dirty && !window.confirm("The plan has changes that are not saved. Open the other scan anyway?")) return;
     const u = new URL(window.location.href); u.searchParams.set("volumeId", s.id); if (u.searchParams.has("id")) u.searchParams.set("id", s.id);
     window.location.href = u.toString();
+  };
+
+  /* ── full detail (HD): the scan at its own resolution, for computers ── */
+  const nativeMax = Math.max(meta?.dimensions?.cols || 0, meta?.dimensions?.rows || 0, meta?.dimensions?.depth || 0);
+  const nativeVox = Number(meta?.voxel_spacing?.x) || null;
+  const canHd = !!vol && !screen.phone && nativeMax > Math.max(vol.nx, vol.ny, vol.nz) + 4;
+  const [hdPref, setHdPrefRaw] = useState(() => lsGet("cbct-hd", false));
+  const [qualityHidden, setQualityHidden] = useState(false);
+  const setHdPref = (v) => { setHdPrefRaw(v); lsSet("cbct-hd", v); };
+  const loadHd = async () => {
+    try {
+      setBusy("Loading full detail… 0%");
+      const v = await loadVolume(apiBase, volumeId, meta, (pp, msg) => setBusy(`Full detail: ${msg} ${Math.round(pp * 100)}%`), { maxDim: 720 });
+      if (Math.max(v.nx, v.ny, v.nz) <= Math.max(vol.nx, vol.ny, vol.nz)) {
+        say("This scan has no full-detail copy yet. Press “Make full detail” to build it from the original DICOM (once).", "warn");
+        return;
+      }
+      setGuide(null); setVol(v);
+      say(`Full detail loaded — ${v.nx}×${v.ny}×${v.nz}, ${r1(v.sx * 100) / 100} mm.`);
+    } catch (e) { console.error(e); say("Full detail could not be loaded (low memory or network).", "err"); }
+    finally { setBusy(""); }
   };
 
   /* ── surgical guide ── */
@@ -1245,7 +1281,8 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
     wl, setWl, autoWl, invert, setInvert, sharp, setSharp, slab, setSlab, mip, setMip, removeSelected, setCursor, rebuild, frame, setFrame, three, setThree,
     airway, cephKind, setCephKind, cephActive, setCephActive, cephLook, setCephLook, doExport, setTmjOffset, lb, setLb,
     ceph3Active, setCeph3Active, fus, setFus, setBrowser, realign, nudge, autoWl, volumeId,
-    gopt, setG, supportHu, makeGuide, downloadGuide, guide, setRep, repDirty, setRepDirty, setReportHtml, previewHtml, printPreview };
+    gopt, setG, supportHu, makeGuide, downloadGuide, guide, setRep, repDirty, setRepDirty, setReportHtml, previewHtml, printPreview,
+    canHd, nativeVox, nativeMax, loadHd, hdPref, setHdPref, meta };
 
   const openTab = (k) => {
     setTab(k); setTemp(null);
@@ -1287,6 +1324,18 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
         </div>
       )}
 
+      {(vol.source === "slices" || canHd) && !qualityHidden && (
+        <div className="cv-quality">
+          <span>⚠ {vol.source === "slices"
+            ? "This scan opened from its preview pictures, so it looks blurred. Build the real 3-D scan once for full quality."
+            : `Shown in reduced detail (${vol.sx.toFixed(2)} mm). This scan was taken at ${nativeVox ? nativeVox.toFixed(2) + " mm" : "finer detail"} — load full detail for sharp images.`}</span>
+          <span className="cv-hint-btns">
+            {vol.source !== "slices" && <button type="button" className="cv-btn primary sm" onClick={loadHd}>🔍 Load full detail</button>}
+            <button type="button" className={`cv-btn sm ${vol.source === "slices" ? "primary" : "ghost"}`} onClick={rebuild}>{vol.source === "slices" ? "Make full quality" : "Make full detail"}</button>
+            <button type="button" className="cv-btn ghost sm" onClick={() => setQualityHidden(true)} aria-label="Hide">✕</button>
+          </span>
+        </div>
+      )}
       <div className="cv-body">
         <div className={`cv-grid ${gridClass}`}>
           {tab === "lightbox" ? <LightboxPane scene={scene} lb={lb} setLb={setLb} setCursor={setCursor} setPlan={setPlan} arch={arch} />
@@ -1355,7 +1404,8 @@ function Panel(P) {
     wl, setWl, autoWl, invert, setInvert, sharp, setSharp, slab, setSlab, mip, setMip, removeSelected, setCursor, rebuild, frame, setFrame, three, setThree,
     airway, cephKind, setCephKind, cephActive, setCephActive, cephLook, setCephLook, doExport, setTmjOffset, lb, setLb,
     ceph3Active, setCeph3Active, fus, setFus, setBrowser, realign, nudge,
-    gopt, setG, supportHu, makeGuide, downloadGuide, guide, setRep, repDirty, setRepDirty, setReportHtml, previewHtml, printPreview } = P;
+    gopt, setG, supportHu, makeGuide, downloadGuide, guide, setRep, repDirty, setRepDirty, setReportHtml, previewHtml, printPreview,
+    canHd, nativeVox, nativeMax, loadHd, hdPref, setHdPref } = P;
   const upd = (id, patch) => setPlan((p) => ({ ...p, implants: p.implants.map((i) => (i.id === id ? { ...i, ...patch } : i)) }));
   const rows = useMemo(() => (tab === "implant" ? implantRows(plan, vol) : []), [tab, plan, vol]);
   const tiltBy = (im, dir, a) => {
@@ -1376,6 +1426,19 @@ function Panel(P) {
       <Range label="Brightness (level)" min={-1000} max={4000} step={25} value={wl.l} set={(v) => setWl((x) => ({ ...x, l: v }))} />
       <label className="cv-check"><input type="checkbox" checked={invert} onChange={(e) => setInvert(e.target.checked)} /> Invert (black bone)</label>
       <label className="cv-check"><input type="checkbox" checked={sharp} onChange={(e) => setSharp(e.target.checked)} /> Sharpen (crisper edges)</label>
+      <div className="cv-detail">
+        <div className="cv-row"><span className="cv-lbl">Detail</span><b>{vol.sx.toFixed(2)} mm</b><span className="cv-small">· {vol.nx}×{vol.ny}×{vol.nz}</span></div>
+        {canHd ? (
+          <>
+            <p className="cv-help">This scan was taken at {nativeVox ? `${nativeVox.toFixed(2)} mm` : "finer detail"} ({nativeMax} points per side). Load it in full detail for the sharpest cross-sections (≈ {Math.round((nativeMax ** 3) / 3 / 1e6)} MB, computers only).</p>
+            <div className="cv-row wrap">
+              <button type="button" className="cv-btn primary sm" onClick={loadHd}>🔍 Load full detail</button>
+              <button type="button" className="cv-btn ghost sm" onClick={rebuild} title="Builds the full-detail copy from the original DICOM (needed once for scans uploaded earlier)">Make full detail</button>
+            </div>
+          </>
+        ) : <p className="cv-help">{nativeVox && Math.abs(nativeVox - vol.sx) < 0.02 ? "Shown at the scan's own resolution." : "Shown at the best detail for this device."}</p>}
+        <label className="cv-check"><input type="checkbox" checked={hdPref} onChange={(e) => setHdPref(e.target.checked)} /> Always open in full detail on this computer</label>
+      </div>
       {(tab === "mpr" || tab === "airway") && (
         <>
           <Range label="Slab thickness" unit="mm" min={0} max={30} step={1} value={slab} set={setSlab} />
@@ -2040,6 +2103,9 @@ ${DBM_CSS}
 .cv-nudge .cv-btn{min-width:34px}
 .cv-secgrid{display:grid;grid-template-columns:1fr 1fr;gap:4px 8px}
 textarea.cv-in{resize:vertical;font:inherit;font-size:12.5px;margin-top:3px}
+.cv-detail{border-top:1px solid #1e293b;padding-top:7px;display:flex;flex-direction:column;gap:6px}
+.cv-detail b{font-size:12.5px}
+.cv-quality{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 10px;background:#422006;border-bottom:1px solid #a16207;color:#fde68a;font-size:12.5px;flex-shrink:0;flex-wrap:wrap}
 .cv-root.phone .cv-hide-phone{display:none}
 .cv-root.phone .cv-top{gap:4px;padding:0 4px}
 .cv-root.phone .cv-tabs button{padding:9px 9px 10px;font-size:12.5px}
