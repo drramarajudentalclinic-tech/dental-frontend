@@ -164,6 +164,27 @@ export function drawOverlay(ctx, view, cam, W, H, S, opts = {}) {
   }
   if (temp && ["dist", "angle"].includes(temp.kind)) { /* drawn above */ }
 
+  /* ── 3-D landmarks (3D Ceph): dots on the slices close to them; lines between pairs ── */
+  if (S.points3d && S.points3d.length) {
+    const tol = view.kind === "pano" ? 6 : 2.5;
+    for (const ln of S.lines3d || []) {
+      const a = S.points3d.find((q) => q.key === ln[0]), b = S.points3d.find((q) => q.key === ln[1]);
+      if (!a || !b) continue;
+      const A = P(a.p), B = P(b.p);
+      if (!near(A.d, tol * 3) && !near(B.d, tol * 3)) continue;
+      ctx.strokeStyle = hexA(ln[2] || "#34d399", 0.55); ctx.lineWidth = 1.2 * f; ctx.setLineDash([5 * f, 4 * f]);
+      ctx.beginPath(); ctx.moveTo(A.x, A.y); ctx.lineTo(B.x, B.y); ctx.stroke(); ctx.setLineDash([]);
+    }
+    for (const q of S.points3d) {
+      const s = P(q.p);
+      if (!near(s.d, tol)) continue;
+      const on = q.active;
+      ctx.fillStyle = on ? "#facc15" : "#34d399"; ctx.strokeStyle = "#022c22"; ctx.lineWidth = 1.5 * f;
+      ctx.beginPath(); ctx.arc(s.x, s.y, (on ? 5.5 : 4.5) * f, 0, 7); ctx.fill(); ctx.stroke();
+      label(q.key, s.x + 7 * f, s.y - 5 * f, on ? "#facc15" : "#a7f3d0");
+    }
+  }
+
   /* ── scale bar + letters ── */
   if (!opts.noScale) {
     const mm = cam.scale >= 12 ? 5 : cam.scale >= 4 ? 10 : 20;

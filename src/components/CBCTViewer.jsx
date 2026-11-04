@@ -25,12 +25,15 @@ import {
 import { drawOverlay, hitTest, COLORS } from "./cbct/overlay";
 import { Renderer3D, webgl2Supported } from "./cbct/render3d";
 import { buildReportHTML, openReport, reportPNG, planFile, downloadBlob, implantRows } from "./cbct/report";
-import { cephProjection, cephImage, CEPH_POINTS, cephAnalysis, computeAirway, implantsSTL } from "./cbct/tools";
+import { cephProjection, cephImage, CEPH_POINTS, cephAnalysis, computeAirway, implantsSTL, CEPH3D_POINTS, CEPH3D_LINES, ceph3dAnalysis } from "./cbct/tools";
+import { autoAlign, renderFusion, nudgeT, distanceField } from "./cbct/fusion";
+import { exportDicomZip } from "./cbct/dicomExport";
+import ScanBrowser, { DBM_CSS } from "./cbct/ScanBrowser";
 import { CATALOG, DEFAULT_PICK, findLine, systemName, normaliseImplant, implantSVG, SHAPE_LABEL, shapeOf } from "./cbct/implantLibrary";
 
 /* ── constants ─────────────────────────────────────────────────────────── */
 const TABS = [
-  ["mpr", "MPR"], ["implant", "Implant"], ["3d", "3D"], ["lightbox", "Lightbox"], ["ceph", "Ceph"], ["tmj", "TMJ"], ["airway", "Airway"], ["report", "Report"],
+  ["mpr", "MPR"], ["implant", "Implant"], ["3d", "3D"], ["lightbox", "Lightbox"], ["ceph", "Ceph"], ["tmj", "TMJ"], ["airway", "Airway"], ["fusion", "Fusion"], ["report", "Report"],
 ];
 const VIEW_TITLE = {
   axial: "Axial", coronal: "Coronal", sagittal: "Sagittal", pano: "Panoramic", cross: "Cross-section", strip: "Cross-sections",
@@ -180,13 +183,17 @@ function Pane({ kind, scene, cam, setCam, act, quick, onMax, maxed, active, onAc
         if (quick) {
           const hw = Math.max(1, Math.round(subW / 2)), hh = Math.max(1, Math.round(H / 2));
           const c2 = { scale: camNow.scale / 2, panX: camNow.panX / 2, panY: camNow.panY / 2 };
-          const img = renderView(v, vol, c2, hw, hh, scene.lut, { slab, mip: scene.mip && kind !== "cross", quick: true, img: imgCache.current[`q${i}`], mask: scene.mask });
+          const F = scene.fusion && (kind === "axial" || kind === "coronal" || kind === "sagittal") ? scene.fusion : null;
+          const img = F ? renderFusion(v, vol, F.volB, F.T, c2, hw, hh, scene.lut, F.lutB, { mode: F.mode, mix: F.mix, quick: true, img: imgCache.current[`q${i}`] })
+            : renderView(v, vol, c2, hw, hh, scene.lut, { slab, mip: scene.mip && kind !== "cross", quick: true, img: imgCache.current[`q${i}`], mask: scene.mask });
           imgCache.current[`q${i}`] = img;
           const tmp = imgCache.current[`t${i}`] || document.createElement("canvas");
           tmp.width = hw; tmp.height = hh; tmp.getContext("2d").putImageData(img, 0, 0); imgCache.current[`t${i}`] = tmp;
           ctx.drawImage(tmp, x0, 0, subW, H);
         } else {
-          const img = renderView(v, vol, camNow, subW, H, scene.lut, { slab, mip: scene.mip && kind !== "cross", img: imgCache.current[key], mask: scene.mask });
+          const F = scene.fusion && (kind === "axial" || kind === "coronal" || kind === "sagittal") ? scene.fusion : null;
+          const img = F ? renderFusion(v, vol, F.volB, F.T, camNow, subW, H, scene.lut, F.lutB, { mode: F.mode, mix: F.mix, img: imgCache.current[key] })
+            : renderView(v, vol, camNow, subW, H, scene.lut, { slab, mip: scene.mip && kind !== "cross", img: imgCache.current[key], mask: scene.mask });
           if (scene.sharp) sharpenImage(img, 0.75);
           imgCache.current[key] = img;
           ctx.putImageData(img, x0, 0);
@@ -204,7 +211,7 @@ function Pane({ kind, scene, cam, setCam, act, quick, onMax, maxed, active, onAc
       });
     });
     return () => cancelAnimationFrame(raf.current);
-  }, [W, H, views, camNow, quick, scene.lut, scene.plan, scene.temp, scene.selectedId, scene.slab, scene.mip, scene.cursor, scene.arch, scene.mask, scene.tool, scene.rotatable, scene.sharp, f, kind, vol]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [W, H, views, camNow, quick, scene.lut, scene.plan, scene.temp, scene.selectedId, scene.slab, scene.mip, scene.cursor, scene.arch, scene.mask, scene.tool, scene.rotatable, scene.sharp, scene.fusion, scene.points3d, f, kind, vol]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const el = over.current; if (!el) return undefined;
@@ -323,9 +330,13 @@ function Pane3D({ scene, settings, setSettings, onMax, maxed, rendererRef, activ
     if (c.width !== W || c.height !== H) { c.width = W; c.height = H; o.width = W; o.height = H; }
     R.boneSee = settings.see ?? 0.6;
     R.setAirway(scene.airMask || null);
-    R.setObjects({ implants: scene.plan.implants || [], nerves: scene.plan.nerves || [], selectedId: scene.selectedId, showProsthetic: scene.plan.showProsthetic !== false,
+    const F3 = scene.fusion3d;
+    R.setFusion(F3 ? { volB: F3.volB, T: F3.T, dist: F3.dist, mode: F3.mode } : null);
+    if (F3) R.setObjects({});
+    else R.setObjects({ implants: scene.plan.implants || [], nerves: scene.plan.nerves || [], selectedId: scene.selectedId, showProsthetic: scene.plan.showProsthetic !== false,
+      points: scene.points3d || [],
       dangerIds: (scene.plan.implants || []).filter((im) => { const g = implantNerveGap(im, scene.plan.nerves); return g && g.gap < scene.plan.safety; }).map((im) => im.id) });
-    R.draw({ mode: settings.mode, thresholdHu: settings.thr, quick: moving, clip: { lo: [settings.clipRight || 0, settings.clipFront, settings.clipBottom], hi: [1 - (settings.clipLeft || 0), 1, settings.clipTop] } });
+    R.draw({ mode: F3 ? "bone" : settings.mode, thresholdHu: F3 ? Math.min(settings.thr, 900) : settings.thr, quick: moving, clip: { lo: [settings.clipRight || 0, settings.clipFront, settings.clipBottom], hi: [1 - (settings.clipLeft || 0), 1, settings.clipTop] } });
     const g = o.getContext("2d"); g.clearRect(0, 0, W, H);
     const f = W / size.w;
     for (const im of scene.plan.implants || []) {                // tooth number next to each implant
@@ -335,7 +346,22 @@ function Pane3D({ scene, settings, setSettings, onMax, maxed, rendererRef, activ
       g.fillStyle = "rgba(2,6,23,.7)"; g.fillRect(b.x + 4 * f, b.y - 11 * f, tw + 6 * f, 15 * f);
       g.fillStyle = "#e0f2fe"; g.fillText(`#${im.tooth}`, b.x + 7 * f, b.y);
     }
-  }, [W, H, settings, tick, moving, scene.plan, scene.selectedId, scene.airMask]); // eslint-disable-line react-hooks/exhaustive-deps
+    for (const q of (F3 ? [] : scene.points3d || [])) {           // 3-D ceph landmark names
+      const b = R.project(q.p, W, H);
+      g.font = `700 ${10.5 * f}px system-ui`; g.fillStyle = q.active ? "#facc15" : "#a7f3d0"; g.fillText(q.key, b.x + 6 * f, b.y - 5 * f);
+    }
+    if (F3) {
+      g.font = `600 ${11 * f}px system-ui`;
+      if (F3.mode === "change") {
+        const x0 = 12 * f, y0 = H - 22 * f, w = 160 * f;
+        const gr = g.createLinearGradient(x0, 0, x0 + w, 0); gr.addColorStop(0, "#33c766"); gr.addColorStop(0.5, "#fad62e"); gr.addColorStop(1, "#f04038");
+        g.fillStyle = gr; g.fillRect(x0, y0, w, 8 * f);
+        g.fillStyle = "#e2e8f0"; g.fillText("0", x0, y0 - 4 * f); g.fillText("2.5", x0 + w / 2 - 8 * f, y0 - 4 * f); g.fillText("≥5 mm change", x0 + w - 30 * f, y0 - 4 * f);
+      } else {
+        g.fillStyle = "#f1e6cc"; g.fillText("■ first scan", 12 * f, H - 30 * f); g.fillStyle = "#73a8ff"; g.fillText("■ second scan", 12 * f, H - 14 * f);
+      }
+    }
+  }, [W, H, settings, tick, moving, scene.plan, scene.selectedId, scene.airMask, scene.fusion3d, scene.points3d]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const kick = () => { setMoving(true); clearTimeout(idle.current); idle.current = setTimeout(() => setMoving(false), 160); setTick((t) => t + 1); };
   useEffect(() => {
@@ -593,6 +619,9 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
   const [cephLook, setCephLook] = useState({ contrast: 1, bright: 0, invert: false });
   const [reportHtml, setReportHtml] = useState("");
   const [lb, setLb] = useState({ kind: "axial", cols: 4, rows: 3, gap: 2 });
+  const [ceph3Active, setCeph3Active] = useState("S");
+  const [browser, setBrowser] = useState(null);           // null | "browse" | "compare"
+  const [fus, setFus] = useState({ volB: null, metaB: null, idB: null, T: null, rms: null, mode2d: "colour", mix: 0.5, mode3d: "colours", region: "upper", dist: null });
   const legacy = useRef([]);
   const hist = useRef({ past: [], future: [] });
   const drag = useRef(null);
@@ -644,6 +673,8 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
 
   const arch = useMemo(() => buildArch(plan.archPoints), [plan.archPoints]);
   const lut = useMemo(() => (vol ? makeLut(vol, wl.w, wl.l, invert) : null), [vol, wl, invert]);
+  const lutB = useMemo(() => (fus.volB ? makeLut(fus.volB, wl.w, wl.l, invert) : null), [fus.volB, wl, invert]);
+  const boneHu = autoWl ? clamp(Math.round(autoWl.l - autoWl.w * 0.1), 250, 1200) : 500;   // bone level used for alignment
   useEffect(() => {
     if (vol && plan.airway.zLo == null) setPlanRaw((p) => ({ ...p, airway: { ...p.airway, zLo: Math.round(vol.Z * 0.35), zHi: Math.round(vol.Z * 0.75) } }));
   }, [vol, plan.airway.zLo]);
@@ -655,6 +686,7 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
 
   const tmjViews = ["tmjRs", "tmjRc", "tmjLs", "tmjLc"].filter((k) => plan.tmj[k[3]]);
   const views = tab === "implant" ? ["axial", crossMode === "strip" ? "strip" : "cross", "pano", "3d"]
+    : tab === "ceph" && cephKind === "3d" ? ["sagittal", "coronal", "axial", "3d"]
     : tab === "3d" ? ["3d"]
     : tab === "tmj" ? (tmjViews.length === 4 ? tmjViews : ["axial", ...tmjViews, ...(tmjViews.length ? [] : ["coronal"])])
     : ["axial", "sagittal", "coronal", "3d"];
@@ -703,6 +735,13 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
       if (P.button === 2 || tool === "wl") { drag.current = { mode: "wl", x: P.clientX, y: P.clientY, wl0: wl }; return; }
       if (P.button === 1 || tool === "pan") { drag.current = { mode: "pan", x: P.x, y: P.y, cam0: { ...P.cam }, pane: P.paneKind }; return; }
       if (tool === "zoom") { drag.current = { mode: "zoom", y: P.y, x: P.x, cam0: { ...P.cam }, pane: P.paneKind }; return; }
+      if (tab === "ceph" && cephKind === "3d" && tool === "nav" && ceph3Active && isMPR(kind) && world) {
+        setPlan((p) => ({ ...p, ceph: { ...p.ceph, p3: { ...(p.ceph.p3 || {}), [ceph3Active]: world } } }));
+        setCursor(world);
+        const done = { ...(plan.ceph.p3 || {}), [ceph3Active]: world };
+        setCeph3Active(CEPH3D_POINTS.map(([k]) => k).find((k) => !done[k]) || null);
+        return;
+      }
       const hit = hitTest(view, P.cam, P.W, P.H, S, P.x, P.y, P.f);
       if (tool === "nav" && hit && hit.type === "rotate") {
         drag.current = { mode: "rotate", a0: Math.atan2(P.y - hit.c.y, P.x - hit.c.x), c: hit.c, F0: frame, N: view.N, sign: Math.sign(dot(cross(view.U, view.V), view.N)) || 1 };
@@ -842,6 +881,65 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
     window.addEventListener("keydown", onKey); return () => window.removeEventListener("keydown", onKey);
   });
 
+  /* ── Fusion: a second scan of the same patient, aligned on the bone ── */
+  const runAlign = async (volB, region, start = null) => {
+    setBusy("Aligning the two scans on the bone… 0%");
+    try {
+      const r = await autoAlign(vol, volB, { thrHu: boneHu, region, start, onStep: (k) => setBusy(`Aligning the two scans on the bone… ${Math.round(k * 100)}%`) });
+      return r;
+    } finally { setBusy(""); }
+  };
+  const loadFusion = async (scan, savedT = null, region = fus.region) => {
+    try {
+      setBusy("Opening the second scan…");
+      const m = await fetch(`${apiBase}/cbct/${scan.id}`, { headers: authHeaders() }).then((r) => (r.ok ? r.json() : Promise.reject(new Error("The second scan could not be found."))));
+      const vB = await loadVolume(apiBase, scan.id, m, (pp, msg) => setBusy(`Second scan: ${msg} ${Math.round(pp * 100)}%`));
+      let T = savedT, rms = null;
+      if (!T) { const r = await runAlign(vB, region); T = r.T; rms = r.rms; }
+      setFus((f) => ({ ...f, volB: vB, metaB: m, idB: scan.id, T, rms, dist: null, region }));
+      setPlan((p) => ({ ...p, fusion: { id: scan.id, T, region, rms } }));
+      setTab("fusion");
+      say(rms != null ? `Scans aligned — average bone distance ${r1(rms)} mm. Check the overlay and fine-tune if needed.` : "Second scan opened with the saved alignment.");
+    } catch (e) { console.error(e); say(e.message || "The second scan could not be opened.", "err"); }
+    finally { setBusy(""); }
+  };
+  const realign = async (region) => {
+    if (!fus.volB) return;
+    try {
+      const r = await runAlign(fus.volB, region);
+      setFus((f) => ({ ...f, T: r.T, rms: r.rms, region }));
+      setPlan((p) => ({ ...p, fusion: { ...(p.fusion || {}), T: r.T, region, rms: r.rms } }));
+      say(`Aligned again — average bone distance ${r1(r.rms)} mm.`);
+    } catch (e) { say(e.message, "err"); }
+  };
+  const nudge = (opt) => {
+    if (!fus.T) return;
+    const T = nudgeT(fus.T, { ...opt, centre: cursor });
+    setFus((f) => ({ ...f, T }));
+    setPlan((p) => ({ ...p, fusion: { ...(p.fusion || {}), T } }), { record: false });
+  };
+  useEffect(() => {                                       // change map needs the distance from the first scan's bone
+    if (tab !== "fusion" || !fus.volB || fus.mode3d !== "change" || fus.dist || !vol) return;
+    setBusy("Measuring the change… (a few seconds)");
+    const t = setTimeout(() => { try { const d = distanceField(vol, boneHu); setFus((f) => ({ ...f, dist: d })); } finally { setBusy(""); } }, 40);
+    return () => clearTimeout(t);
+  }, [tab, fus.volB, fus.mode3d, fus.dist, vol]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {                                       // reopen a saved comparison
+    if (tab === "fusion" && vol && !fus.volB && plan.fusion?.id && !busy) loadFusion({ id: plan.fusion.id }, plan.fusion.T, plan.fusion.region || "upper");
+  }, [tab, vol]); // eslint-disable-line react-hooks/exhaustive-deps
+  const exportSeries = async () => {
+    try {
+      setBusy("Making the DICOM series… 0%");
+      const blob = await exportDicomZip(vol, { patientName: meta?.patient_name, patientId: meta?.patient_id, studyDate: meta?.study_date }, (k) => setBusy(`Making the DICOM series… ${Math.round(k * 100)}%`));
+      downloadBlob(blob, `cbct-${volumeId}-dicom-series.zip`);
+    } catch (e) { console.error(e); say("The DICOM series could not be made.", "err"); } finally { setBusy(""); }
+  };
+  const openScan = (s) => {
+    if (dirty && !window.confirm("The plan has changes that are not saved. Open the other scan anyway?")) return;
+    const u = new URL(window.location.href); u.searchParams.set("volumeId", s.id); if (u.searchParams.has("id")) u.searchParams.set("id", s.id);
+    window.location.href = u.toString();
+  };
+
   /* ── save ── */
   const save = async () => {
     setSaveState("saving");
@@ -923,6 +1021,22 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
       ${rows.map((r) => `<tr><td>${esc(r.name)}</td><td class="${r.flag !== "ok" ? "bad" : ""}">${r.value}°</td><td>${r.norm} ± ${r.sd}°</td><td>${esc(r.flag === "ok" ? "within normal" : r.flag === "high" ? "above normal" : "below normal")}</td></tr>`).join("")}
       </tbody></table>`;
     }
+    const rows3 = ceph3dAnalysis(plan.ceph.p3 || {}).filter((r) => r.value != null);
+    if (rows3.length) {
+      html += `<h2>3D cephalometric analysis</h2><table><thead><tr><th></th><th>Measurement</th><th>Value</th><th>Normal</th></tr></thead><tbody>
+      ${rows3.map((r) => `<tr><td>${esc(r.group)}</td><td>${esc(r.name)}</td><td class="${r.flag && r.flag !== "ok" ? "bad" : ""}">${r.value} ${esc(r.unit)}</td><td>${r.norm != null ? `${r.norm} ± ${r.sd} ${esc(r.unit)}` : ""}</td></tr>`).join("")}
+      </tbody></table>`;
+    }
+    if (fus.volB && fus.T) {
+      const pics = ["sagittal", "coronal"].map((k) => {
+        const v = makeView(k, vol, { cursor, frame: IDENTITY_FRAME }); const W = 520, H = 440;
+        const cam = { scale: fitScale(v, vol, W, H), panX: 0, panY: 0 };
+        const c = document.createElement("canvas"); c.width = W; c.height = H;
+        c.getContext("2d").putImageData(renderFusion(v, vol, fus.volB, fus.T, cam, W, H, makeLut(vol, wl.w, wl.l, false), makeLut(fus.volB, wl.w, wl.l, false), { mode: "colour" }), 0, 0);
+        return `<figure><img src="${c.toDataURL("image/jpeg", 0.88)}" alt=""><figcaption>${k === "sagittal" ? "Sagittal" : "Coronal"} overlay — magenta: this scan, green: scan #${fus.idB}, white: unchanged</figcaption></figure>`;
+      });
+      html += `<h2>Before / after comparison</h2><p>Compared with scan #${esc(fus.idB)}${fus.metaB?.study_date ? ` (${esc(fus.metaB.study_date)})` : ""}. Aligned on the bone${fus.region === "upper" ? " of the upper skull" : fus.region === "lower" ? " of the lower jaw" : ""}${fus.rms != null ? `; average bone distance after alignment ${r1(fus.rms)} mm` : ""}.</p><div class="pair">${pics.join("")}</div>`;
+    }
     if (airway && !airway.error) {
       const sag = snapshot("sagittal", { W: 700, H: 600, st: { cursor: plan.airway.seed }, mask: airway.mask });
       html += `<h2>Airway</h2><p>Volume <b>${r1(airway.cc)} cc</b> between the chosen levels · narrowest cross-section <b>${airway.min ? Math.round(airway.min.mm2) : "—"} mm²</b>${airway.min ? ` at ${r1(airway.min.z)} mm` : ""} · threshold ${airway.thrHu} HU.</p>${sag ? `<img src="${sag}" alt="" style="max-width:520px">` : ""}`;
@@ -967,6 +1081,7 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
       downloadBlob(new Blob([implantsSTL(plan.implants, `implants_${volumeId}`)], { type: "model/stl" }), `implants-${volumeId}.stl`); return;
     }
     if (kind === "screen") { screenShot(); return; }
+    if (kind === "series") { exportSeries(); return; }
     const pre = kind === "pdf" ? window.open("", "_blank") : null;
     if (pre) pre.document.write("<p style='font-family:system-ui;padding:20px'>Making the report…</p>");
     setBusy("Making the report…");
@@ -975,7 +1090,7 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
       if (kind === "pdf") openReport(makeReport().html, pre);
       else if (kind === "png") { const blob = await reportPNG({ meta, plan, vol, images: reportImages() }); downloadBlob(blob, `implant-plan-${volumeId}.png`); }
       else if (kind === "json") {
-        const data = { ...planFile({ meta, plan, vol, volumeId }), ceph: cephAnalysis(plan.ceph.points || {}), airway: airway && !airway.error ? { cc: airway.cc, narrowest_mm2: airway.min?.mm2, at_mm: airway.min?.z } : null, tmj: plan.tmj };
+        const data = { ...planFile({ meta, plan, vol, volumeId }), ceph: cephAnalysis(plan.ceph.points || {}), ceph3d: { points: plan.ceph.p3 || {}, analysis: ceph3dAnalysis(plan.ceph.p3 || {}) }, fusion: plan.fusion ? { with_scan: plan.fusion.id, transform_A_to_B: plan.fusion.T, average_bone_distance_mm: plan.fusion.rms } : null, airway: airway && !airway.error ? { cc: airway.cc, narrowest_mm2: airway.min?.mm2, at_mm: airway.min?.z } : null, tmj: plan.tmj };
         downloadBlob(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }), `implant-plan-${volumeId}.json`);
       }
     } catch (e) { console.error(e); say("The report could not be made.", "err"); }
@@ -1009,6 +1124,10 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
     vol, plan, arch, cursor, lut, slab, mip, sharp, selectedId, temp, tool, phone: screen.phone, frame: mprFrame, tmjOffset, rotatable,
     mask: tab === "airway" && airway && !airway.error ? airway.mask : null,
     airMask: airway && !airway.error && (tab === "airway" || tab === "3d") ? airway.mask : null,
+    fusion: tab === "fusion" && fus.volB && fus.T ? { volB: fus.volB, T: fus.T, lutB, mode: fus.mode2d, mix: fus.mix } : null,
+    fusion3d: tab === "fusion" && fus.volB && fus.T && (fus.mode3d !== "change" || fus.dist) ? { volB: fus.volB, T: fus.T, dist: fus.dist, mode: fus.mode3d === "change" ? "change" : "colours" } : null,
+    points3d: tab === "ceph" && cephKind === "3d" ? Object.entries(plan.ceph.p3 || {}).map(([key, p]) => ({ key, p, active: key === ceph3Active })) : null,
+    lines3d: CEPH3D_LINES,
     cursorCss: { nav: "crosshair", pan: "grab", zoom: "zoom-in", wl: "ew-resize", dist: "crosshair", angle: "crosshair", hu: "cell", arch: "copy", nerve: "copy", implant: "copy", condyle: "copy", airseed: "copy", erase: "not-allowed" }[tool],
   };
   const sliderOf = (kind) => {
@@ -1026,11 +1145,12 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
   };
   const curView = views.includes(activeView) ? activeView : views[0];
   const shown = screen.phone ? [curView] : maxView && views.includes(maxView) ? [maxView] : views;
-  const gridClass = tab === "ceph" || tab === "report" || tab === "lightbox" || shown.length === 1 ? "one" : shown.length === 2 ? "two" : shown.length === 3 ? "three" : "quad";
+  const cephFlat = tab === "ceph" && cephKind !== "3d";
+  const gridClass = cephFlat || tab === "report" || tab === "lightbox" || shown.length === 1 ? "one" : shown.length === 2 ? "two" : shown.length === 3 ? "three" : "quad";
   const sel = plan.implants.find((i) => i.id === selectedId);
   const selNerve = plan.nerves.find((n) => n.id === selectedId);
   const toolList = Object.entries(TOOLS).filter(([, v]) => !v.tabs || v.tabs.includes(tab));
-  const showTools = tab !== "ceph" && tab !== "report" && tab !== "3d" && tab !== "lightbox";
+  const showTools = !cephFlat && tab !== "report" && tab !== "3d" && tab !== "lightbox";
 
   const crossToggle = (
     <span className="cv-seg xs">
@@ -1055,8 +1175,10 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
 
   const panelProps = { tab, plan, setPlan, arch, vol, tool, setTool, temp, setTemp, finishArch, finishNerve, sel, selNerve, selectImplant, setSelectedId, selectedId,
     wl, setWl, autoWl, invert, setInvert, sharp, setSharp, slab, setSlab, mip, setMip, removeSelected, setCursor, rebuild, frame, setFrame, three, setThree,
-    airway, cephKind, setCephKind, cephActive, setCephActive, cephLook, setCephLook, doExport, setTmjOffset, lb, setLb };
+    airway, cephKind, setCephKind, cephActive, setCephActive, cephLook, setCephLook, doExport, setTmjOffset, lb, setLb,
+    ceph3Active, setCeph3Active, fus, setFus, setBrowser, realign, nudge, autoWl, volumeId };
 
+  useEffect(() => { try { document.querySelector(".cv-tabs button.on")?.scrollIntoView({ block: "nearest", inline: "nearest" }); } catch { /* old browsers */ } }, [tab]);
   const openTab = (k) => {
     setTab(k); setTemp(null);
     if (k === "implant" && !arch) { setTool("arch"); setActiveView("axial"); say("Step 1: draw the arch — tap along the jaw on the AXIAL view, then press Done."); }
@@ -1079,17 +1201,18 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
           <button type="button" className={`cv-btn ${saveState === "saved" ? "ok" : dirty ? "primary" : "ghost"}`} onClick={save} title="Save with this scan (Ctrl+S)">
             {saveState === "saving" ? "…" : saveState === "saved" ? "✓" : "💾"}{screen.phone ? "" : saveState === "saved" ? " Saved" : " Save"}
           </button>
+          <button type="button" className="cv-btn ghost" onClick={() => setBrowser("browse")} title="All scans (open, compare, DICOM)">📂{screen.phone ? "" : " Scans"}</button>
           <Menu label={`⬇${screen.phone ? "" : " Export"}`} items={[
             ["📄 Report — Print / Save as PDF", () => doExport("pdf")], ["🖼 Report as picture (PNG)", () => doExport("png")],
             ["📐 Plan file (positions, ceph, airway)", () => doExport("json")], ["🧊 Implants as STL (guide lab)", () => doExport("stl")],
-            ["🗂 Original DICOM (ZIP)", () => doExport("dicom")], ["📷 Picture of the screen", () => doExport("screen")],
+            ["🗂 Original DICOM (ZIP)", () => doExport("dicom")], ["💾 DICOM series from the planner (ZIP)", () => doExport("series")], ["📷 Picture of the screen", () => doExport("screen")],
           ]} />
           {!screen.desktop && <button type="button" className={`cv-btn ${panelOpen ? "primary" : "ghost"}`} onClick={() => setPanelOpen((v) => !v)} aria-label="Tools and settings">☰</button>}
           {onClose && <button type="button" className="cv-btn ghost" onClick={() => { if (!dirty || window.confirm("The plan has changes that are not saved. Close anyway?")) onClose(); }} title="Close">✕</button>}
         </div>
       </div>
 
-      {screen.phone && views.length > 1 && tab !== "ceph" && tab !== "report" && tab !== "lightbox" && (
+      {screen.phone && views.length > 1 && !cephFlat && tab !== "report" && tab !== "lightbox" && (
         <div className="cv-viewtabs">
           {views.map((v) => <button key={v} type="button" className={curView === v ? "on" : ""} style={{ "--vc": KIND_COLOR(v) }} onClick={() => setActiveView(v)}>{VIEW_TITLE[v].replace(" · ", " ")}</button>)}
         </div>
@@ -1098,7 +1221,7 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
       <div className="cv-body">
         <div className={`cv-grid ${gridClass}`}>
           {tab === "lightbox" ? <LightboxPane scene={scene} lb={lb} setLb={setLb} setCursor={setCursor} setPlan={setPlan} arch={arch} />
-            : tab === "ceph" ? <CephPane vol={vol} plan={plan} setPlan={setPlan} cephKind={cephKind} active={cephActive} setActive={setCephActive} look={cephLook} />
+            : cephFlat ? <CephPane vol={vol} plan={plan} setPlan={setPlan} cephKind={cephKind} active={cephActive} setActive={setCephActive} look={cephLook} />
             : tab === "report" ? (
               <div className="cv-pane active" style={{ "--vc": "#e2e8f0" }}>
                 <div className="cv-pane-head"><span className="cv-pane-title">Report preview</span>
@@ -1135,8 +1258,15 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
               <button type="button" className="cv-btn ghost sm" onClick={() => setTemp(null)}>Cancel</button>
             </span>
           </>
-        ) : <span>{tab === "ceph" ? "Choose a landmark in the panel, then tap it on the cephalogram. Points can be dragged." : tab === "report" ? "The report is made fresh each time you open this tab." : tab === "3d" ? "Drag to turn · two fingers or wheel to zoom · cut away with the sliders in the panel." : tab === "lightbox" ? "Lightbox: a series of evenly spaced slices. Scroll to move the series, tap a slice to centre it." : TOOLS[tool]?.hint}</span>}
+        ) : <span>{tab === "ceph" && cephKind === "3d" ? `3D Ceph: ${ceph3Active ? `tap ${ceph3Active} on any slice (sagittal is easiest) — scroll to find the right level first` : "all landmarks placed; choose one in the panel to move it"}.`
+          : tab === "fusion" ? (fus.volB ? "Magenta = this scan, green = the second scan, white = the same in both. Fine-tune with the arrows in the panel." : "Choose the second scan of this patient in the panel to compare before / after.")
+          : tab === "ceph" ? "Choose a landmark in the panel, then tap it on the cephalogram. Points can be dragged." : tab === "report" ? "The report is made fresh each time you open this tab." : tab === "3d" ? "Drag to turn · two fingers or wheel to zoom · cut away with the sliders in the panel." : tab === "lightbox" ? "Lightbox: a series of evenly spaced slices. Scroll to move the series, tap a slice to centre it." : TOOLS[tool]?.hint}</span>}
       </div>
+      {browser && (
+        <ScanBrowser apiBase={apiBase} currentId={Number(volumeId)} mode={browser} onClose={() => setBrowser(null)}
+          onOpen={(s) => { setBrowser(null); openScan(s); }} onExport={() => { setBrowser(null); exportSeries(); }}
+          onCompare={(s) => { setBrowser(null); loadFusion(s); }} />
+      )}
       {toast && <div className={`cv-toast ${toast.kind}`} role="status">{toast.text}</div>}
       {busy && <div className="cv-busy"><div className="cv-spin" />{busy}</div>}
     </div>
@@ -1149,7 +1279,8 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
 function Panel(P) {
   const { tab, plan, setPlan, arch, vol, tool, setTool, temp, setTemp, finishArch, finishNerve, sel, selNerve, selectImplant, setSelectedId, selectedId,
     wl, setWl, autoWl, invert, setInvert, sharp, setSharp, slab, setSlab, mip, setMip, removeSelected, setCursor, rebuild, frame, setFrame, three, setThree,
-    airway, cephKind, setCephKind, cephActive, setCephActive, cephLook, setCephLook, doExport, setTmjOffset, lb, setLb } = P;
+    airway, cephKind, setCephKind, cephActive, setCephActive, cephLook, setCephLook, doExport, setTmjOffset, lb, setLb,
+    ceph3Active, setCeph3Active, fus, setFus, setBrowser, realign, nudge } = P;
   const upd = (id, patch) => setPlan((p) => ({ ...p, implants: p.implants.map((i) => (i.id === id ? { ...i, ...patch } : i)) }));
   const rows = useMemo(() => (tab === "implant" ? implantRows(plan, vol) : []), [tab, plan, vol]);
   const tiltBy = (im, dir, a) => {
@@ -1348,11 +1479,42 @@ function Panel(P) {
       {tab === "ceph" && (
         <>
           <Sec title="Cephalogram">
-            <div className="cv-seg sm">{[["lat", "Lateral"], ["pa", "PA"]].map(([k, l]) => <button key={k} type="button" className={cephKind === k ? "on" : ""} onClick={() => setCephKind(k)}>{l}</button>)}</div>
+            <div className="cv-seg sm">{[["lat", "Lateral"], ["pa", "PA"], ["3d", "3D"]].map(([k, l]) => <button key={k} type="button" className={cephKind === k ? "on" : ""} onClick={() => setCephKind(k)}>{l}</button>)}</div>
+            {cephKind !== "3d" && <>
             <Range label="Contrast" min={0.5} max={3} step={0.05} value={cephLook.contrast} set={(v) => setCephLook((s) => ({ ...s, contrast: v }))} />
             <Range label="Brightness" min={-1} max={1} step={0.05} value={cephLook.bright} set={(v) => setCephLook((s) => ({ ...s, bright: v }))} />
             <label className="cv-check"><input type="checkbox" checked={cephLook.invert} onChange={(e) => setCephLook((s) => ({ ...s, invert: e.target.checked }))} /> Invert</label>
+            </>}
+            {cephKind === "3d" && <p className="cv-help">3D Ceph: landmarks are placed in the scan itself (both sides of the face), so the analysis includes symmetry. Choose a landmark, find it on the slices and tap it.</p>}
           </Sec>
+          {cephKind === "3d" && (
+            <Sec title={`3D landmarks (${Object.keys(plan.ceph.p3 || {}).length}/${CEPH3D_POINTS.length})`}>
+              <div className="cv-lmgrid">
+                {CEPH3D_POINTS.map(([k, d]) => (
+                  <button key={k} type="button" title={d} className={`cv-lm ${ceph3Active === k ? "on" : ""} ${plan.ceph.p3?.[k] ? "done" : ""}`}
+                    onClick={() => { setCeph3Active(k); if (plan.ceph.p3?.[k]) setCursor(plan.ceph.p3[k]); }}>{k}</button>
+                ))}
+              </div>
+              {ceph3Active && <p className="cv-help">{CEPH3D_POINTS.find(([k]) => k === ceph3Active)?.[1]}{plan.ceph.p3?.[ceph3Active] ? " — placed; tap again on a slice to move it." : ""}</p>}
+              <div className="cv-row wrap">
+                {ceph3Active && plan.ceph.p3?.[ceph3Active] && <button type="button" className="cv-btn ghost sm" onClick={() => setPlan((p) => { const q = { ...(p.ceph.p3 || {}) }; delete q[ceph3Active]; return { ...p, ceph: { ...p.ceph, p3: q } }; })}>Remove {ceph3Active}</button>}
+                <button type="button" className="cv-btn ghost sm" onClick={() => { if (window.confirm("Remove all 3D landmarks?")) { setPlan((p) => ({ ...p, ceph: { ...p.ceph, p3: {} } })); setCeph3Active("S"); } }}>Clear all</button>
+              </div>
+            </Sec>
+          )}
+          {cephKind === "3d" && (
+            <Sec title="3D analysis">
+              <table className="cv-table"><tbody>
+                {ceph3dAnalysis(plan.ceph.p3 || {}).map((r, i, arr) => (
+                  <React.Fragment key={r.name}>
+                    {(i === 0 || arr[i - 1].group !== r.group) && <tr><td colSpan={3} className="cv-small" style={{ paddingTop: 8, fontWeight: 800, color: "#cbd5e1" }}>{r.group}</td></tr>}
+                    <tr title={r.note}><td>{r.name}</td><td className={r.flag === "ok" ? "ok" : r.flag ? "bad" : ""}>{r.value == null ? "—" : `${r.value}\u00a0${r.unit}`}</td><td className="cv-small">{r.norm != null ? `${r.norm}±${r.sd}` : ""}</td></tr>
+                  </React.Fragment>
+                ))}
+              </tbody></table>
+              <p className="cv-help">Angles and distances are measured in 3-D. Symmetry uses the mid-sagittal plane through S and N, upright to Frankfort.</p>
+            </Sec>
+          )}
           {cephKind === "lat" && (
             <Sec title="Landmarks">
               <div className="cv-lmgrid">
@@ -1373,6 +1535,62 @@ function Panel(P) {
               </tbody></table>
               <p className="cv-help">Made from the scan without magnification; compare with norms clinically.</p>
             </Sec>
+          )}
+        </>
+      )}
+
+      {tab === "fusion" && (
+        <>
+          <Sec title="Compare two scans">
+            {!fus.volB ? (
+              <>
+                <p className="cv-help">Compare this scan with another scan of the same patient (before / after surgery, orthodontics or grafting). The two are aligned automatically on the bone.</p>
+                <div className="cv-row"><span className="cv-lbl">Align using</span>
+                  <div className="cv-seg sm">{[["upper", "Upper skull"], ["all", "Whole scan"], ["lower", "Lower jaw"]].map(([k, l]) => <button key={k} type="button" className={fus.region === k ? "on" : ""} onClick={() => setFus((f) => ({ ...f, region: k }))}>{l}</button>)}</div></div>
+                <button type="button" className="cv-btn primary" onClick={() => setBrowser("compare")}>🔀 Choose the second scan</button>
+                <p className="cv-help">Upper skull (default) keeps the stable skull base fixed, so jaw and teeth changes show clearly.</p>
+              </>
+            ) : (
+              <>
+                <div className="cv-stats">
+                  <div><small>This scan</small><b>#{P.volumeId}</b></div>
+                  <div><small>Second scan</small><b>#{fus.idB}{fus.metaB?.study_date ? ` · ${fus.metaB.study_date}` : ""}</b></div>
+                  <div><small>Bone distance after alignment</small><b>{fus.rms != null ? `${r1(fus.rms)} mm` : "saved"}</b></div>
+                  <div><small>Aligned on</small><b>{fus.region === "upper" ? "Upper skull" : fus.region === "lower" ? "Lower jaw" : "Whole scan"}</b></div>
+                </div>
+                <div className="cv-row wrap">
+                  {[["upper", "Upper skull"], ["all", "Whole"], ["lower", "Lower jaw"]].map(([k, l]) => <button key={k} type="button" className="cv-btn ghost sm" onClick={() => realign(k)}>↻ Align on {l}</button>)}
+                  <button type="button" className="cv-btn ghost sm" onClick={() => setBrowser("compare")}>Change scan</button>
+                  <button type="button" className="cv-btn ghost sm" onClick={() => { setFus((f) => ({ ...f, volB: null, T: null, dist: null, idB: null })); setPlan((p) => { const q = { ...p }; delete q.fusion; return q; }); }}>Stop comparing</button>
+                </div>
+              </>
+            )}
+          </Sec>
+          {fus.volB && (
+            <>
+              <Sec title="Slices">
+                <div className="cv-seg sm">{[["colour", "Colour"], ["blend", "Blend"], ["checker", "Checker"], ["split", "Split"]].map(([k, l]) => <button key={k} type="button" className={fus.mode2d === k ? "on" : ""} onClick={() => setFus((f) => ({ ...f, mode2d: k }))}>{l}</button>)}</div>
+                {(fus.mode2d === "blend" || fus.mode2d === "split") && <Range label={fus.mode2d === "split" ? "Split position" : "Second scan"} unit="%" min={0} max={100} step={5} value={Math.round(fus.mix * 100)} set={(v) => setFus((f) => ({ ...f, mix: v / 100 }))} />}
+                <p className="cv-help">{fus.mode2d === "colour" ? "Magenta: only in this scan · green: only in the second scan · white: the same in both." : fus.mode2d === "checker" ? "Squares alternate between the two scans — edges that line up are unchanged." : fus.mode2d === "split" ? "Left: this scan · right: the second scan." : "Fade between the two scans."}</p>
+              </Sec>
+              <Sec title="3-D">
+                <div className="cv-seg sm">{[["colours", "Two colours"], ["change", "Change map"]].map(([k, l]) => <button key={k} type="button" className={fus.mode3d === k ? "on" : ""} onClick={() => setFus((f) => ({ ...f, mode3d: k }))}>{l}</button>)}</div>
+                <p className="cv-help">{fus.mode3d === "change" ? "The second scan's bone, coloured by how far it is from this scan's bone: green = same, yellow ≈ 2.5 mm, red = 5 mm or more." : "Ivory: this scan · blue: the second scan."}</p>
+              </Sec>
+              <Sec title="Fine-tune the alignment">
+                <p className="cv-help">Moves the second scan by 0.5 mm, or turns it by 0.5° about the cross-hair.</p>
+                <div className="cv-nudge">
+                  <span /><span className="cv-small">Move</span><span className="cv-small">Turn</span>
+                  {[["Left–right", [1, 0, 0]], ["Front–back", [0, 1, 0]], ["Up–down", [0, 0, 1]]].map(([l, ax]) => (
+                    <React.Fragment key={l}>
+                      <span className="cv-lbl">{l}</span>
+                      <span className="cv-row"><button type="button" className="cv-btn ghost sm" title="−0.5 mm" onClick={() => nudge({ move: ax.map((v) => -v * 0.5) })}>−</button><button type="button" className="cv-btn ghost sm" title="+0.5 mm" onClick={() => nudge({ move: ax.map((v) => v * 0.5) })}>+</button></span>
+                      <span className="cv-row"><button type="button" className="cv-btn ghost sm" title="−0.5°" onClick={() => nudge({ axis: ax, deg: -0.5 })}>↶</button><button type="button" className="cv-btn ghost sm" title="+0.5°" onClick={() => nudge({ axis: ax, deg: 0.5 })}>↷</button></span>
+                    </React.Fragment>
+                  ))}
+                </div>
+              </Sec>
+            </>
           )}
         </>
       )}
@@ -1434,8 +1652,8 @@ function Panel(P) {
         </Sec>
       )}
 
-      {tab !== "ceph" && tab !== "report" && tab !== "3d" && tab !== "lightbox" && measures}
-      {tab !== "ceph" && tab !== "report" && tab !== "3d" && display}
+      {!(tab === "ceph" && cephKind !== "3d") && tab !== "report" && tab !== "3d" && tab !== "lightbox" && tab !== "fusion" && measures}
+      {!(tab === "ceph" && cephKind !== "3d") && tab !== "report" && tab !== "3d" && display}
       {vol.source === "slices" && (
         <div className="cv-sec" style={{ padding: 10 }}>
           <p className="cv-help">This older scan was opened from its slice pictures (density values are approximate). For full quality:</p>
@@ -1670,6 +1888,9 @@ const CSS = `
 .cv-root.phone .cv-lib-col.wide{flex-direction:column}
 .cv-ramp{display:flex;align-items:center;gap:6px;font-size:11px;color:#94a3b8}
 .cv-ramp i{flex:1;height:8px;border-radius:4px;background:linear-gradient(90deg,#ef4444,#facc15,#22c55e,#3b82f6)}
+${DBM_CSS}
+.cv-nudge{display:grid;grid-template-columns:auto auto auto;gap:6px 12px;align-items:center}
+.cv-nudge .cv-btn{min-width:34px}
 .cv-root.phone .cv-hide-phone{display:none}
 .cv-root.phone .cv-top{gap:4px;padding:0 4px}
 .cv-root.phone .cv-tabs button{padding:9px 9px 10px;font-size:12.5px}

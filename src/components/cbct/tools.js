@@ -149,3 +149,64 @@ export function implantsSTL(implants, name = "implant-plan") {
   lines.push(`endsolid ${name}`);
   return lines.join("\n");
 }
+
+/* ── 3D CEPH: landmarks placed in the scan itself (both sides), measured in 3-D ── */
+export const CEPH3D_POINTS = [
+  ["S", "Sella — centre of the sella turcica"], ["N", "Nasion — front of the fronto-nasal suture"],
+  ["Or-R", "Orbitale right — lowest point of the right orbit"], ["Or-L", "Orbitale left"],
+  ["Po-R", "Porion right — top of the right ear canal"], ["Po-L", "Porion left"],
+  ["ANS", "Anterior nasal spine"], ["PNS", "Posterior nasal spine"],
+  ["A", "Point A"], ["B", "Point B"], ["Pog", "Pogonion — most forward point of the chin"], ["Me", "Menton — lowest point of the chin"],
+  ["Co-R", "Condylion right — top of the right condyle"], ["Co-L", "Condylion left"],
+  ["Go-R", "Gonion right — angle of the jaw"], ["Go-L", "Gonion left"],
+  ["U1", "Upper incisor tip (midline)"], ["L1", "Lower incisor tip (midline)"],
+  ["U6-R", "Upper right first molar — mesiobuccal cusp"], ["U6-L", "Upper left first molar — mesiobuccal cusp"],
+];
+export const CEPH3D_LINES = [["S", "N", "#38bdf8"], ["N", "A", "#a78bfa"], ["N", "B", "#a78bfa"], ["Po-R", "Or-R", "#34d399"], ["Po-L", "Or-L", "#34d399"],
+  ["Co-R", "Go-R", "#fbbf24"], ["Co-L", "Go-L", "#fbbf24"], ["Go-R", "Me", "#fbbf24"], ["Go-L", "Me", "#fbbf24"], ["ANS", "PNS", "#94a3b8"]];
+const v3 = (a, b) => [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+const d3 = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const x3 = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const l3 = (a) => Math.hypot(a[0], a[1], a[2]);
+const n3 = (a) => { const l = l3(a) || 1; return [a[0] / l, a[1] / l, a[2] / l]; };
+const ang = (u, w) => (Math.acos(Math.max(-1, Math.min(1, d3(n3(u), n3(w))))) * 180) / Math.PI;
+const mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2];
+export function ceph3dAnalysis(P) {
+  const has = (...k) => k.every((x) => P[x]);
+  const rows = [];
+  const row = (group, name, val, unit, norm, sd, note, flagFn) => rows.push({ group, name, unit, norm, sd, note,
+    value: val == null ? null : Math.round(val * 10) / 10,
+    flag: val == null ? "" : flagFn ? flagFn(val) : norm == null ? "" : val > norm + sd ? "high" : val < norm - sd ? "low" : "ok" });
+  const SNA = has("S", "N", "A") ? ang(v3(P.N, P.S), v3(P.N, P.A)) : null;
+  const SNB = has("S", "N", "B") ? ang(v3(P.N, P.S), v3(P.N, P.B)) : null;
+  row("Skeletal", "SNA", SNA, "°", 82, 3.5, "Upper jaw to the skull base");
+  row("Skeletal", "SNB", SNB, "°", 80, 3.5, "Lower jaw to the skull base");
+  row("Skeletal", "ANB", SNA != null && SNB != null ? SNA - SNB : null, "°", 2, 2.5, ">4 Class II, <0 Class III");
+  // planes: Frankfort (porions + orbitales), mandibular (gonions + menton)
+  const fhN = has("Po-R", "Po-L", "Or-R", "Or-L") ? n3(x3(v3(P["Po-R"], P["Po-L"]), v3(mid(P["Po-R"], P["Po-L"]), mid(P["Or-R"], P["Or-L"])))) : null;
+  const mpN = has("Go-R", "Go-L", "Me") ? n3(x3(v3(P["Go-R"], P["Go-L"]), v3(mid(P["Go-R"], P["Go-L"]), P.Me))) : null;
+  const planeAng = (a, b) => { const t = ang(a, b); return t > 90 ? 180 - t : t; };
+  row("Skeletal", "FMA (FH–mandibular plane)", fhN && mpN ? planeAng(fhN, mpN) : null, "°", 25, 5, "Vertical pattern");
+  row("Skeletal", "SN–mandibular plane", mpN && has("S", "N") ? 90 - planeAng(v3(P.S, P.N), mpN) : null, "°", 32, 5, "High = long face");
+  row("Vertical", "N–Me (front face height)", has("N", "Me") ? l3(v3(P.N, P.Me)) : null, "mm", null, null, "");
+  row("Vertical", "ANS–Me (lower face height)", has("ANS", "Me") ? l3(v3(P.ANS, P.Me)) : null, "mm", null, null, "");
+  row("Vertical", "Lower / total face height", has("N", "Me", "ANS") ? (100 * l3(v3(P.ANS, P.Me))) / l3(v3(P.N, P.Me)) : null, "%", 55, 2, "");
+  // symmetry: mid-sagittal plane through S and N, upright to Frankfort
+  const msN = fhN && has("S", "N") ? n3(x3(v3(P.S, P.N), fhN)) : null;
+  const side = (p) => (msN ? d3(v3(P.S, p), msN) : null);
+  const asym = (lim) => (v) => (Math.abs(v) > lim ? "high" : "ok");
+  row("Symmetry", "Chin (Me) off the midline", msN && P.Me ? side(P.Me) : null, "mm", 0, 2, "+ / − = towards one side", asym(2));
+  row("Symmetry", "Upper midline (U1) off the midline", msN && P.U1 ? side(P.U1) : null, "mm", 0, 1.5, "", asym(1.5));
+  row("Symmetry", "Lower midline (L1) off the midline", msN && P.L1 ? side(P.L1) : null, "mm", 0, 1.5, "", asym(1.5));
+  const rh = (s) => (has(`Co-${s}`, `Go-${s}`) ? l3(v3(P[`Co-${s}`], P[`Go-${s}`])) : null);
+  const bl = (s) => (has(`Go-${s}`, "Me") ? l3(v3(P[`Go-${s}`], P.Me)) : null);
+  row("Symmetry", "Ramus height right (Co–Go)", rh("R"), "mm", null, null, "");
+  row("Symmetry", "Ramus height left (Co–Go)", rh("L"), "mm", null, null, "");
+  row("Symmetry", "Ramus height difference", rh("R") != null && rh("L") != null ? rh("R") - rh("L") : null, "mm", 0, 3, "", asym(3));
+  row("Symmetry", "Mandible body right (Go–Me)", bl("R"), "mm", null, null, "");
+  row("Symmetry", "Mandible body left (Go–Me)", bl("L"), "mm", null, null, "");
+  row("Symmetry", "Body length difference", bl("R") != null && bl("L") != null ? bl("R") - bl("L") : null, "mm", 0, 3, "", asym(3));
+  const cant = fhN && has("U6-R", "U6-L") ? d3(v3(P["U6-L"], P["U6-R"]), fhN) : null;
+  row("Symmetry", "Occlusal cant (molar height R − L)", cant, "mm", 0, 2, "Tilt of the bite", asym(2));
+  return rows;
+}
