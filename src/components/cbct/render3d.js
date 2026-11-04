@@ -8,6 +8,8 @@
    Implants and the nerve are drawn on top in their true positions.
    ═══════════════════════════════════════════════════════════════════════ */
 
+import { radiusAt, collarOf, shapeOf } from "./implantLibrary";
+
 const VS = `#version 300 es
 in vec2 p; out vec2 uv;
 void main(){ uv = p * 0.5 + 0.5; gl_Position = vec4(p, 0.0, 1.0); }`;
@@ -28,6 +30,13 @@ uniform vec3 clipLo; uniform vec3 clipHi;
 uniform vec3 texel;
 uniform float flipZ;
 uniform vec3 camR; uniform vec3 camU;
+// implants (cones: body, collar, abutment) and nerve canals (capsules), in box units
+#define MAXC 32
+#define MAXS 24
+uniform int nCone; uniform vec3 cA[MAXC]; uniform vec3 cB[MAXC]; uniform vec3 cP[MAXC];   // cP: top radius, apex radius, kind
+uniform int nSeg; uniform vec4 sA[MAXS]; uniform vec3 sB[MAXS];                             // sA.w: radius
+uniform float boneSee;
+uniform sampler3D air; uniform int hasAir;   // airway, coloured by its cross-section area     // how much implants show through bone (0 = hidden)
 
 float val(vec3 t){ return texture(vol, t).r; }
 vec3 tcOf(vec3 p){ vec3 t = p / boxSize + 0.5; if (flipZ > 0.5) t.z = 1.0 - t.z; return t; }
@@ -54,6 +63,50 @@ vec3 boneCol(float inside){
   float tooth = smoothstep(toothLo - 0.04, toothLo + 0.10, inside);
   return mix(vec3(0.93, 0.86, 0.73), vec3(0.98, 0.965, 0.92), tooth);
 }
+float dot2(vec3 v){ return dot(v, v); }
+/* ray / capped cone and ray / capsule (Inigo Quilez) */
+vec4 coneHit(vec3 ro, vec3 rd, vec3 pa, vec3 pb, float ra, float rb){
+  vec3 ba = pb - pa, oa = ro - pa, ob = ro - pb;
+  float m0 = dot(ba, ba), m1 = dot(oa, ba), m2 = dot(rd, ba), m3 = dot(rd, oa), m5 = dot(oa, oa), m9 = dot(ob, ba);
+  if (m1 < 0.0) { if (dot2(oa * m2 - rd * m1) < ra * ra * m2 * m2) return vec4(-m1 / m2, -ba * inversesqrt(m0)); }
+  else if (m9 > 0.0) { float t = -m9 / m2; if (dot2(ob + rd * t) < rb * rb) return vec4(t, ba * inversesqrt(m0)); }
+  float rr = ra - rb, hy = m0 + rr * rr;
+  float k2 = m0 * m0 - m2 * m2 * hy;
+  float k1 = m0 * m0 * m3 - m1 * m2 * hy + m0 * ra * (rr * m2);
+  float k0 = m0 * m0 * m5 - m1 * m1 * hy + m0 * ra * (rr * m1 * 2.0 - m0 * ra);
+  float h = k1 * k1 - k2 * k0;
+  if (h < 0.0) return vec4(-1.0);
+  float t = (-k1 - sqrt(h)) / k2, y = m1 + t * m2;
+  if (y < 0.0 || y > m0) return vec4(-1.0);
+  return vec4(t, normalize(m0 * (m0 * (oa + t * rd) + rr * ba * ra) - ba * hy * y));
+}
+float capHit(vec3 ro, vec3 rd, vec3 pa, vec3 pb, float ra){
+  vec3 ba = pb - pa, oa = ro - pa;
+  float baba = dot(ba, ba), bard = dot(ba, rd), baoa = dot(ba, oa), rdoa = dot(rd, oa), oaoa = dot(oa, oa);
+  float a = baba - bard * bard, b = baba * rdoa - baoa * bard, c = baba * oaoa - baoa * baoa - ra * ra * baba;
+  float h = b * b - a * c;
+  if (h >= 0.0) {
+    float t = (-b - sqrt(h)) / a, y = baoa + t * bard;
+    if (y > 0.0 && y < baba) return t;
+    vec3 oc = (y <= 0.0) ? oa : ro - pb;
+    b = dot(rd, oc); c = dot(oc, oc) - ra * ra; h = b * b - c;
+    if (h > 0.0) return -b - sqrt(h);
+  }
+  return -1.0;
+}
+vec3 kindCol(float k){
+  if (k < 0.5) return vec3(0.42, 0.66, 1.0);     // implant (titanium, blue like planning software)
+  if (k < 1.5) return vec3(1.0, 0.84, 0.30);     // selected
+  if (k < 2.5) return vec3(1.0, 0.32, 0.28);     // too close to the nerve
+  if (k < 3.5) return vec3(0.78, 0.80, 0.84);    // abutment / collar
+  return vec3(1.0, 0.62, 0.16);                  // nerve canal
+}
+vec3 areaCol(float m){
+  float t = clamp((m - 2.0) / 253.0, 0.0, 1.0);
+  if (t < 0.33) return mix(vec3(0.94, 0.27, 0.27), vec3(0.98, 0.80, 0.08), t / 0.33);
+  if (t < 0.66) return mix(vec3(0.98, 0.80, 0.08), vec3(0.13, 0.77, 0.37), (t - 0.33) / 0.33);
+  return mix(vec3(0.13, 0.77, 0.37), vec3(0.23, 0.51, 0.96), (t - 0.66) / 0.34);
+}
 float hash(vec2 p){ return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
 
 void main(){
@@ -73,13 +126,47 @@ void main(){
   float diag = length(boxSize);
   float t = tn + dt * hash(gl_FragCoord.xy);           // jitter: no wood-grain rings
   vec3 acc = vec3(0.0); float a = 0.0, mx = 0.0, sum = 0.0;
+  // nearest implant / nerve along this ray
+  float objT = 1e9; vec3 objN = vec3(0.0); float objK = 0.0;
+  for (int i = 0; i < MAXC; i++) {
+    if (i >= nCone) break;
+    vec4 h = coneHit(ro, rd, cA[i], cB[i], cP[i].x, cP[i].y);
+    if (h.x > 0.0 && h.x < objT) { objT = h.x; objN = h.yzw; objK = cP[i].z; }
+  }
+  for (int i = 0; i < MAXS; i++) {
+    if (i >= nSeg) break;
+    float th = capHit(ro, rd, sA[i].xyz, sB[i], sA[i].w);
+    if (th > 0.0 && th < objT) {
+      vec3 p = ro + rd * th, ba = sB[i] - sA[i].xyz;
+      float k = clamp(dot(p - sA[i].xyz, ba) / dot(ba, ba), 0.0, 1.0);
+      objT = th; objN = normalize(p - (sA[i].xyz + ba * k)); objK = 4.0;
+    }
+  }
+  bool hasObj = objT < 1e8;
+  // airway along this ray (shown through the bone like the implants)
+  vec3 airC = vec3(0.0); float airA = 0.0, tAir = 1e9;
+  if (hasAir == 1 && (mode == 0 || mode == 4)) {
+    float dt2 = dt * 1.5;
+    for (int i = 0; i < 1600; i++) {
+      float tt = tn + dt2 * (float(i) + hash(gl_FragCoord.yx));
+      if (tt > tf) break;
+      float m = texture(air, tcOf(ro + rd * tt)).r * 255.0;
+      if (m > 1.5) { if (tAir > 1e8) tAir = tt; float o = 0.22; airC += (1.0 - airA) * o * areaCol(m); airA += (1.0 - airA) * o; if (airA > 0.95) break; }
+    }
+  }
+  vec3 objC = hasObj ? shade(objN, rd, kindCol(objK), 0.55, 48.0) : vec3(0.0);
   float prevV = val(tcOf(ro + rd * tn)), prevT = tn;
   bool skinDone = false;
   bool startInside = prevV > thr;                       // ray starts in bone at a cut face
   for (int i = 0; i < 2400; i++) {
     if (t > tf) break;
+    if (hasObj && t > objT && mode != 1 && mode != 5) { acc += (1.0 - a) * objC; a = 1.0; break; }
     vec3 tc = tcOf(ro + rd * t);
     float v = val(tc);
+    if (hasAir == 1 && (mode == 2 || mode == 3)) {
+      float m = texture(air, tc).r * 255.0;
+      if (m > 1.5) { float o = 1.0 - pow(1.0 - 0.10, dt * 900.0 / diag); vec3 ac = areaCol(m) * 1.05; acc += (1.0 - a) * o * ac; a += (1.0 - a) * o; }
+    }
     if (mode == 1) { mx = max(mx, v); }
     else if (mode == 5) { sum += max(v - airV, 0.0) * dt; }
     else if (mode == 0 || mode == 4) {
@@ -92,7 +179,7 @@ void main(){
         acc += (1.0 - a) * op * sc; a += (1.0 - a) * op; skinDone = true;
       }
       if (v > thr) {
-        vec3 c;
+        vec3 c; float hitT = t;
         if (startInside && i == 0) {
           c = boneCol(v) * 0.62;                         // flat cut face
         } else {
@@ -104,7 +191,10 @@ void main(){
           float tooth = smoothstep(toothLo - 0.04, toothLo + 0.10, inside);
           c = shade(n, rd, boneCol(inside), 0.18 + 0.30 * tooth, 28.0 + 30.0 * tooth);
           c *= mix(1.0, 0.72, clamp((b0 - tn) / diag, 0.0, 1.0));   // depth cue
+          hitT = b0;
         }
+        if (hasObj) c = mix(c, objC, boneSee * (objK > 3.5 ? 0.85 : 1.0));   // implants / nerve seen through the bone
+        if (airA > 0.01) c = mix(c, airC / airA, (tAir < hitT ? 1.0 : boneSee) * airA);
         acc += (1.0 - a) * c; a = 1.0; break;
       }
     } else {
@@ -130,8 +220,10 @@ void main(){
     }
     prevV = v; prevT = t; t += dt;
   }
-  if (mode == 1) { float g = clamp((mx - thr) / max(1.0 - thr, 0.01), 0.0, 1.0); color = vec4(vec3(pow(g, 1.15)), 1.0); return; }
-  if (mode == 5) { float g = 1.0 - exp(-sum * 9.0 / diag); color = vec4(vec3(pow(g, 1.25)), 1.0); return; }
+  if (mode == 1) { float g = clamp((mx - thr) / max(1.0 - thr, 0.01), 0.0, 1.0); vec3 c = vec3(pow(g, 1.15)); color = vec4(hasObj ? mix(c, objC, 0.8) : c, 1.0); return; }
+  if (mode == 5) { float g = 1.0 - exp(-sum * 9.0 / diag); vec3 c = vec3(pow(g, 1.25)); color = vec4(hasObj ? mix(c, objC, 0.8) : c, 1.0); return; }
+  if (airA > 0.01 && a < 1.0) { acc += (1.0 - a) * airC; a += (1.0 - a) * airA; }
+  if (hasObj && a < 1.0) { acc += (1.0 - a) * objC; a = 1.0; }
   color = vec4(acc + (1.0 - a) * bg, 1.0);
 }`;
 
@@ -231,8 +323,10 @@ export class Renderer3D {
     const m = Math.max(vol.X, vol.Y, vol.Z);
     this.box = [vol.X / m, vol.Y / m, vol.Z / m];
     this.mm = m;
-    this.u = Object.fromEntries(["vol", "invVP", "boxSize", "mode", "thr", "steps", "clipLo", "clipHi", "texel", "flipZ", "softLo", "toothLo", "airV", "camR", "camU"].map((n) => [n, gl.getUniformLocation(prog, n)]));
+    this.u = Object.fromEntries(["vol", "invVP", "boxSize", "mode", "thr", "steps", "clipLo", "clipHi", "texel", "flipZ", "softLo", "toothLo", "airV", "camR", "camU", "nCone", "cA", "cB", "cP", "nSeg", "sA", "sB", "boneSee", "air", "hasAir"].map((n) => [n, gl.getUniformLocation(prog, n)]));
     this.yaw = 0; this.pitch = 0.12; this.zoom = 1.35;
+    this.objs = { nCone: 0, cA: new Float32Array(96), cB: new Float32Array(96), cP: new Float32Array(96), nSeg: 0, sA: new Float32Array(96), sB: new Float32Array(72) };
+    this.boneSee = 0.6;
   }
   /* box coordinates: x → right, y → front-to-back, z → head (flipped when the scan's z goes down) */
   toBox(p) {
@@ -282,8 +376,60 @@ export class Renderer3D {
     gl.uniform3fv(this.u.texel, [1 / vol.nx, 1 / vol.ny, 1 / vol.nz]);
     gl.uniform1f(this.u.flipZ, vol.zUp ? 0 : 1);
     gl.uniform3fv(this.u.camR, right); gl.uniform3fv(this.u.camU, up);
+    const O = this.objs;
+    gl.uniform1i(this.u.nCone, O.nCone); gl.uniform3fv(this.u.cA, O.cA); gl.uniform3fv(this.u.cB, O.cB); gl.uniform3fv(this.u.cP, O.cP);
+    gl.uniform1i(this.u.nSeg, O.nSeg); gl.uniform4fv(this.u.sA, O.sA); gl.uniform3fv(this.u.sB, O.sB);
+    gl.uniform1f(this.u.boneSee, this.boneSee);
+    gl.uniform1i(this.u.air, 1); gl.uniform1i(this.u.hasAir, this.airTex ? 1 : 0);
     gl.uniform1i(this.u.vol, 0);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  }
+  /* the airway mask (values 2..255 = area level) or null */
+  setAirway(mask) {
+    const { gl, vol } = this;
+    if (mask === this.airSrc) return;
+    this.airSrc = mask;
+    if (this.airTex) { gl.deleteTexture(this.airTex); this.airTex = null; }
+    if (!mask) return;
+    gl.activeTexture(gl.TEXTURE1);
+    this.airTex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_3D, this.airTex);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texImage3D(gl.TEXTURE_3D, 0, gl.R8, vol.nx, vol.ny, vol.nz, 0, gl.RED, gl.UNSIGNED_BYTE, mask);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    for (const w of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T, gl.TEXTURE_WRAP_R]) gl.texParameteri(gl.TEXTURE_3D, w, gl.CLAMP_TO_EDGE);
+    gl.activeTexture(gl.TEXTURE0);
+  }
+  /* implants (true outline: body, collar, abutment) and nerve canals, drawn inside the bone */
+  setObjects({ implants = [], nerves = [], selectedId = null, dangerIds = [], showProsthetic = true } = {}) {
+    const O = this.objs, m = this.mm;
+    let c = 0, s = 0;
+    const cone = (p0, p1, r0, r1, kind) => {
+      if (c >= 32) return;
+      const a = this.toBox(p0), b = this.toBox(p1);
+      O.cA.set(a, c * 3); O.cB.set(b, c * 3); O.cP.set([r0 / m, r1 / m, kind], c * 3); c++;
+    };
+    for (const im of implants) {
+      const kind = dangerIds.includes(im.id) ? 2 : im.id === selectedId ? 1 : 0;
+      const at = (t) => [im.top[0] + im.axis[0] * im.length * t, im.top[1] + im.axis[1] * im.length * t, im.top[2] + im.axis[2] * im.length * t];
+      const knee = shapeOf(im) === "tapered" ? 0.3 : 0.86;
+      cone(at(0), at(knee), radiusAt(im, 0), radiusAt(im, knee), kind);
+      cone(at(knee), at(0.999), radiusAt(im, knee), radiusAt(im, 0.999), kind);
+      const cl = collarOf(im), R = im.diameter / 2;
+      const up = (mm) => [im.top[0] - im.axis[0] * mm, im.top[1] - im.axis[1] * mm, im.top[2] - im.axis[2] * mm];
+      if (cl > 0) cone(up(cl), up(0), R + 0.35, R, 3);
+      if (showProsthetic) cone(up(cl + (im.abutment ?? 4)), up(cl), R * 0.58, R * 0.72, 3);
+    }
+    for (const n of nerves) {
+      let pts = n.points;
+      if (pts.length < 2) continue;
+      const step = Math.max(1, Math.ceil((pts.length - 1) / 12));
+      pts = pts.filter((_, i) => i % step === 0 || i === pts.length - 1);
+      for (let i = 0; i + 1 < pts.length && s < 24; i++, s++) {
+        const a = this.toBox(pts[i]), b = this.toBox(pts[i + 1]);
+        O.sA.set([...a, (n.diameter || 2) / 2 / m], s * 4); O.sB.set(b, s * 3);
+      }
+    }
+    O.nCone = c; O.nSeg = s;
   }
   dispose() { try { this.gl.getExtension("WEBGL_lose_context")?.loseContext(); } catch { /* ignore */ } }
 }

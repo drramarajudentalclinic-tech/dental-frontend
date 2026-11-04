@@ -2,6 +2,7 @@
    CEPH · AIRWAY · STL — the extra modules of the planner
    ═══════════════════════════════════════════════════════════════════════ */
 import { implantApex, norm, cross, add, mul, sub } from "./geometry";
+import { radiusAt } from "./implantLibrary";
 
 /* ── CEPH: a radiograph made from the scan (sum through the head) ────────
    lateral: looking from the side (sum over x) · pa: from the front (sum over y) */
@@ -116,7 +117,12 @@ export function computeAirway(vol, seed, { thrHu = -400, zLo, zHi, halfX = 22, h
     areas.push({ z: (z + 0.5) * sz, mm2: a });
     if (a > 0 && (!min || a < min.mm2)) min = { z: (z + 0.5) * sz, mm2: a };
   }
-  return { mask, count, cc: (count * vox) / 1000, areas, min, thrHu, zLo, zHi };
+  // colour each level by its area (2 = narrowest … 255 = widest) for the colour map
+  const maxA = Math.max(...areas.map((x) => x.mm2), 1), minA = min ? min.mm2 : 0;
+  const lvl = new Uint8Array(nz);
+  for (let z = za; z <= zb; z++) { const a = perZ[z] * sx * sy; lvl[z] = 2 + Math.round(253 * Math.max(0, Math.min(1, (a - minA) / Math.max(1, maxA - minA)))); }
+  for (let i = 0; i < mask.length; i++) if (mask[i]) mask[i] = lvl[(i / nxy) | 0];
+  return { mask, count, cc: (count * vox) / 1000, areas, min, max: maxA, thrHu, zLo, zHi };
 }
 
 /* ── STL of the planned implants (scan millimetres) — for a guide lab ── */
@@ -132,12 +138,13 @@ export function implantsSTL(implants, name = "implant-plan") {
     const ref = Math.abs(ax[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
     const e1 = norm(cross(ax, ref)), e2 = cross(ax, e1);
     const ring = (C, rr) => Array.from({ length: seg }, (_, k) => { const t = (k / seg) * Math.PI * 2; return add(C, add(mul(e1, Math.cos(t) * rr), mul(e2, Math.sin(t) * rr))); });
-    const top = ring(A, r), bot = ring(B, r * 0.8);
-    for (let k = 0; k < seg; k++) {
-      const k2 = (k + 1) % seg;
-      tri(top[k], bot[k], bot[k2]); tri(top[k], bot[k2], top[k2]);
-      tri(A, top[k2], top[k]); tri(B, bot[k], bot[k2]);
+    // the real outline of the implant line (tapered / parallel), 12 rings from top to apex
+    const rings = Array.from({ length: 13 }, (_, i) => ring(add(A, mul(ax, im.length * (i / 12))), radiusAt(im, i / 12)));
+    for (let j = 0; j < 12; j++) for (let k = 0; k < seg; k++) {
+      const k2 = (k + 1) % seg, a = rings[j], b = rings[j + 1];
+      tri(a[k], b[k], b[k2]); tri(a[k], b[k2], a[k2]);
     }
+    for (let k = 0; k < seg; k++) { const k2 = (k + 1) % seg; tri(A, rings[0][k2], rings[0][k]); tri(B, rings[12][k], rings[12][k2]); }
   }
   lines.push(`endsolid ${name}`);
   return lines.join("\n");

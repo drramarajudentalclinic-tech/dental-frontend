@@ -213,6 +213,16 @@ export function rotateFrame(F, axis, a) {
 /* ═════ RENDER a view into ImageData ═════
    lut: 256 grey levels for the window / level. slab: thickness in mm
    (averaged, or brightest when mip). quick: nearest-neighbour while dragging. */
+/* colour ramp for the airway: narrow = red → yellow → green → wide = blue (index 2..255) */
+export const AREA_RAMP = Array.from({ length: 256 }, (_, i) => {
+  const t = Math.max(0, Math.min(1, (i - 2) / 253));
+  const stops = [[0, [239, 68, 68]], [0.33, [250, 204, 21]], [0.66, [34, 197, 94]], [1, [59, 130, 246]]];
+  for (let k = 1; k < stops.length; k++) if (t <= stops[k][0]) {
+    const [t0, c0] = stops[k - 1], [t1, c1] = stops[k], u = (t - t0) / (t1 - t0);
+    return c0.map((c, j) => Math.round(c + (c1[j] - c) * u));
+  }
+  return stops[3][1];
+});
 export function renderView(view, vol, cam, W, H, lut, { slab = 0, mip = false, quick = false, img, mask = null, maskColor = [34, 211, 238] } = {}) {
   const out = img && img.width === W && img.height === H ? img : new ImageData(W, H);
   const px = out.data;
@@ -251,8 +261,10 @@ export function renderView(view, vol, cam, W, H, lut, { slab = 0, mip = false, q
           const g = lut[v | 0];
           if (mask) {
             const ix = (fx + 0.5) | 0, iy = (fy + 0.5) | 0, iz = (fz + 0.5) | 0;
-            if (ix >= 0 && iy >= 0 && iz >= 0 && ix < vol.nx && iy < vol.ny && iz < vol.nz && mask[iz * vol.nxy + iy * vol.nx + ix]) {
-              px[p] = (g + maskColor[0]) >> 1; px[p + 1] = (g + maskColor[1]) >> 1; px[p + 2] = (g + maskColor[2]) >> 1;
+            const mv = ix >= 0 && iy >= 0 && iz >= 0 && ix < vol.nx && iy < vol.ny && iz < vol.nz ? mask[iz * vol.nxy + iy * vol.nx + ix] : 0;
+            if (mv) {
+              const mc = mv > 1 ? AREA_RAMP[mv] : maskColor;   // > 1: coloured by the airway's cross-section area
+              px[p] = (g * 0.35 + mc[0] * 0.65) | 0; px[p + 1] = (g * 0.35 + mc[1] * 0.65) | 0; px[p + 2] = (g * 0.35 + mc[2] * 0.65) | 0;
             } else px[p] = px[p + 1] = px[p + 2] = g;
           } else px[p] = px[p + 1] = px[p + 2] = g;
         }

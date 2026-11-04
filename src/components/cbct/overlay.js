@@ -4,6 +4,7 @@
    bar and orientation letters. Used by the screen and by the report.
    ═══════════════════════════════════════════════════════════════════════ */
 import { toScreen, archAt, implantApex, implantNerveGap, add, mul, sub, norm, dot, cross } from "./geometry";
+import { radiusAt, collarOf } from "./implantLibrary";
 
 export const COLORS = {
   axial: "#38bdf8", coronal: "#34d399", sagittal: "#f472b6", pano: "#fbbf24", cross: "#a78bfa", "3d": "#c4b5fd",
@@ -208,22 +209,39 @@ export function drawImplant(ctx, view, cam, W, H, im, sel, S, f, slabTol) {
     ctx.restore(); return;
   }
   const ux = sx / sl, uy = sy / sl, px = -uy, py = ux;
-  const w = r * cam.scale, wApex = w * 0.78;
+  const sc = cam.scale, w = r * sc, wApex = radiusAt(im, 0.95) * sc;
   ctx.globalAlpha = cut ? 1 : 0.35;
-  // body (tapered towards the apex)
+  // body: the real outline of this implant line (tapered / parallel) with its threads
+  const N = Math.max(40, Math.round(im.length / 0.2)), pitch = im.diameter <= 3.3 ? 0.7 : 0.9, depth = Math.min(0.35, im.diameter * 0.08);
+  const side = [];
+  for (let i = 0; i <= N; i++) {
+    const t = i / N, ph = (t * im.length) / pitch;
+    const thr = t > 0.04 && t < 0.97 ? depth * Math.abs((((ph % 1) + 1) % 1) - 0.5) * 2 : 0;
+    side.push([T.x + sx * t, T.y + sy * t, (radiusAt(im, t) - thr) * sc]);
+  }
   ctx.beginPath();
-  ctx.moveTo(T.x + px * w, T.y + py * w); ctx.lineTo(A.x + px * wApex, A.y + py * wApex);
-  ctx.quadraticCurveTo(A.x + ux * w * 0.5, A.y + uy * w * 0.5, A.x - px * wApex, A.y - py * wApex);
-  ctx.lineTo(T.x - px * w, T.y - py * w); ctx.closePath();
-  ctx.fillStyle = hexA(col, cut ? 0.3 : 0.12); ctx.fill();
-  ctx.strokeStyle = col; ctx.lineWidth = (sel ? 2.4 : 1.8) * f; ctx.stroke();
+  side.forEach(([x, y, rr], i) => (i ? ctx.lineTo(x + px * rr, y + py * rr) : ctx.moveTo(x + px * rr, y + py * rr)));
+  for (let i = side.length - 1; i >= 0; i--) { const [x, y, rr] = side[i]; ctx.lineTo(x - px * rr, y - py * rr); }
+  ctx.closePath();
+  const grd = ctx.createLinearGradient(T.x + px * w, T.y + py * w, T.x - px * w, T.y - py * w);
+  grd.addColorStop(0, hexA(col, cut ? 0.55 : 0.18)); grd.addColorStop(0.45, hexA("#ffffff", cut ? 0.55 : 0.2)); grd.addColorStop(1, hexA(col, cut ? 0.4 : 0.12));
+  ctx.fillStyle = grd; ctx.fill();
+  ctx.strokeStyle = col; ctx.lineWidth = (sel ? 2.2 : 1.5) * f; ctx.stroke();
+  // tissue-level implants: the polished collar above the bone
+  const collar = collarOf(im) * sc;
+  if (collar > 0) {
+    const cxp = T.x - ux * collar, cyp = T.y - uy * collar, cw = w + 0.35 * sc;
+    ctx.beginPath(); ctx.moveTo(T.x + px * w, T.y + py * w); ctx.lineTo(cxp + px * cw, cyp + py * cw); ctx.lineTo(cxp - px * cw, cyp - py * cw); ctx.lineTo(T.x - px * w, T.y - py * w); ctx.closePath();
+    ctx.fillStyle = hexA("#e2e8f0", cut ? 0.55 : 0.2); ctx.fill(); ctx.stroke();
+  }
   // abutment and crown above the implant (prosthetic outline)
   if (S.plan.showProsthetic !== false && cut) {
-    const ah = (im.abutment ?? 4) * cam.scale, aw = w * 0.72;
-    const tx = T.x - ux * ah, ty = T.y - uy * ah;
+    const ah = (im.abutment ?? 4) * cam.scale, aw = w * 0.72, cl = collarOf(im) * cam.scale;
+    const T0 = { x: T.x - ux * cl, y: T.y - uy * cl };
+    const tx = T0.x - ux * ah, ty = T0.y - uy * ah;
     ctx.fillStyle = hexA("#94a3b8", 0.35); ctx.strokeStyle = "#cbd5e1"; ctx.lineWidth = 1.2 * f;
-    ctx.beginPath(); ctx.moveTo(T.x + px * aw, T.y + py * aw); ctx.lineTo(tx + px * aw * 0.8, ty + py * aw * 0.8);
-    ctx.lineTo(tx - px * aw * 0.8, ty - py * aw * 0.8); ctx.lineTo(T.x - px * aw, T.y - py * aw); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(T0.x + px * aw, T0.y + py * aw); ctx.lineTo(tx + px * aw * 0.8, ty + py * aw * 0.8);
+    ctx.lineTo(tx - px * aw * 0.8, ty - py * aw * 0.8); ctx.lineTo(T0.x - px * aw, T0.y - py * aw); ctx.closePath(); ctx.fill(); ctx.stroke();
     if (im.crown !== false) {
       const ch = (im.crownHeight ?? 8) * cam.scale, cw = Math.max(w * 1.9, ((im.crownWidth ?? 8) / 2) * cam.scale);
       const bx = tx + ux * 1.5 * cam.scale, by = ty + uy * 1.5 * cam.scale;
@@ -237,13 +255,12 @@ export function drawImplant(ctx, view, cam, W, H, im, sel, S, f, slabTol) {
       ctx.closePath(); ctx.fill(); ctx.stroke(); ctx.setLineDash([]);
     }
   }
-  // threads
-  ctx.lineWidth = 1 * f; ctx.strokeStyle = hexA(col, 0.8);
-  const nT = Math.max(3, Math.floor(im.length / 1.0));
-  for (let k = 1; k < nT; k++) {
-    const t = k / nT, ww = w + (wApex - w) * t;
+  // thread lines across the body
+  ctx.lineWidth = 0.8 * f; ctx.strokeStyle = hexA(col, 0.55);
+  for (let k = 1; k * pitch < im.length * 0.96; k++) {
+    const t = (k * pitch) / im.length, ww = radiusAt(im, t) * sc - depth * sc;
     const cx = T.x + sx * t, cy = T.y + sy * t;
-    ctx.beginPath(); ctx.moveTo(cx + px * ww, cy + py * ww); ctx.lineTo(cx - px * ww + ux * 2 * f, cy - py * ww + uy * 2 * f); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx + px * ww, cy + py * ww); ctx.lineTo(cx - px * ww + ux * pitch * 0.5 * sc, cy - py * ww + uy * pitch * 0.5 * sc); ctx.stroke();
   }
   // axis extension (the drill / screw direction)
   ctx.setLineDash([3 * f, 5 * f]); ctx.strokeStyle = hexA(col, 0.7);

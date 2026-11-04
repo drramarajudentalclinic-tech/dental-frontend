@@ -26,11 +26,11 @@ import { drawOverlay, hitTest, COLORS } from "./cbct/overlay";
 import { Renderer3D, webgl2Supported } from "./cbct/render3d";
 import { buildReportHTML, openReport, reportPNG, planFile, downloadBlob, implantRows } from "./cbct/report";
 import { cephProjection, cephImage, CEPH_POINTS, cephAnalysis, computeAirway, implantsSTL } from "./cbct/tools";
-import { IMPLANT_SYSTEMS, IMPLANT_DIAMETERS, IMPLANT_LENGTHS } from "./implantOptions";
+import { CATALOG, DEFAULT_PICK, findLine, systemName, normaliseImplant, implantSVG, SHAPE_LABEL, shapeOf } from "./cbct/implantLibrary";
 
 /* ── constants ─────────────────────────────────────────────────────────── */
 const TABS = [
-  ["mpr", "MPR"], ["implant", "Implant"], ["3d", "3D"], ["ceph", "Ceph"], ["tmj", "TMJ"], ["airway", "Airway"], ["report", "Report"],
+  ["mpr", "MPR"], ["implant", "Implant"], ["3d", "3D"], ["lightbox", "Lightbox"], ["ceph", "Ceph"], ["tmj", "TMJ"], ["airway", "Airway"], ["report", "Report"],
 ];
 const VIEW_TITLE = {
   axial: "Axial", coronal: "Coronal", sagittal: "Sagittal", pano: "Panoramic", cross: "Cross-section", strip: "Cross-sections",
@@ -321,23 +321,21 @@ function Pane3D({ scene, settings, setSettings, onMax, maxed, rendererRef, activ
     const R = rendererRef.current; if (!R) return;
     const c = cv.current, o = over.current;
     if (c.width !== W || c.height !== H) { c.width = W; c.height = H; o.width = W; o.height = H; }
+    R.boneSee = settings.see ?? 0.6;
+    R.setAirway(scene.airMask || null);
+    R.setObjects({ implants: scene.plan.implants || [], nerves: scene.plan.nerves || [], selectedId: scene.selectedId, showProsthetic: scene.plan.showProsthetic !== false,
+      dangerIds: (scene.plan.implants || []).filter((im) => { const g = implantNerveGap(im, scene.plan.nerves); return g && g.gap < scene.plan.safety; }).map((im) => im.id) });
     R.draw({ mode: settings.mode, thresholdHu: settings.thr, quick: moving, clip: { lo: [settings.clipRight || 0, settings.clipFront, settings.clipBottom], hi: [1 - (settings.clipLeft || 0), 1, settings.clipTop] } });
     const g = o.getContext("2d"); g.clearRect(0, 0, W, H);
     const f = W / size.w;
-    for (const n of scene.plan.nerves || []) {
-      if (n.points.length < 2) continue;
-      g.strokeStyle = COLORS.nerve; g.lineWidth = 3 * f; g.beginPath();
-      n.points.forEach((p, i) => { const s = R.project(p, W, H); i ? g.lineTo(s.x, s.y) : g.moveTo(s.x, s.y); }); g.stroke();
+    for (const im of scene.plan.implants || []) {                // tooth number next to each implant
+      if (!im.tooth) continue;
+      const b = R.project(implantApex(im), W, H);
+      g.font = `700 ${11 * f}px system-ui`; const tw = g.measureText(`#${im.tooth}`).width;
+      g.fillStyle = "rgba(2,6,23,.7)"; g.fillRect(b.x + 4 * f, b.y - 11 * f, tw + 6 * f, 15 * f);
+      g.fillStyle = "#e0f2fe"; g.fillText(`#${im.tooth}`, b.x + 7 * f, b.y);
     }
-    for (const im of scene.plan.implants || []) {
-      const a = R.project(im.top, W, H), b = R.project(implantApex(im), W, H);
-      const gap = implantNerveGap(im, scene.plan.nerves);
-      g.strokeStyle = gap && gap.gap < scene.plan.safety ? COLORS.warn : im.id === scene.selectedId ? COLORS.implantSel : COLORS.implant;
-      const wpx = Math.max(4 * f, (im.diameter / R.mm) * (W / (2.2 / R.zoom)) * 1.15);
-      g.lineWidth = wpx; g.lineCap = "round"; g.beginPath(); g.moveTo(a.x, a.y); g.lineTo(b.x, b.y); g.stroke();
-      g.fillStyle = "#fff"; g.font = `700 ${11 * f}px system-ui`; g.fillText(im.tooth ? `#${im.tooth}` : "", b.x + 6 * f, b.y);
-    }
-  }, [W, H, settings, tick, moving, scene.plan, scene.selectedId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [W, H, settings, tick, moving, scene.plan, scene.selectedId, scene.airMask]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const kick = () => { setMoving(true); clearTimeout(idle.current); idle.current = setTimeout(() => setMoving(false), 160); setTick((t) => t + 1); };
   useEffect(() => {
@@ -387,8 +385,88 @@ function Pane3D({ scene, settings, setSettings, onMax, maxed, rendererRef, activ
           <label>Top<input type="range" min={0.05} max={1} step={0.01} value={settings.clipTop} onChange={(e) => setSettings((s) => ({ ...s, clipTop: Math.max(Number(e.target.value), s.clipBottom + 0.05) }))} /></label>
           <label>Bottom<input type="range" min={0} max={0.95} step={0.01} value={settings.clipBottom} onChange={(e) => setSettings((s) => ({ ...s, clipBottom: Math.min(Number(e.target.value), s.clipTop - 0.05) }))} /></label>
           <label>Front<input type="range" min={0} max={0.9} step={0.01} value={settings.clipFront} onChange={(e) => setSettings((s) => ({ ...s, clipFront: Number(e.target.value) }))} /></label>
+          <label>Implants<input type="range" min={0} max={1} step={0.05} value={settings.see ?? 0.6} onChange={(e) => setSettings((s) => ({ ...s, see: Number(e.target.value) }))} title="How much implants and the nerve show through bone" /></label>
         </div>
       )}
+    </div>
+  );
+}
+
+/* ═════════════════════════════════════════════════════════════════════════
+   Lightbox: a grid of evenly spaced slices (like OnDemand's Dynamic LightBox)
+   ═════════════════════════════════════════════════════════════════════════ */
+function LightboxPane({ scene, lb, setLb, setCursor, setPlan, arch }) {
+  const wrap = useRef(null), cv = useRef(null);
+  const size = useSize(wrap);
+  const raf = useRef(0);
+  const { vol } = scene;
+  const kind = lb.kind === "cross" && !arch ? "axial" : lb.kind;
+  const n = lb.cols * lb.rows;
+  const dpr = Math.min(window.devicePixelRatio || 1, scene.phone ? 2 : 1.5);
+  let W = Math.round(size.w * dpr), H = Math.round(size.h * dpr);
+  const maxPx = 2.2e6; if (W * H > maxPx) { const k = Math.sqrt(maxPx / (W * H)); W = Math.round(W * k); H = Math.round(H * k); }
+  const f = W / size.w, cw = Math.floor(W / lb.cols), ch = Math.floor(H / lb.rows);
+  const centre = makeView(kind, vol, { cursor: scene.cursor, arch, crossS: scene.plan.crossS, crossWidth: scene.plan.crossWidth, frame: IDENTITY_FRAME });
+  const cellState = (i) => {
+    const off = (i - Math.floor((n - 1) / 2)) * lb.gap;
+    if (kind === "cross") return { off, st: { cursor: scene.cursor, arch, crossS: clamp(scene.plan.crossS + off, 0, arch.length), crossWidth: scene.plan.crossWidth } };
+    const dir = kind === "axial" ? -vol.zSign : 1;
+    return { off, st: { cursor: add(scene.cursor, mul(centre.N, off * dir)), frame: IDENTITY_FRAME } };
+  };
+  useEffect(() => {
+    cancelAnimationFrame(raf.current);
+    raf.current = requestAnimationFrame(() => {
+      const c = cv.current; if (!c) return;
+      if (c.width !== W || c.height !== H) { c.width = W; c.height = H; }
+      const g = c.getContext("2d"); g.fillStyle = "#000"; g.fillRect(0, 0, W, H);
+      for (let i = 0; i < n; i++) {
+        const { off, st } = cellState(i);
+        const v = makeView(kind, vol, st); if (!v) continue;
+        let cam = { scale: fitScale(v, vol, cw, ch), panX: 0, panY: 0 };
+        if (kind === "cross") cam = { scale: Math.min(cw / scene.plan.crossWidth, ch / (scene.plan.crossWidth * 1.25)), panX: 0, panY: 0 };
+        const img = renderView(v, vol, cam, cw, ch, scene.lut, { slab: kind === "cross" ? scene.plan.crossSlab : 0 });
+        if (scene.sharp) sharpenImage(img, 0.75);
+        const x0 = (i % lb.cols) * cw, y0 = Math.floor(i / lb.cols) * ch;
+        g.putImageData(img, x0, y0);
+        g.save(); g.beginPath(); g.rect(x0, y0, cw, ch); g.clip(); g.translate(x0, y0);
+        drawOverlay(g, v, cam, cw, ch, { ...scene, cursor: st.cursor, crossS: st.crossS ?? scene.plan.crossS, crossWidth: scene.plan.crossWidth, dpr: f * 0.8, report: true, tool: "none" }, { noScale: i > 0 });
+        g.fillStyle = off === 0 ? "#facc15" : "#e2e8f0"; g.font = `700 ${11 * f}px system-ui`;
+        g.fillText(kind === "cross" ? `${r1(st.crossS)} mm` : `${off > 0 ? "+" : ""}${r1(off)} mm`, 6 * f, 15 * f);
+        g.restore();
+        g.strokeStyle = off === 0 ? "#facc15" : "#1e293b"; g.lineWidth = (off === 0 ? 2 : 1) * f; g.strokeRect(x0 + 0.5, y0 + 0.5, cw - 1, ch - 1);
+      }
+    });
+    return () => cancelAnimationFrame(raf.current);
+  }); // eslint-disable-line react-hooks/exhaustive-deps
+  const shift = (d) => {
+    if (kind === "cross") setPlan((p) => ({ ...p, crossS: clamp(p.crossS + d * lb.gap, 0, arch.length) }), { record: false });
+    else setCursor((c) => add(c, mul(centre.N, d * lb.gap * (kind === "axial" ? -vol.zSign : 1))));
+  };
+  useEffect(() => {
+    const el = cv.current; if (!el) return undefined;
+    const onWheel = (e) => { e.preventDefault(); shift(Math.sign(e.deltaY)); };
+    el.addEventListener("wheel", onWheel, { passive: false }); return () => el.removeEventListener("wheel", onWheel);
+  });
+  const cellAt = (e) => { const r = cv.current.getBoundingClientRect(); const x = (e.clientX - r.left) * (W / r.width), y = (e.clientY - r.top) * (H / r.height);
+    return Math.min(n - 1, Math.floor(y / ch) * lb.cols + Math.floor(x / cw)); };
+  const pick = (e) => {
+    const { st } = cellState(cellAt(e));
+    if (kind === "cross") setPlan((p) => ({ ...p, crossS: st.crossS }), { record: false }); else setCursor(st.cursor);
+  };
+  const title = { axial: "Axial", coronal: "Coronal", sagittal: "Sagittal", cross: "Cross-sections" }[kind];
+  return (
+    <div className="cv-pane active" style={{ "--vc": KIND_COLOR(kind) }}>
+      <div className="cv-pane-head"><span className="cv-pane-title" style={{ color: KIND_COLOR(kind) }}>Lightbox · {title}</span>
+        <span className="cv-pane-pos">{n} slices · every {lb.gap} mm</span>
+        <span style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
+          <button type="button" className="cv-mini" onClick={() => shift(-1)} title="Back">◀</button>
+          <button type="button" className="cv-mini" onClick={() => shift(1)} title="Forward">▶</button>
+          <button type="button" className="cv-mini" onClick={() => setLb((s) => ({ ...s, gap: Math.max(0.5, s.gap - 0.5) }))} title="Closer">−</button>
+          <button type="button" className="cv-mini" onClick={() => setLb((s) => ({ ...s, gap: Math.min(10, s.gap + 0.5) }))} title="Further apart">+</button>
+        </span></div>
+      <div ref={wrap} className="cv-pane-body">
+        <canvas ref={cv} className="cv-canvas cv-over" style={{ cursor: "pointer" }} onClick={pick} />
+      </div>
     </div>
   );
 }
@@ -514,6 +592,7 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
   const [cephActive, setCephActive] = useState("S");
   const [cephLook, setCephLook] = useState({ contrast: 1, bright: 0, invert: false });
   const [reportHtml, setReportHtml] = useState("");
+  const [lb, setLb] = useState({ kind: "axial", cols: 4, rows: 3, gap: 2 });
   const legacy = useRef([]);
   const hist = useRef({ past: [], future: [] });
   const drag = useRef(null);
@@ -551,7 +630,7 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
         const saved = (Array.isArray(ann) ? ann : []).find((a) => a && a.type === "plan" && a.version >= 2);
         legacy.current = (Array.isArray(ann) ? ann : []).filter((a) => a && a.type !== "plan");
         if (saved && saved.plan) {
-          setPlanRaw({ ...EMPTY_PLAN, ...saved.plan, ceph: { ...EMPTY_PLAN.ceph, ...(saved.plan.ceph || {}) }, tmj: { ...EMPTY_PLAN.tmj, ...(saved.plan.tmj || {}) }, airway: { ...EMPTY_PLAN.airway, ...(saved.plan.airway || {}) } });
+          setPlanRaw({ ...EMPTY_PLAN, ...saved.plan, implants: (saved.plan.implants || []).map(normaliseImplant), ceph: { ...EMPTY_PLAN.ceph, ...(saved.plan.ceph || {}) }, tmj: { ...EMPTY_PLAN.tmj, ...(saved.plan.tmj || {}) }, airway: { ...EMPTY_PLAN.airway, ...(saved.plan.airway || {}) } });
           if ((saved.plan.archPoints || []).length > 1 || (saved.plan.implants || []).length) setTab("implant");
         }
       } catch (e) { if (alive) setError(e.message || "The scan could not be opened."); }
@@ -598,7 +677,7 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
       setCursor(mid);
     }
   };
-  const lastImplant = () => lsGet("cbct-last-implant", { system: "Straumann", diameter: 4.1, length: 10 });
+  const lastImplant = () => { const d = lsGet("cbct-last-implant", null); return d && d.maker && findLine(d.maker, d.line) ? d : DEFAULT_PICK; };
   const apexDir = () => [0, 0, (plan.jaw === "upper" ? 1 : -1) * vol.zSign];
   const rotatable = tab === "mpr" || tab === "airway";
   const mprFrame = rotatable ? frame : IDENTITY_FRAME;
@@ -665,7 +744,7 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
       if (tool === "implant") {
         const d = lastImplant();
         const s = arch ? archNearest(arch, world[0], world[1]).s : 0;
-        const im = { id: uid(), tooth: arch ? guessTooth(arch, s, plan.jaw) : "", system: d.system, diameter: d.diameter, length: d.length, top: world, axis: apexDir(), note: "", abutment: 4, crown: true };
+        const im = { id: uid(), tooth: arch ? guessTooth(arch, s, plan.jaw) : "", maker: d.maker, line: d.line, shape: findLine(d.maker, d.line)?.shape, system: systemName(d.maker, d.line), diameter: d.diameter, length: d.length, top: world, axis: apexDir(), note: "", abutment: 4, crown: true };
         setPlan((p) => ({ ...p, implants: [...p.implants, im], ...(arch && kind !== "cross" ? { crossS: s } : {}) }));
         setSelectedId(im.id); setTool("nav");
         say(`Implant placed${im.tooth ? ` at #${im.tooth}` : ""}. Drag the yellow dot to move it, the orange dot to tilt it.`);
@@ -929,6 +1008,7 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
   const scene = {
     vol, plan, arch, cursor, lut, slab, mip, sharp, selectedId, temp, tool, phone: screen.phone, frame: mprFrame, tmjOffset, rotatable,
     mask: tab === "airway" && airway && !airway.error ? airway.mask : null,
+    airMask: airway && !airway.error && (tab === "airway" || tab === "3d") ? airway.mask : null,
     cursorCss: { nav: "crosshair", pan: "grab", zoom: "zoom-in", wl: "ew-resize", dist: "crosshair", angle: "crosshair", hu: "cell", arch: "copy", nerve: "copy", implant: "copy", condyle: "copy", airseed: "copy", erase: "not-allowed" }[tool],
   };
   const sliderOf = (kind) => {
@@ -946,11 +1026,11 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
   };
   const curView = views.includes(activeView) ? activeView : views[0];
   const shown = screen.phone ? [curView] : maxView && views.includes(maxView) ? [maxView] : views;
-  const gridClass = tab === "ceph" || tab === "report" || shown.length === 1 ? "one" : shown.length === 2 ? "two" : shown.length === 3 ? "three" : "quad";
+  const gridClass = tab === "ceph" || tab === "report" || tab === "lightbox" || shown.length === 1 ? "one" : shown.length === 2 ? "two" : shown.length === 3 ? "three" : "quad";
   const sel = plan.implants.find((i) => i.id === selectedId);
   const selNerve = plan.nerves.find((n) => n.id === selectedId);
   const toolList = Object.entries(TOOLS).filter(([, v]) => !v.tabs || v.tabs.includes(tab));
-  const showTools = tab !== "ceph" && tab !== "report" && tab !== "3d";
+  const showTools = tab !== "ceph" && tab !== "report" && tab !== "3d" && tab !== "lightbox";
 
   const crossToggle = (
     <span className="cv-seg xs">
@@ -975,7 +1055,7 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
 
   const panelProps = { tab, plan, setPlan, arch, vol, tool, setTool, temp, setTemp, finishArch, finishNerve, sel, selNerve, selectImplant, setSelectedId, selectedId,
     wl, setWl, autoWl, invert, setInvert, sharp, setSharp, slab, setSlab, mip, setMip, removeSelected, setCursor, rebuild, frame, setFrame, three, setThree,
-    airway, cephKind, setCephKind, cephActive, setCephActive, cephLook, setCephLook, doExport, setTmjOffset };
+    airway, cephKind, setCephKind, cephActive, setCephActive, cephLook, setCephLook, doExport, setTmjOffset, lb, setLb };
 
   const openTab = (k) => {
     setTab(k); setTemp(null);
@@ -1009,7 +1089,7 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
         </div>
       </div>
 
-      {screen.phone && views.length > 1 && tab !== "ceph" && tab !== "report" && (
+      {screen.phone && views.length > 1 && tab !== "ceph" && tab !== "report" && tab !== "lightbox" && (
         <div className="cv-viewtabs">
           {views.map((v) => <button key={v} type="button" className={curView === v ? "on" : ""} style={{ "--vc": KIND_COLOR(v) }} onClick={() => setActiveView(v)}>{VIEW_TITLE[v].replace(" · ", " ")}</button>)}
         </div>
@@ -1017,7 +1097,8 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
 
       <div className="cv-body">
         <div className={`cv-grid ${gridClass}`}>
-          {tab === "ceph" ? <CephPane vol={vol} plan={plan} setPlan={setPlan} cephKind={cephKind} active={cephActive} setActive={setCephActive} look={cephLook} />
+          {tab === "lightbox" ? <LightboxPane scene={scene} lb={lb} setLb={setLb} setCursor={setCursor} setPlan={setPlan} arch={arch} />
+            : tab === "ceph" ? <CephPane vol={vol} plan={plan} setPlan={setPlan} cephKind={cephKind} active={cephActive} setActive={setCephActive} look={cephLook} />
             : tab === "report" ? (
               <div className="cv-pane active" style={{ "--vc": "#e2e8f0" }}>
                 <div className="cv-pane-head"><span className="cv-pane-title">Report preview</span>
@@ -1054,7 +1135,7 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
               <button type="button" className="cv-btn ghost sm" onClick={() => setTemp(null)}>Cancel</button>
             </span>
           </>
-        ) : <span>{tab === "ceph" ? "Choose a landmark in the panel, then tap it on the cephalogram. Points can be dragged." : tab === "report" ? "The report is made fresh each time you open this tab." : tab === "3d" ? "Drag to turn · two fingers or wheel to zoom · cut away with the sliders in the panel." : TOOLS[tool]?.hint}</span>}
+        ) : <span>{tab === "ceph" ? "Choose a landmark in the panel, then tap it on the cephalogram. Points can be dragged." : tab === "report" ? "The report is made fresh each time you open this tab." : tab === "3d" ? "Drag to turn · two fingers or wheel to zoom · cut away with the sliders in the panel." : tab === "lightbox" ? "Lightbox: a series of evenly spaced slices. Scroll to move the series, tap a slice to centre it." : TOOLS[tool]?.hint}</span>}
       </div>
       {toast && <div className={`cv-toast ${toast.kind}`} role="status">{toast.text}</div>}
       {busy && <div className="cv-busy"><div className="cv-spin" />{busy}</div>}
@@ -1068,7 +1149,7 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
 function Panel(P) {
   const { tab, plan, setPlan, arch, vol, tool, setTool, temp, setTemp, finishArch, finishNerve, sel, selNerve, selectImplant, setSelectedId, selectedId,
     wl, setWl, autoWl, invert, setInvert, sharp, setSharp, slab, setSlab, mip, setMip, removeSelected, setCursor, rebuild, frame, setFrame, three, setThree,
-    airway, cephKind, setCephKind, cephActive, setCephActive, cephLook, setCephLook, doExport, setTmjOffset } = P;
+    airway, cephKind, setCephKind, cephActive, setCephActive, cephLook, setCephLook, doExport, setTmjOffset, lb, setLb } = P;
   const upd = (id, patch) => setPlan((p) => ({ ...p, implants: p.implants.map((i) => (i.id === id ? { ...i, ...patch } : i)) }));
   const rows = useMemo(() => (tab === "implant" ? implantRows(plan, vol) : []), [tab, plan, vol]);
   const tiltBy = (im, dir, a) => {
@@ -1076,7 +1157,11 @@ function Panel(P) {
     const k = dir === "bl" ? (c ? [c.tx, c.ty, 0] : [1, 0, 0]) : (c ? [c.nx, c.ny, 0] : [0, 1, 0]);
     upd(im.id, { axis: norm(rotate(im.axis, norm(k), rad(a))) });
   };
-  const saveDefault = (im) => lsSet("cbct-last-implant", { system: im.system, diameter: im.diameter, length: im.length });
+  const saveDefault = (im) => lsSet("cbct-last-implant", { maker: im.maker, line: im.line, diameter: im.diameter, length: im.length });
+  const [libOpen, setLibOpen] = useState(false);
+  const selLine = sel ? findLine(sel.maker, sel.line) : null;
+  const dList = sel ? [...new Set([...(selLine?.d || []), sel.diameter])].sort((a, b) => a - b) : [];
+  const lList = sel ? [...new Set([...(selLine?.l || []), sel.length])].sort((a, b) => a - b) : [];
   const rotated = Math.abs(frame.ez[2] - 1) > 1e-4 || Math.abs(frame.ex[0] - 1) > 1e-4;
   const display = (
     <Sec title="Display">
@@ -1193,13 +1278,13 @@ function Panel(P) {
                 <div className="cv-row">
                   <span className="cv-lbl">Tooth</span>
                   <select className="cv-sel" value={sel.tooth || ""} onChange={(e) => upd(sel.id, { tooth: e.target.value })}><option value="">—</option>{FDI.map((t) => <option key={t} value={t}>{t}</option>)}</select>
-                  <select className="cv-sel grow" value={sel.system} onChange={(e) => { upd(sel.id, { system: e.target.value }); saveDefault({ ...sel, system: e.target.value }); }} aria-label="Implant system">{IMPLANT_SYSTEMS.map((s) => <option key={s}>{s}</option>)}</select>
+                  <button type="button" className="cv-btn ghost sm grow cv-libbtn" onClick={() => setLibOpen(true)} title="Choose from the implant library">📚 {sel.system}</button>
                 </div>
                 <div className="cv-row">
                   <span className="cv-lbl">Ø</span>
-                  <select className="cv-sel" value={sel.diameter} onChange={(e) => { const d = Number(e.target.value); upd(sel.id, { diameter: d }); saveDefault({ ...sel, diameter: d }); }}>{IMPLANT_DIAMETERS.map((d) => <option key={d} value={Number(d)}>{d} mm</option>)}</select>
+                  <select className="cv-sel" value={sel.diameter} onChange={(e) => { const d = Number(e.target.value); upd(sel.id, { diameter: d }); saveDefault({ ...sel, diameter: d }); }}>{dList.map((d) => <option key={d} value={d}>{d} mm</option>)}</select>
                   <span className="cv-lbl">L</span>
-                  <select className="cv-sel" value={sel.length} onChange={(e) => { const l = Number(e.target.value); upd(sel.id, { length: l }); saveDefault({ ...sel, length: l }); }}>{IMPLANT_LENGTHS.map((d) => <option key={d} value={Number(d)}>{d} mm</option>)}</select>
+                  <select className="cv-sel" value={sel.length} onChange={(e) => { const l = Number(e.target.value); upd(sel.id, { length: l }); saveDefault({ ...sel, length: l }); }}>{lList.map((d) => <option key={d} value={d}>{d} mm</option>)}</select>
                 </div>
                 <div className="cv-row">
                   <span className="cv-lbl">Abutment</span>
@@ -1238,6 +1323,11 @@ function Panel(P) {
               </div>
             )}
           </Sec>
+          {libOpen && sel && (
+            <ImplantLibrary current={sel} onClose={() => setLibOpen(false)}
+              onPick={(pk) => { const ln = findLine(pk.maker, pk.line); const patch = { maker: pk.maker, line: pk.line, shape: ln?.shape, system: systemName(pk.maker, pk.line), diameter: pk.diameter, length: pk.length };
+                upd(sel.id, patch); saveDefault(patch); setLibOpen(false); }} />
+          )}
         </>
       )}
 
@@ -1250,6 +1340,7 @@ function Panel(P) {
           <Range label="Cut from front" unit="%" min={0} max={90} step={1} value={Math.round(three.clipFront * 100)} set={(v) => setThree((s) => ({ ...s, clipFront: v / 100 }))} />
           <Range label="Cut patient's right" unit="%" min={0} max={90} step={1} value={Math.round((three.clipRight || 0) * 100)} set={(v) => setThree((s) => ({ ...s, clipRight: v / 100 }))} />
           <Range label="Cut patient's left" unit="%" min={0} max={90} step={1} value={Math.round((three.clipLeft || 0) * 100)} set={(v) => setThree((s) => ({ ...s, clipLeft: v / 100 }))} />
+          <Range label="Implants and nerve seen through bone" unit="%" min={0} max={100} step={5} value={Math.round((three.see ?? 0.6) * 100)} set={(v) => setThree((s) => ({ ...s, see: v / 100 }))} />
           <button type="button" className="cv-btn ghost sm" onClick={() => setThree((s) => ({ ...s, clipTop: 1, clipBottom: 0, clipFront: 0, clipLeft: 0, clipRight: 0 }))}>Reset cuts</button>
         </Sec>
       )}
@@ -1297,6 +1388,18 @@ function Panel(P) {
         </Sec>
       )}
 
+      {tab === "lightbox" && (
+        <Sec title="Lightbox">
+          <div className="cv-seg sm">{[["axial", "Axial"], ["coronal", "Coronal"], ["sagittal", "Sagittal"], ["cross", "Cross-section"]].map(([k, l]) => (
+            <button key={k} type="button" className={lb.kind === k ? "on" : ""} disabled={k === "cross" && !arch} onClick={() => setLb((s) => ({ ...s, kind: k }))}>{l}</button>))}</div>
+          <div className="cv-row wrap"><span className="cv-lbl">Layout</span>
+            {[[2, 2], [3, 2], [3, 3], [4, 3], [5, 4], [6, 4]].map(([c, r]) => <button key={`${c}x${r}`} type="button" className={`cv-chip ${lb.cols === c && lb.rows === r ? "on" : ""}`} onClick={() => setLb((s) => ({ ...s, cols: c, rows: r }))}>{c}×{r}</button>)}</div>
+          <Range label="Distance between slices" unit="mm" min={0.5} max={10} step={0.5} value={lb.gap} set={(v) => setLb((s) => ({ ...s, gap: v }))} />
+          <p className="cv-help">Scroll, or use ◀ ▶ at the top, to move the whole series; − and + change the spacing. Tap a slice to make it the centre of the series (the MPR and Implant views follow).</p>
+          {lb.kind === "cross" && !arch && <p className="cv-help">Draw the arch in the Implant tab first.</p>}
+        </Sec>
+      )}
+
       {tab === "airway" && (
         <Sec title="Airway">
           <Range label="Top level" unit="mm" min={0} max={Math.round(vol.Z)} step={0.5} value={plan.airway.zHi ?? Math.round(vol.Z * 0.75)} set={(v) => setPlan((p) => ({ ...p, airway: { ...p.airway, zHi: v } }), { record: false })} />
@@ -1314,6 +1417,7 @@ function Panel(P) {
                 <div><small>Length</small><b>{r1(Math.abs((plan.airway.zHi ?? 0) - (plan.airway.zLo ?? 0)))} mm</b></div>
               </div>
               <AreaChart areas={airway.areas} min={airway.min} />
+              <div className="cv-ramp"><span>narrow</span><i /><span>wide</span></div>
               {airway.min && <button type="button" className="cv-btn ghost sm" onClick={() => setCursor((c) => [c[0], c[1], airway.min.z])}>Go to the narrowest level</button>}
             </>
           )}
@@ -1330,7 +1434,7 @@ function Panel(P) {
         </Sec>
       )}
 
-      {tab !== "ceph" && tab !== "report" && tab !== "3d" && measures}
+      {tab !== "ceph" && tab !== "report" && tab !== "3d" && tab !== "lightbox" && measures}
       {tab !== "ceph" && tab !== "report" && tab !== "3d" && display}
       {vol.source === "slices" && (
         <div className="cv-sec" style={{ padding: 10 }}>
@@ -1339,6 +1443,71 @@ function Panel(P) {
         </div>
       )}
       <p className="cv-help" style={{ marginTop: 6 }}>Planning aid — confirm clinically. CBCT grey values (HU) are approximate.</p>
+    </div>
+  );
+}
+
+/* ═════════════════════════════════════════════════════════════════════════
+   Implant library: manufacturer → line → diameter × length, with a drawing
+   ═════════════════════════════════════════════════════════════════════════ */
+function ImplantLibrary({ current, onPick, onClose }) {
+  const [maker, setMaker] = useState(current.maker || DEFAULT_PICK.maker);
+  const [line, setLine] = useState(current.line || DEFAULT_PICK.line);
+  const [d, setD] = useState(current.diameter);
+  const [l, setL] = useState(current.length);
+  const [q, setQ] = useState("");
+  const recent = lsGet("cbct-recent-implants", []);
+  const ln = findLine(maker, line);
+  const makers = CATALOG.filter((m) => !q || m.maker.toLowerCase().includes(q.toLowerCase()) || m.lines.some((x) => x.name.toLowerCase().includes(q.toLowerCase())));
+  const mk = CATALOG.find((m) => m.maker === maker);
+  const chooseLine = (m, x) => { setMaker(m); setLine(x.name); if (!x.d.includes(d)) setD(x.d.reduce((a, b) => (Math.abs(b - 4.1) < Math.abs(a - 4.1) ? b : a))); if (!x.l.includes(l)) setL(x.l.reduce((a, b) => (Math.abs(b - 10) < Math.abs(a - 10) ? b : a))); };
+  const preview = { maker, line, shape: ln?.shape, diameter: Number(d) || 4, length: Number(l) || 10 };
+  const use = (pk = preview) => {
+    const r = [pk, ...recent.filter((x) => !(x.maker === pk.maker && x.line === pk.line && x.diameter === pk.diameter && x.length === pk.length))].slice(0, 6);
+    lsSet("cbct-recent-implants", r); onPick(pk);
+  };
+  return (
+    <div className="cv-modal" role="dialog" aria-label="Implant library" onClick={onClose}>
+      <div className="cv-modal-in cv-lib" onClick={(e) => e.stopPropagation()}>
+        <div className="cv-modal-h"><b>📚 Implant library</b>
+          <input className="cv-in" style={{ maxWidth: 220 }} placeholder="Search maker or line…" value={q} onChange={(e) => setQ(e.target.value)} />
+          <button type="button" className="cv-btn ghost sm" onClick={onClose}>Close</button></div>
+        {recent.length > 0 && (
+          <div className="cv-lib-recent"><span className="cv-lbl">Recent:</span>
+            {recent.map((r, i) => <button key={i} type="button" className="cv-btn ghost sm" onClick={() => use(r)}>{systemName(r.maker, r.line)} Ø{r.diameter}×{r.length}</button>)}
+          </div>
+        )}
+        <div className="cv-lib-cols">
+          <div className="cv-lib-col">
+            <div className="cv-lib-t">Manufacturer</div>
+            {makers.map((m) => <button key={m.maker} type="button" className={`cv-lib-i ${m.maker === maker ? "on" : ""}`} onClick={() => chooseLine(m.maker, m.lines[0])}>{m.maker}<small>{m.lines.length}</small></button>)}
+          </div>
+          <div className="cv-lib-col">
+            <div className="cv-lib-t">Implant line</div>
+            {(mk?.lines || []).map((x) => <button key={x.name} type="button" className={`cv-lib-i ${x.name === line ? "on" : ""}`} onClick={() => chooseLine(maker, x)}>{x.name}<small>{SHAPE_LABEL[x.shape]}</small></button>)}
+          </div>
+          <div className="cv-lib-col wide">
+            <div className="cv-lib-t">Size</div>
+            <div className="cv-lbl">Diameter (mm)</div>
+            <div className="cv-row wrap">{(ln?.d || []).map((x) => <button key={x} type="button" className={`cv-chip ${x === d ? "on" : ""}`} onClick={() => setD(x)}>{x}</button>)}</div>
+            <div className="cv-lbl" style={{ marginTop: 6 }}>Length (mm)</div>
+            <div className="cv-row wrap">{(ln?.l || []).map((x) => <button key={x} type="button" className={`cv-chip ${x === l ? "on" : ""}`} onClick={() => setL(x)}>{x}</button>)}</div>
+            <div className="cv-row" style={{ marginTop: 6 }}><span className="cv-lbl">Custom</span>
+              <input className="cv-in" style={{ width: 70 }} type="number" step="0.1" min="2" max="9" value={d} onChange={(e) => setD(Number(e.target.value))} aria-label="Diameter" />×
+              <input className="cv-in" style={{ width: 70 }} type="number" step="0.5" min="4" max="25" value={l} onChange={(e) => setL(Number(e.target.value))} aria-label="Length" /> mm</div>
+            <div className="cv-lib-prev">
+              <span dangerouslySetInnerHTML={{ __html: implantSVG(preview, { w: 96, h: 210 }) }} />
+              <div>
+                <b>{systemName(maker, line)}</b>
+                <div className="cv-small">Ø {preview.diameter} mm × {preview.length} mm</div>
+                <div className="cv-small">{SHAPE_LABEL[shapeOf(preview)]}</div>
+                <button type="button" className="cv-btn primary" style={{ marginTop: 10 }} onClick={() => use()}>Use this implant</button>
+              </div>
+            </div>
+            <p className="cv-help">Sizes follow the makers' published ranges — confirm with your supplier's current catalogue.</p>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1480,6 +1649,27 @@ const CSS = `
 .cv-phonetools{flex-shrink:0;border-top:1px solid #1f2937;background:#0d1320;overflow-x:auto}
 .cv-phonetools .cv-toolgrid{display:flex;gap:4px;padding:4px;border:none;background:none}
 .cv-phonetools .cv-tool{min-width:56px}
+.cv-modal{position:fixed;inset:0;background:rgba(2,6,23,.72);z-index:80;display:flex;align-items:center;justify-content:center;padding:12px}
+.cv-modal-in{background:#0b1120;border:1px solid #334155;border-radius:14px;width:min(920px,100%);max-height:92vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,.6)}
+.cv-modal-h{display:flex;gap:10px;align-items:center;padding:10px 12px;border-bottom:1px solid #1e293b;position:sticky;top:0;background:#0b1120;z-index:1}
+.cv-modal-h b{flex:1}
+.cv-lib-recent{display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding:8px 12px;border-bottom:1px solid #1e293b}
+.cv-lib-cols{display:grid;grid-template-columns:200px 230px 1fr;min-height:360px}
+.cv-lib-col{border-right:1px solid #1e293b;padding:8px;display:flex;flex-direction:column;gap:3px;overflow:auto;max-height:70vh}
+.cv-lib-col.wide{border-right:none;gap:6px}
+.cv-lib-t{font:800 11px system-ui;color:#64748b;text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px}
+.cv-lib-i{display:flex;flex-direction:column;align-items:flex-start;text-align:left;border:1px solid transparent;background:none;color:#cbd5e1;padding:7px 9px;border-radius:8px;font:600 13px system-ui;cursor:pointer}
+.cv-lib-i small{color:#64748b;font-weight:500;font-size:11px}
+.cv-lib-i:hover{background:#111827}.cv-lib-i.on{background:#1d4ed8;color:#fff;border-color:#3b82f6}.cv-lib-i.on small{color:#bfdbfe}
+.cv-chip{border:1px solid #334155;background:#0f172a;color:#cbd5e1;border-radius:7px;padding:5px 9px;font:700 12.5px system-ui;cursor:pointer;min-width:42px}
+.cv-chip.on{background:#2563eb;border-color:#3b82f6;color:#fff}
+.cv-lib-prev{display:flex;gap:14px;align-items:center;background:#020617;border-radius:10px;padding:10px;margin-top:6px}
+.cv-libbtn{text-align:left;overflow:hidden;text-overflow:ellipsis}
+.cv-root.phone .cv-lib-cols{grid-template-columns:1fr}
+.cv-root.phone .cv-lib-col{border-right:none;border-bottom:1px solid #1e293b;max-height:none;flex-direction:row;flex-wrap:wrap}
+.cv-root.phone .cv-lib-col.wide{flex-direction:column}
+.cv-ramp{display:flex;align-items:center;gap:6px;font-size:11px;color:#94a3b8}
+.cv-ramp i{flex:1;height:8px;border-radius:4px;background:linear-gradient(90deg,#ef4444,#facc15,#22c55e,#3b82f6)}
 .cv-root.phone .cv-hide-phone{display:none}
 .cv-root.phone .cv-top{gap:4px;padding:0 4px}
 .cv-root.phone .cv-tabs button{padding:9px 9px 10px;font-size:12.5px}
