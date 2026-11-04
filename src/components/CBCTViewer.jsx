@@ -24,16 +24,17 @@ import {
 } from "./cbct/geometry";
 import { drawOverlay, hitTest, COLORS } from "./cbct/overlay";
 import { Renderer3D, webgl2Supported } from "./cbct/render3d";
-import { buildReportHTML, openReport, reportPNG, planFile, downloadBlob, implantRows } from "./cbct/report";
+import { buildReportHTML, openReport, reportPNG, planFile, downloadBlob, implantRows, REPORT_SECTIONS } from "./cbct/report";
 import { cephProjection, cephImage, CEPH_POINTS, cephAnalysis, computeAirway, implantsSTL, CEPH3D_POINTS, CEPH3D_LINES, ceph3dAnalysis } from "./cbct/tools";
 import { autoAlign, renderFusion, nudgeT, distanceField } from "./cbct/fusion";
 import { exportDicomZip } from "./cbct/dicomExport";
 import ScanBrowser, { DBM_CSS } from "./cbct/ScanBrowser";
+import { buildGuide, guideToVolume, guideSTL, GUIDE_DEFAULTS } from "./cbct/guide";
 import { CATALOG, DEFAULT_PICK, findLine, systemName, normaliseImplant, implantSVG, SHAPE_LABEL, shapeOf } from "./cbct/implantLibrary";
 
 /* ── constants ─────────────────────────────────────────────────────────── */
 const TABS = [
-  ["mpr", "MPR"], ["implant", "Implant"], ["3d", "3D"], ["lightbox", "Lightbox"], ["ceph", "Ceph"], ["tmj", "TMJ"], ["airway", "Airway"], ["fusion", "Fusion"], ["report", "Report"],
+  ["mpr", "MPR"], ["implant", "Implant"], ["guide", "Guide"], ["3d", "3D"], ["lightbox", "Lightbox"], ["ceph", "Ceph"], ["tmj", "TMJ"], ["airway", "Airway"], ["fusion", "Fusion"], ["report", "Report"],
 ];
 const VIEW_TITLE = {
   axial: "Axial", coronal: "Coronal", sagittal: "Sagittal", pano: "Panoramic", cross: "Cross-section", strip: "Cross-sections",
@@ -75,6 +76,7 @@ const EMPTY_PLAN = {
   jaw: "lower", archPoints: [], crossS: 0, crossWidth: 40, crossStep: 1, crossSlab: 1, panoSlab: 10, panoOffset: 0,
   nerves: [], implants: [], measures: [], safety: 2, showSafety: true, showProsthetic: true,
   ceph: { points: {} }, tmj: { R: null, L: null, fov: 36 }, airway: { seed: null, zLo: null, zHi: null, thr: -400 },
+  guide: {}, report: { show: {}, notes: {} },
 };
 const TOOLS = {
   nav: { icon: "✛", label: "Navigate", key: "V", hint: "Tap to move the cross-hair. Drag the round handles on the lines to rotate the planes (MPR). Tap an implant to select it." },
@@ -185,7 +187,7 @@ function Pane({ kind, scene, cam, setCam, act, quick, onMax, maxed, active, onAc
           const c2 = { scale: camNow.scale / 2, panX: camNow.panX / 2, panY: camNow.panY / 2 };
           const F = scene.fusion && (kind === "axial" || kind === "coronal" || kind === "sagittal") ? scene.fusion : null;
           const img = F ? renderFusion(v, vol, F.volB, F.T, c2, hw, hh, scene.lut, F.lutB, { mode: F.mode, mix: F.mix, quick: true, img: imgCache.current[`q${i}`] })
-            : renderView(v, vol, c2, hw, hh, scene.lut, { slab, mip: scene.mip && kind !== "cross", quick: true, img: imgCache.current[`q${i}`], mask: scene.mask });
+            : renderView(v, vol, c2, hw, hh, scene.lut, { slab, mip: scene.mip && kind !== "cross", quick: true, img: imgCache.current[`q${i}`], mask: scene.mask, maskColor: scene.maskColor });
           imgCache.current[`q${i}`] = img;
           const tmp = imgCache.current[`t${i}`] || document.createElement("canvas");
           tmp.width = hw; tmp.height = hh; tmp.getContext("2d").putImageData(img, 0, 0); imgCache.current[`t${i}`] = tmp;
@@ -193,7 +195,7 @@ function Pane({ kind, scene, cam, setCam, act, quick, onMax, maxed, active, onAc
         } else {
           const F = scene.fusion && (kind === "axial" || kind === "coronal" || kind === "sagittal") ? scene.fusion : null;
           const img = F ? renderFusion(v, vol, F.volB, F.T, camNow, subW, H, scene.lut, F.lutB, { mode: F.mode, mix: F.mix, img: imgCache.current[key] })
-            : renderView(v, vol, camNow, subW, H, scene.lut, { slab, mip: scene.mip && kind !== "cross", img: imgCache.current[key], mask: scene.mask });
+            : renderView(v, vol, camNow, subW, H, scene.lut, { slab, mip: scene.mip && kind !== "cross", img: imgCache.current[key], mask: scene.mask, maskColor: scene.maskColor });
           if (scene.sharp) sharpenImage(img, 0.75);
           imgCache.current[key] = img;
           ctx.putImageData(img, x0, 0);
@@ -330,6 +332,7 @@ function Pane3D({ scene, settings, setSettings, onMax, maxed, rendererRef, activ
     if (c.width !== W || c.height !== H) { c.width = W; c.height = H; o.width = W; o.height = H; }
     R.boneSee = settings.see ?? 0.6;
     R.setAirway(scene.airMask || null);
+    R.setGuide(scene.guideMask || null);
     const F3 = scene.fusion3d;
     R.setFusion(F3 ? { volB: F3.volB, T: F3.T, dist: F3.dist, mode: F3.mode } : null);
     if (F3) R.setObjects({});
@@ -361,7 +364,7 @@ function Pane3D({ scene, settings, setSettings, onMax, maxed, rendererRef, activ
         g.fillStyle = "#f1e6cc"; g.fillText("■ first scan", 12 * f, H - 30 * f); g.fillStyle = "#73a8ff"; g.fillText("■ second scan", 12 * f, H - 14 * f);
       }
     }
-  }, [W, H, settings, tick, moving, scene.plan, scene.selectedId, scene.airMask, scene.fusion3d, scene.points3d]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [W, H, settings, tick, moving, scene.plan, scene.selectedId, scene.airMask, scene.fusion3d, scene.points3d, scene.guideMask]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const kick = () => { setMoving(true); clearTimeout(idle.current); idle.current = setTimeout(() => setMoving(false), 160); setTick((t) => t + 1); };
   useEffect(() => {
@@ -620,6 +623,11 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
   const [reportHtml, setReportHtml] = useState("");
   const [lb, setLb] = useState({ kind: "axial", cols: 4, rows: 3, gap: 2 });
   const [ceph3Active, setCeph3Active] = useState("S");
+  const [guide, setGuide] = useState(null);               // { G, vmask, tris }
+  const [repEdit, setRepEdit] = useState(false);          // typing straight into the report preview
+  const [repDirty, setRepDirty] = useState(false);        // the preview has typed changes
+  const repFrame = useRef(null);
+  const repCache = useRef(null);                          // pictures for the report (made once per visit to the tab)
   const [browser, setBrowser] = useState(null);           // null | "browse" | "compare"
   const [fus, setFus] = useState({ volB: null, metaB: null, idB: null, T: null, rms: null, mode2d: "colour", mix: 0.5, mode3d: "colours", region: "upper", dist: null });
   const legacy = useRef([]);
@@ -659,7 +667,7 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
         const saved = (Array.isArray(ann) ? ann : []).find((a) => a && a.type === "plan" && a.version >= 2);
         legacy.current = (Array.isArray(ann) ? ann : []).filter((a) => a && a.type !== "plan");
         if (saved && saved.plan) {
-          setPlanRaw({ ...EMPTY_PLAN, ...saved.plan, implants: (saved.plan.implants || []).map(normaliseImplant), ceph: { ...EMPTY_PLAN.ceph, ...(saved.plan.ceph || {}) }, tmj: { ...EMPTY_PLAN.tmj, ...(saved.plan.tmj || {}) }, airway: { ...EMPTY_PLAN.airway, ...(saved.plan.airway || {}) } });
+          setPlanRaw({ ...EMPTY_PLAN, ...saved.plan, implants: (saved.plan.implants || []).map(normaliseImplant), ceph: { ...EMPTY_PLAN.ceph, ...(saved.plan.ceph || {}) }, tmj: { ...EMPTY_PLAN.tmj, ...(saved.plan.tmj || {}) }, airway: { ...EMPTY_PLAN.airway, ...(saved.plan.airway || {}) }, guide: { ...(saved.plan.guide || {}) }, report: { show: {}, notes: {}, ...(saved.plan.report || {}) } });
           if ((saved.plan.archPoints || []).length > 1 || (saved.plan.implants || []).length) setTab("implant");
         }
       } catch (e) { if (alive) setError(e.message || "The scan could not be opened."); }
@@ -685,7 +693,7 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
   }, [vol, plan.airway.seed, plan.airway.thr, plan.airway.zLo, plan.airway.zHi]);
 
   const tmjViews = ["tmjRs", "tmjRc", "tmjLs", "tmjLc"].filter((k) => plan.tmj[k[3]]);
-  const views = tab === "implant" ? ["axial", crossMode === "strip" ? "strip" : "cross", "pano", "3d"]
+  const views = tab === "implant" || tab === "guide" ? ["axial", crossMode === "strip" ? "strip" : "cross", "pano", "3d"]
     : tab === "ceph" && cephKind === "3d" ? ["sagittal", "coronal", "axial", "3d"]
     : tab === "3d" ? ["3d"]
     : tab === "tmj" ? (tmjViews.length === 4 ? tmjViews : ["axial", ...tmjViews, ...(tmjViews.length ? [] : ["coronal"])])
@@ -940,6 +948,34 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
     window.location.href = u.toString();
   };
 
+  /* ── surgical guide ── */
+  const gopt = { ...GUIDE_DEFAULTS, thrHu: null, ...(plan.guide || {}) };
+  const supportHu = gopt.thrHu ?? (gopt.support === "teeth" ? Math.max(900, boneHu + 500) : boneHu);
+  const setG = (patch) => setPlan((p) => ({ ...p, guide: { ...(p.guide || {}), ...patch } }), { record: false });
+  const makeGuide = async () => {
+    if (!arch) { say("Draw the arch first (Implant tab).", "warn"); return; }
+    if (!plan.implants.length) { say("Plan the implants first — the guide needs their positions for the sleeves.", "warn"); return; }
+    try {
+      setBusy("Designing the guide… 0%");
+      const G = await buildGuide(vol, plan, arch, { ...gopt, thrHu: supportHu }, (k, msg) => setBusy(`${msg} ${Math.round(k * 100)}%`));
+      setBusy("Showing the guide… 85%"); await new Promise((r) => setTimeout(r, 0));
+      const vmask = guideToVolume(vol, G);
+      setGuide({ G, vmask, tris: null });
+      say(`Guide made — ${r1(G.stats.cc)} cc, ${G.sleeves.length} sleeve${G.sleeves.length === 1 ? "" : "s"}. Check the fit on the cross-sections, then download the STL.`);
+    } catch (e) { console.error(e); say(e.message || "The guide could not be made.", "err"); }
+    finally { setBusy(""); }
+  };
+  const downloadGuide = async () => {
+    if (!guide) return;
+    setBusy("Making the guide STL…"); await new Promise((r) => setTimeout(r, 30));
+    try {
+      const { blob, triangles } = guideSTL(guide.G, `guide_${volumeId}`);
+      setGuide((g) => ({ ...g, tris: triangles }));
+      downloadBlob(blob, `surgical-guide-${volumeId}.stl`);
+    } catch (e) { console.error(e); say("The STL could not be made.", "err"); } finally { setBusy(""); }
+  };
+  useEffect(() => { setGuide(null); }, [plan.implants, plan.archPoints]); // eslint-disable-line react-hooks/exhaustive-deps
+
   /* ── save ── */
   const save = async () => {
     setSaveState("saving");
@@ -1012,6 +1048,7 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
     return out;
   };
   const extraSections = () => {
+    const X = {};
     let html = "";
     const rows = cephAnalysis(plan.ceph.points || {}).filter((r) => r.value != null);
     if (rows.length) {
@@ -1021,12 +1058,14 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
       ${rows.map((r) => `<tr><td>${esc(r.name)}</td><td class="${r.flag !== "ok" ? "bad" : ""}">${r.value}°</td><td>${r.norm} ± ${r.sd}°</td><td>${esc(r.flag === "ok" ? "within normal" : r.flag === "high" ? "above normal" : "below normal")}</td></tr>`).join("")}
       </tbody></table>`;
     }
+    X.ceph = html; html = "";
     const rows3 = ceph3dAnalysis(plan.ceph.p3 || {}).filter((r) => r.value != null);
     if (rows3.length) {
       html += `<h2>3D cephalometric analysis</h2><table><thead><tr><th></th><th>Measurement</th><th>Value</th><th>Normal</th></tr></thead><tbody>
       ${rows3.map((r) => `<tr><td>${esc(r.group)}</td><td>${esc(r.name)}</td><td class="${r.flag && r.flag !== "ok" ? "bad" : ""}">${r.value} ${esc(r.unit)}</td><td>${r.norm != null ? `${r.norm} ± ${r.sd} ${esc(r.unit)}` : ""}</td></tr>`).join("")}
       </tbody></table>`;
     }
+    X.ceph3d = html; html = "";
     if (fus.volB && fus.T) {
       const pics = ["sagittal", "coronal"].map((k) => {
         const v = makeView(k, vol, { cursor, frame: IDENTITY_FRAME }); const W = 520, H = 440;
@@ -1037,22 +1076,32 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
       });
       html += `<h2>Before / after comparison</h2><p>Compared with scan #${esc(fus.idB)}${fus.metaB?.study_date ? ` (${esc(fus.metaB.study_date)})` : ""}. Aligned on the bone${fus.region === "upper" ? " of the upper skull" : fus.region === "lower" ? " of the lower jaw" : ""}${fus.rms != null ? `; average bone distance after alignment ${r1(fus.rms)} mm` : ""}.</p><div class="pair">${pics.join("")}</div>`;
     }
+    X.fusion = html; html = "";
     if (airway && !airway.error) {
       const sag = snapshot("sagittal", { W: 700, H: 600, st: { cursor: plan.airway.seed }, mask: airway.mask });
       html += `<h2>Airway</h2><p>Volume <b>${r1(airway.cc)} cc</b> between the chosen levels · narrowest cross-section <b>${airway.min ? Math.round(airway.min.mm2) : "—"} mm²</b>${airway.min ? ` at ${r1(airway.min.z)} mm` : ""} · threshold ${airway.thrHu} HU.</p>${sag ? `<img src="${sag}" alt="" style="max-width:520px">` : ""}`;
     }
+    X.airway = html; html = "";
     if (plan.tmj.R || plan.tmj.L) {
       html += `<h2>TMJ</h2><div class="pair">`;
       for (const k of ["tmjRs", "tmjRc", "tmjLs", "tmjLc"]) { if (!plan.tmj[k[3]]) continue; const im = snapshot(k, { W: 500, H: 500 }); if (im) html += `<figure><img src="${im}" alt=""><figcaption>${esc(VIEW_TITLE[k])}</figcaption></figure>`; }
       html += `</div>`;
     }
-    return html;
+    X.tmj = html;
+    if (guide) {
+      const G = guide.G, o = G.opt;
+      X.guide = `<h2>Surgical guide</h2><p>${o.support === "teeth" ? "Tooth" : "Bone"}-supported guide designed on this scan · fitting gap ${o.gap} mm · thickness ${o.thick} mm · ${r1(G.stats.cc)} cc.</p>
+      <table><thead><tr><th>Implant (tooth)</th><th>Sleeve Ø (hole)</th><th>Sleeve height</th><th>Sleeve top above implant</th><th>Drill depth from sleeve top</th></tr></thead><tbody>
+      ${G.sleeves.map((sv) => { const im = plan.implants.find((x) => x.id === sv.id); return `<tr><td>${esc(sv.tooth || "—")}</td><td>${sv.d} mm</td><td>${sv.h} mm</td><td>${o.sleeveTop} mm</td><td><b>${im ? r1(o.sleeveTop + im.length) : "—"} mm</b></td></tr>`; }).join("")}
+      </tbody></table>`;
+    }
+    return X;
   };
-  const makeReport = () => {
-    const images = reportImages();
-    let html = buildReportHTML({ meta, plan, vol, images });
-    const extra = extraSections();
-    if (extra) html = html.replace('<p class="note">', `${extra}<p class="note">`);
+  const makeReport = ({ cached = false } = {}) => {
+    const images = cached && repCache.current ? repCache.current.images : reportImages();
+    const extras = cached && repCache.current ? repCache.current.extras : extraSections();
+    repCache.current = { images, extras };
+    const html = buildReportHTML({ meta, plan, vol, images, extras, show: plan.report?.show || {}, notes: plan.report?.notes || {} });
     return { html, images };
   };
   const screenShot = () => {
@@ -1096,12 +1145,27 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
     } catch (e) { console.error(e); say("The report could not be made.", "err"); }
     finally { setBusy(""); }
   };
+  const previewHtml = (cached) => makeReport({ cached }).html.replace('<div class="bar">', '<div class="bar" style="display:none">');
   useEffect(() => {
     if (tab !== "report" || !vol) return undefined;
-    setBusy("Making the report…");
-    const t = setTimeout(() => { try { setReportHtml(makeReport().html.replace('<div class="bar">', '<div class="bar" style="display:none">')); } catch (e) { console.error(e); } finally { setBusy(""); } }, 80);
+    setBusy("Making the report…"); setRepEdit(false); setRepDirty(false);
+    const t = setTimeout(() => { try { setReportHtml(previewHtml(false)); } catch (e) { console.error(e); } finally { setBusy(""); } }, 80);
     return () => clearTimeout(t);
   }, [tab, vol]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {                                       // sections / notes changed: update the preview (unless the doctor typed in it)
+    if (tab !== "report" || !repCache.current || repDirty) return undefined;
+    const t = setTimeout(() => { try { setReportHtml(previewHtml(true)); } catch (e) { console.error(e); } }, 350);
+    return () => clearTimeout(t);
+  }, [plan.report]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {                                       // typing straight into the preview
+    const f = repFrame.current; if (!f) return undefined;
+    const apply = () => { try { const d = f.contentDocument; if (!d) return; d.designMode = repEdit ? "on" : "off"; d.body.oninput = () => setRepDirty(true); } catch { /* ignore */ } };
+    apply(); f.addEventListener("load", apply); return () => f.removeEventListener("load", apply);
+  }, [repEdit, reportHtml]);
+  const printPreview = () => { try { repFrame.current.contentWindow.focus(); repFrame.current.contentWindow.print(); } catch { doExport("pdf"); } };
+  const setRep = (patch) => setPlan((p) => ({ ...p, report: { show: {}, notes: {}, ...(p.report || {}), ...patch } }), { record: false });
+
+  useEffect(() => { try { document.querySelector(".cv-tabs button.on")?.scrollIntoView({ block: "nearest", inline: "nearest" }); } catch { /* old browsers */ } }, [tab]);
 
   /* ── loading / error ── */
   if (error) return (
@@ -1122,7 +1186,9 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
 
   const scene = {
     vol, plan, arch, cursor, lut, slab, mip, sharp, selectedId, temp, tool, phone: screen.phone, frame: mprFrame, tmjOffset, rotatable,
-    mask: tab === "airway" && airway && !airway.error ? airway.mask : null,
+    mask: tab === "airway" && airway && !airway.error ? airway.mask : tab === "guide" && guide ? guide.vmask : null,
+    maskColor: tab === "guide" ? [45, 212, 191] : undefined,
+    guideMask: guide && (tab === "guide" || tab === "3d") ? guide.vmask : null,
     airMask: airway && !airway.error && (tab === "airway" || tab === "3d") ? airway.mask : null,
     fusion: tab === "fusion" && fus.volB && fus.T ? { volB: fus.volB, T: fus.T, lutB, mode: fus.mode2d, mix: fus.mix } : null,
     fusion3d: tab === "fusion" && fus.volB && fus.T && (fus.mode3d !== "change" || fus.dist) ? { volB: fus.volB, T: fus.T, dist: fus.dist, mode: fus.mode3d === "change" ? "change" : "colours" } : null,
@@ -1176,11 +1242,12 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
   const panelProps = { tab, plan, setPlan, arch, vol, tool, setTool, temp, setTemp, finishArch, finishNerve, sel, selNerve, selectImplant, setSelectedId, selectedId,
     wl, setWl, autoWl, invert, setInvert, sharp, setSharp, slab, setSlab, mip, setMip, removeSelected, setCursor, rebuild, frame, setFrame, three, setThree,
     airway, cephKind, setCephKind, cephActive, setCephActive, cephLook, setCephLook, doExport, setTmjOffset, lb, setLb,
-    ceph3Active, setCeph3Active, fus, setFus, setBrowser, realign, nudge, autoWl, volumeId };
+    ceph3Active, setCeph3Active, fus, setFus, setBrowser, realign, nudge, autoWl, volumeId,
+    gopt, setG, supportHu, makeGuide, downloadGuide, guide, setRep, repDirty, setRepDirty, setReportHtml, previewHtml, printPreview };
 
-  useEffect(() => { try { document.querySelector(".cv-tabs button.on")?.scrollIntoView({ block: "nearest", inline: "nearest" }); } catch { /* old browsers */ } }, [tab]);
   const openTab = (k) => {
     setTab(k); setTemp(null);
+    if (k === "guide" && (!arch || !plan.implants.length)) say("Plan the arch and the implants in the Implant tab first; then make the guide here.", "warn");
     if (k === "implant" && !arch) { setTool("arch"); setActiveView("axial"); say("Step 1: draw the arch — tap along the jaw on the AXIAL view, then press Done."); }
     if (k === "tmj" && !(plan.tmj.R && plan.tmj.L)) { setTool("condyle"); setActiveView("axial"); say("Find the condyles on the axial view, then tap the RIGHT condyle and the LEFT condyle."); }
     if (k === "airway" && !plan.airway.seed) say("Set the top and bottom levels in the panel, then use 💨 Airway and tap inside the airway.");
@@ -1224,9 +1291,13 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
             : cephFlat ? <CephPane vol={vol} plan={plan} setPlan={setPlan} cephKind={cephKind} active={cephActive} setActive={setCephActive} look={cephLook} />
             : tab === "report" ? (
               <div className="cv-pane active" style={{ "--vc": "#e2e8f0" }}>
-                <div className="cv-pane-head"><span className="cv-pane-title">Report preview</span>
-                  <span style={{ marginLeft: "auto", display: "flex", gap: 6 }}><button type="button" className="cv-btn primary sm" onClick={() => doExport("pdf")}>📄 Print / PDF</button><button type="button" className="cv-btn ghost sm" onClick={() => doExport("png")}>🖼 PNG</button></span></div>
-                <div className="cv-pane-body" style={{ background: "#fff" }}><iframe title="Report" className="cv-report" srcDoc={reportHtml} /></div>
+                <div className="cv-pane-head"><span className="cv-pane-title">Report{repEdit ? " — typing on" : ""}</span>
+                  {repDirty && <span className="cv-pane-pos">your typed changes are kept for printing</span>}
+                  <span style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+                    <button type="button" className={`cv-btn sm ${repEdit ? "primary" : "ghost"}`} onClick={() => setRepEdit((v) => !v)} title="Type straight into the report">✏️ {repEdit ? "Done" : "Edit text"}</button>
+                    <button type="button" className="cv-btn primary sm" onClick={printPreview}>📄 Print / PDF</button>
+                    <button type="button" className="cv-btn ghost sm" onClick={() => doExport("png")}>🖼 PNG</button></span></div>
+                <div className="cv-pane-body" style={{ background: "#fff" }}><iframe ref={repFrame} title="Report" className="cv-report" srcDoc={reportHtml} /></div>
               </div>
             )
             : shown.map((k) => (k === "3d"
@@ -1259,8 +1330,9 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
             </span>
           </>
         ) : <span>{tab === "ceph" && cephKind === "3d" ? `3D Ceph: ${ceph3Active ? `tap ${ceph3Active} on any slice (sagittal is easiest) — scroll to find the right level first` : "all landmarks placed; choose one in the panel to move it"}.`
+          : tab === "guide" ? (guide ? "The guide is shown in teal. Check that it sits evenly on the teeth / bone on the cross-sections, then download the STL." : "Set up the guide in the panel and press “Make the guide”.")
           : tab === "fusion" ? (fus.volB ? "Magenta = this scan, green = the second scan, white = the same in both. Fine-tune with the arrows in the panel." : "Choose the second scan of this patient in the panel to compare before / after.")
-          : tab === "ceph" ? "Choose a landmark in the panel, then tap it on the cephalogram. Points can be dragged." : tab === "report" ? "The report is made fresh each time you open this tab." : tab === "3d" ? "Drag to turn · two fingers or wheel to zoom · cut away with the sliders in the panel." : tab === "lightbox" ? "Lightbox: a series of evenly spaced slices. Scroll to move the series, tap a slice to centre it." : TOOLS[tool]?.hint}</span>}
+          : tab === "ceph" ? "Choose a landmark in the panel, then tap it on the cephalogram. Points can be dragged." : tab === "report" ? "Write your notes and choose the sections in the panel. ✏️ Edit text lets you type straight into the report; Print / PDF prints what you see." : tab === "3d" ? "Drag to turn · two fingers or wheel to zoom · cut away with the sliders in the panel." : tab === "lightbox" ? "Lightbox: a series of evenly spaced slices. Scroll to move the series, tap a slice to centre it." : TOOLS[tool]?.hint}</span>}
       </div>
       {browser && (
         <ScanBrowser apiBase={apiBase} currentId={Number(volumeId)} mode={browser} onClose={() => setBrowser(null)}
@@ -1280,7 +1352,8 @@ function Panel(P) {
   const { tab, plan, setPlan, arch, vol, tool, setTool, temp, setTemp, finishArch, finishNerve, sel, selNerve, selectImplant, setSelectedId, selectedId,
     wl, setWl, autoWl, invert, setInvert, sharp, setSharp, slab, setSlab, mip, setMip, removeSelected, setCursor, rebuild, frame, setFrame, three, setThree,
     airway, cephKind, setCephKind, cephActive, setCephActive, cephLook, setCephLook, doExport, setTmjOffset, lb, setLb,
-    ceph3Active, setCeph3Active, fus, setFus, setBrowser, realign, nudge } = P;
+    ceph3Active, setCeph3Active, fus, setFus, setBrowser, realign, nudge,
+    gopt, setG, supportHu, makeGuide, downloadGuide, guide, setRep, repDirty, setRepDirty, setReportHtml, previewHtml, printPreview } = P;
   const upd = (id, patch) => setPlan((p) => ({ ...p, implants: p.implants.map((i) => (i.id === id ? { ...i, ...patch } : i)) }));
   const rows = useMemo(() => (tab === "implant" ? implantRows(plan, vol) : []), [tab, plan, vol]);
   const tiltBy = (im, dir, a) => {
@@ -1539,6 +1612,57 @@ function Panel(P) {
         </>
       )}
 
+      {tab === "guide" && (
+        <>
+          <Sec title="1 · Support" done={!!guide}>
+            <div className="cv-seg sm">{[["teeth", "Tooth-supported"], ["bone", "Bone-supported"]].map(([k, l]) => <button key={k} type="button" className={gopt.support === k ? "on" : ""} onClick={() => setG({ support: k, thrHu: null })}>{l}</button>)}</div>
+            <Range label="Support level (density)" unit="HU" min={150} max={2500} step={25} value={supportHu} set={(v) => setG({ thrHu: v })} />
+            <p className="cv-help">{gopt.support === "teeth" ? "The guide rests on the teeth of the jaw set in the Implant tab (only up to “Teeth reach above the arch line”, so it never touches the opposite teeth). Lower the level if teeth look incomplete in teal, raise it if it sits on soft tissue." : "For edentulous jaws after a flap: the guide rests on the bone."}</p>
+          </Sec>
+          <Sec title="2 · Shape">
+            <Range label="Fitting gap" unit="mm" min={0} max={0.5} step={0.05} value={gopt.gap} set={(v) => setG({ gap: v })} />
+            <Range label="Thickness" unit="mm" min={1.5} max={4} step={0.25} value={gopt.thick} set={(v) => setG({ thick: v })} />
+            <Range label="Teeth reach above the arch line" unit="mm" min={1} max={15} step={0.5} value={gopt.above} set={(v) => setG({ above: v })} />
+            <Range label="Cover down the sides" unit="mm" min={1} max={10} step={0.5} value={gopt.cover} set={(v) => setG({ cover: v })} />
+            <Range label="Width across the arch" unit="mm" min={8} max={30} step={1} value={gopt.band} set={(v) => setG({ band: v })} />
+            {arch && <>
+              <Range label="Starts at (along the arch)" unit="mm" min={0} max={Math.round(arch.length)} step={1} value={Math.round(gopt.from ?? 0)} set={(v) => setG({ from: Math.min(v, (gopt.to ?? arch.length) - 10) })} />
+              <Range label="Ends at" unit="mm" min={0} max={Math.round(arch.length)} step={1} value={Math.round(gopt.to ?? arch.length)} set={(v) => setG({ to: Math.max(v, (gopt.from ?? 0) + 10) })} />
+            </>}
+          </Sec>
+          <Sec title="3 · Sleeves">
+            <Range label="Sleeve hole Ø" unit="mm" min={3} max={7} step={0.1} value={gopt.sleeveD} set={(v) => setG({ sleeveD: v })} />
+            <Range label="Sleeve wall" unit="mm" min={1} max={3} step={0.25} value={gopt.sleeveWall} set={(v) => setG({ sleeveWall: v })} />
+            <Range label="Sleeve height" unit="mm" min={3} max={8} step={0.5} value={gopt.sleeveH} set={(v) => setG({ sleeveH: v })} />
+            <Range label="Sleeve top above the implant" unit="mm" min={5} max={14} step={0.5} value={gopt.sleeveTop} set={(v) => setG({ sleeveTop: v })} />
+            <p className="cv-help">Match these to your guided-surgery kit (sleeve outer Ø and offset). Drill depth from the sleeve top = offset + implant length.</p>
+            {plan.implants.length > 0 && (
+              <table className="cv-table"><tbody>
+                <tr><td className="cv-small">Implant</td><td className="cv-small">Length</td><td className="cv-small">Drill depth</td></tr>
+                {plan.implants.map((im) => <tr key={im.id}><td>#{im.tooth || "?"}</td><td>{im.length} mm</td><td className="ok">{r1(gopt.sleeveTop + im.length)} mm</td></tr>)}
+              </tbody></table>
+            )}
+          </Sec>
+          <Sec title="4 · Make and download">
+            <button type="button" className="cv-btn primary" onClick={makeGuide}>🛠 {guide ? "Make the guide again" : "Make the guide"}</button>
+            {guide && (
+              <>
+                <div className="cv-stats">
+                  <div><small>Volume</small><b>{r1(guide.G.stats.cc)} cc</b></div>
+                  <div><small>Sleeves</small><b>{guide.G.sleeves.length}</b></div>
+                  <div><small>Size</small><b>{guide.G.stats.size.map((v) => Math.round(v)).join("×")} mm</b></div>
+                  <div><small>Grid</small><b>{guide.G.grid.h.toFixed(2)} mm</b></div>
+                </div>
+                <button type="button" className="cv-btn primary" onClick={downloadGuide}>⬇ Guide STL (for 3-D printing)</button>
+                <button type="button" className="cv-btn ghost" onClick={() => doExport("stl")}>⬇ Implants STL</button>
+                {guide.tris && <p className="cv-help">Last STL: {guide.tris.toLocaleString()} triangles.</p>}
+              </>
+            )}
+            <p className="cv-help">Check the guide on every cross-section before printing. A guide made from CBCT alone fits less exactly than one made with an intraoral scan (metal fillings cause streaks) — confirm the fit on the model or in the mouth before drilling.</p>
+          </Sec>
+        </>
+      )}
+
       {tab === "fusion" && (
         <>
           <Sec title="Compare two scans">
@@ -1644,12 +1768,33 @@ function Panel(P) {
       )}
 
       {tab === "report" && (
+        <>
+          <Sec title="Doctor's notes">
+            {[["findings", "Findings"], ["diagnosis", "Diagnosis"], ["plan", "Treatment plan"], ["remarks", "Remarks"]].map(([k, l]) => (
+              <label key={k} className="cv-range" style={{ display: "block" }}><span>{l}</span>
+                <textarea className="cv-in" rows={k === "plan" ? 4 : 2} value={plan.report?.notes?.[k] || ""} onChange={(e) => setRep({ notes: { ...(plan.report?.notes || {}), [k]: e.target.value } })} /></label>
+            ))}
+            <p className="cv-help">Saved with the plan. The preview updates as you type.</p>
+          </Sec>
+          <Sec title="Sections">
+            <div className="cv-secgrid">
+              {REPORT_SECTIONS.map(([k, l]) => (
+                <label key={k} className="cv-check"><input type="checkbox" checked={plan.report?.show?.[k] !== false} onChange={(e) => setRep({ show: { ...(plan.report?.show || {}), [k]: e.target.checked } })} /> {l}</label>
+              ))}
+            </div>
+            <p className="cv-help">Sections with nothing to show (e.g. no airway measured) are left out by themselves.</p>
+          </Sec>
+          <Sec title="Edit and print">
+            <p className="cv-help">Press ✏️ Edit text above the report to type straight into it (correct wording, add lines). “Print / PDF” prints exactly what you see.</p>
+            {repDirty && <button type="button" className="cv-btn ghost sm" onClick={() => { if (window.confirm("Rebuild the report? Your typed changes in the preview will be lost (the notes in the panel are kept).")) { setRepDirty(false); setReportHtml(previewHtml(true)); } }}>↻ Rebuild the preview</button>}
+          </Sec>
         <Sec title="Export">
           {[["pdf", "📄 Report — Print / Save as PDF"], ["png", "🖼 Report as picture (PNG)"], ["json", "📐 Plan file (positions, ceph, airway)"], ["stl", "🧊 Implants as STL (guide lab)"], ["dicom", "🗂 Original DICOM (ZIP)"]].map(([k, l]) => (
             <button key={k} type="button" className="cv-btn ghost" style={{ textAlign: "left" }} onClick={() => doExport(k)}>{l}</button>
           ))}
-          <p className="cv-help">The report includes the implants, nerve, panoramic and cross-sections, and — when done — the ceph analysis, airway and TMJ views.</p>
+          <p className="cv-help">The Export menu makes a fresh report with your notes and sections (typed changes in the preview are printed only from the preview).</p>
         </Sec>
+        </>
       )}
 
       {!(tab === "ceph" && cephKind !== "3d") && tab !== "report" && tab !== "3d" && tab !== "lightbox" && tab !== "fusion" && measures}
@@ -1891,6 +2036,8 @@ const CSS = `
 ${DBM_CSS}
 .cv-nudge{display:grid;grid-template-columns:auto auto auto;gap:6px 12px;align-items:center}
 .cv-nudge .cv-btn{min-width:34px}
+.cv-secgrid{display:grid;grid-template-columns:1fr 1fr;gap:4px 8px}
+textarea.cv-in{resize:vertical;font:inherit;font-size:12.5px;margin-top:3px}
 .cv-root.phone .cv-hide-phone{display:none}
 .cv-root.phone .cv-top{gap:4px;padding:0 4px}
 .cv-root.phone .cv-tabs button{padding:9px 9px 10px;font-size:12.5px}

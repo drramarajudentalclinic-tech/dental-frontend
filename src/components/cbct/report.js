@@ -30,7 +30,15 @@ export function implantRows(plan, vol) {
   });
 }
 
-export function buildReportHTML({ meta, plan, vol, images, when = new Date() }) {
+/* sections the doctor can switch on / off in the Report tab */
+export const REPORT_SECTIONS = [
+  ["notes", "Doctor's notes"], ["warnings", "Safety warnings"], ["pano", "Panoramic view"], ["implants", "Implant table"],
+  ["perImplant", "Pictures of each implant"], ["three", "3-D picture"], ["guide", "Surgical guide"], ["measures", "Measurements"],
+  ["ceph", "Ceph (2-D)"], ["ceph3d", "3D Ceph"], ["airway", "Airway"], ["tmj", "TMJ"], ["fusion", "Before / after"], ["signature", "Signature"],
+];
+const nl = (t) => esc(t).replace(/\n/g, "<br>");
+export function buildReportHTML({ meta, plan, vol, images, when = new Date(), show = {}, notes = {}, extras = {}, title = "Implant planning report" }) {
+  const on = (k) => show[k] !== false;
   const rows = implantRows(plan, vol);
   const warns = [];
   rows.forEach((r) => {
@@ -50,7 +58,7 @@ export function buildReportHTML({ meta, plan, vol, images, when = new Date() }) 
         ${rows[i]?.note ? ` · Note: ${esc(rows[i].note)}` : ""}</p>
     </section>`).join("");
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Implant plan — ${esc(meta?.patient_name || "patient")}</title>
+<title>${esc(title)} — ${esc(meta?.patient_name || "patient")}</title>
 <style>
   @page { size: A4; margin: 12mm; }
   *{box-sizing:border-box} body{font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;color:#0f172a;margin:0;padding:18px;max-width:900px;margin:auto;font-size:13px}
@@ -63,26 +71,33 @@ export function buildReportHTML({ meta, plan, vol, images, when = new Date() }) 
   .pair{display:grid;grid-template-columns:1fr 1fr;gap:8px} .imp{break-inside:avoid;border:1px solid #e2e8f0;border-radius:10px;padding:10px;margin:10px 0}
   .warn{background:#fef2f2;border:1px solid #fecaca;color:#991b1b;border-radius:8px;padding:8px 10px;margin:8px 0}
   .kv{margin:6px 0 0} .note{font-size:11px;color:#64748b;margin-top:16px;border-top:1px solid #e2e8f0;padding-top:8px}
+  .notes h3{font-size:12.5px;margin:10px 0 3px;color:#0f766e} .notes p{margin:0 0 4px;white-space:normal}
+  .sign{display:flex;justify-content:flex-end;margin-top:28px} .sign div{text-align:center;min-width:220px;border-top:1px solid #334155;padding-top:6px;font-size:12px}
   .bar{position:sticky;top:0;background:#fff;padding:8px 0;display:flex;gap:8px;justify-content:flex-end}
   .bar button{border:none;border-radius:8px;padding:9px 16px;font-weight:700;cursor:pointer;background:#0f766e;color:#fff}
   @media print{.bar{display:none} body{padding:0}}
 </style></head><body>
 <div class="bar"><button onclick="window.print()">🖨 Print / Save as PDF</button></div>
-<header><div><h1>Implant planning report</h1><div class="sub">${esc(CLINIC)}</div></div>
+<header><div><h1>${esc(title)}</h1><div class="sub">${esc(CLINIC)}</div></div>
 <div class="sub" style="text-align:right">${esc(DOCTOR)}<br>Planned ${esc(d)}</div></header>
 <p><b>Patient:</b> ${esc(meta?.patient_name || "—")} &nbsp; <b>Scan date:</b> ${esc(meta?.study_date || "—")} &nbsp;
 <b>Jaw:</b> ${esc(plan.jaw === "upper" ? "Upper" : "Lower")} &nbsp; <b>Voxel:</b> ${vol ? r1(vol.sx) : "?"} mm (viewer)</p>
-${warns.length ? `<div class="warn"><b>⚠ Check before surgery</b><br>${warns.map(esc).join("<br>")}</div>` : ""}
-${images.pano ? `<h2>Panoramic view</h2><img src="${images.pano}" alt="">` : ""}
-<h2>Implants (${rows.length})</h2>
+${on("notes") && ["findings", "diagnosis", "plan", "remarks"].some((k) => (notes[k] || "").trim()) ? `<section class="notes"><h2>Clinical notes</h2>
+${[["findings", "Findings"], ["diagnosis", "Diagnosis"], ["plan", "Treatment plan"], ["remarks", "Remarks"]].filter(([k]) => (notes[k] || "").trim()).map(([k, l]) => `<h3>${l}</h3><p>${nl(notes[k])}</p>`).join("")}</section>` : ""}
+${on("warnings") && warns.length ? `<div class="warn"><b>⚠ Check before surgery</b><br>${warns.map(esc).join("<br>")}</div>` : ""}
+${on("pano") && images.pano ? `<h2>Panoramic view</h2><img src="${images.pano}" alt="">` : ""}
+${on("implants") ? `<h2>Implants (${rows.length})</h2>
 ${rows.length ? `<table><thead><tr><th>#</th><th>Tooth</th><th>System</th><th>Size</th><th>Tilt</th><th>To nerve</th><th>To next implant</th><th>Bone (approx.)</th></tr></thead><tbody>
 ${rows.map((r) => `<tr><td>${r.n}</td><td>${esc(r.tooth)}</td><td>${esc(r.system)}</td><td>${esc(r.size)}</td><td>${esc(r.tilt)}</td>
 <td class="${r.nerveWarn ? "bad" : ""}">${esc(r.nerve)}</td><td class="${r.neighbourWarn ? "bad" : ""}">${esc(r.neighbour)}</td><td>${esc(r.bone)}</td></tr>`).join("")}
 </tbody></table>` : "<p>No implants planned.</p>"}
-${(plan.nerves || []).length ? `<p><b>Nerve canal traced:</b> ${(plan.nerves || []).map((n) => `${n.side === "L" ? "left" : n.side === "R" ? "right" : ""} (Ø ${n.diameter || 2} mm)`).join(", ")} · Safety margin ${plan.safety ?? 2} mm</p>` : ""}
-${per}
-${images.three ? `<h2>3-D view</h2><img src="${images.three}" alt="" style="max-width:520px">` : ""}
-${(plan.measures || []).length ? `<h2>Measurements</h2><ul>${plan.measures.map((m) => `<li>${m.type === "hu" ? `Density ${esc(m.value)} HU` : m.type === "angle" ? `Angle ${esc(m.value)}°` : `Distance ${esc(m.value)} mm`}${m.label ? ` — ${esc(m.label)}` : ""}</li>`).join("")}</ul>` : ""}
+${(plan.nerves || []).length ? `<p><b>Nerve canal traced:</b> ${(plan.nerves || []).map((n) => `${n.side === "L" ? "left" : n.side === "R" ? "right" : ""} (Ø ${n.diameter || 2} mm)`).join(", ")} · Safety margin ${plan.safety ?? 2} mm</p>` : ""}` : ""}
+${on("perImplant") ? per : ""}
+${on("guide") && extras.guide ? extras.guide : ""}
+${on("three") && images.three ? `<h2>3-D view</h2><img src="${images.three}" alt="" style="max-width:520px">` : ""}
+${["ceph", "ceph3d", "airway", "tmj", "fusion"].filter((k) => on(k) && extras[k]).map((k) => extras[k]).join("\n")}
+${on("measures") && (plan.measures || []).length ? `<h2>Measurements</h2><ul>${plan.measures.map((m) => `<li>${m.type === "hu" ? `Density ${esc(m.value)} HU` : m.type === "angle" ? `Angle ${esc(m.value)}°` : `Distance ${esc(m.value)} mm`}${m.label ? ` — ${esc(m.label)}` : ""}</li>`).join("")}</ul>` : ""}
+${on("signature") ? `<div class="sign"><div>${esc(DOCTOR)}<br><span style="color:#64748b">Signature</span></div></div>` : ""}
 <p class="note">Planning aid made from the CBCT scan. Distances are measured in the scan; CBCT grey values (HU) are approximate.
 Confirm the plan clinically and with the implant manufacturer's guidelines before surgery.</p>
 </body></html>`;

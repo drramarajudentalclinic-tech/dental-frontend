@@ -40,7 +40,8 @@ uniform sampler3D air; uniform int hasAir;   // airway, coloured by its cross-se
 // Fusion: a second scan (B) placed in this scan's frame, and the distance from this scan's bone surface
 uniform int fuse;            // 0 off · 1 two colours · 2 change map
 uniform sampler3D volB; uniform sampler3D distA;
-uniform mat3 bM; uniform vec3 bC; uniform float thrB;     // how much implants show through bone (0 = hidden)
+uniform mat3 bM; uniform vec3 bC; uniform float thrB;
+uniform sampler3D guideTex; uniform int hasGuide;   // the surgical guide (shown as teal resin)     // how much implants show through bone (0 = hidden)
 
 float val(vec3 t){ return texture(vol, t).r; }
 vec3 tcOf(vec3 p){ vec3 t = p / boxSize + 0.5; if (flipZ > 0.5) t.z = 1.0 - t.z; return t; }
@@ -123,6 +124,13 @@ vec3 changeCol(float mm){
   float t = clamp((mm - 0.6) / 4.4, 0.0, 1.0);          // up to ~0.6 mm counts as unchanged
   return t < 0.5 ? mix(vec3(0.20, 0.78, 0.40), vec3(0.98, 0.84, 0.18), t * 2.0) : mix(vec3(0.98, 0.84, 0.18), vec3(0.94, 0.25, 0.22), (t - 0.5) * 2.0);
 }
+float gv(vec3 t){ return texture(guideTex, t).r; }
+vec3 gradG(vec3 t){
+  vec3 h = texel * 1.0;
+  vec3 g = vec3(gv(t + vec3(h.x,0,0)) - gv(t - vec3(h.x,0,0)), gv(t + vec3(0,h.y,0)) - gv(t - vec3(0,h.y,0)), gv(t + vec3(0,0,h.z)) - gv(t - vec3(0,0,h.z)));
+  if (flipZ > 0.5) g.z = -g.z;
+  return g / (h * boxSize);
+}
 float hash(vec2 p){ return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
 
 void main(){
@@ -173,12 +181,13 @@ void main(){
   vec3 objC = hasObj ? shade(objN, rd, kindCol(objK), 0.55, 48.0) : vec3(0.0);
   float prevV = val(tcOf(ro + rd * tn)), prevT = tn;
   bool skinDone = false;
+  bool gotG = false; float tG = 0.0; vec3 colG = vec3(0.0); float prevG = 0.0;
   bool gotA = false, gotB = false; float tA = 0.0, tB = 0.0, prevB = 0.0; vec3 colA = vec3(0.0), colB = vec3(0.0);
   if (fuse > 0) prevB = valB(ro + rd * tn);
   bool startInside = prevV > thr;                       // ray starts in bone at a cut face
   for (int i = 0; i < 2400; i++) {
     if (t > tf) break;
-    if (hasObj && t > objT && mode != 1 && mode != 5) { acc += (1.0 - a) * objC; a = 1.0; break; }
+    if (hasObj && t > objT && mode != 1 && mode != 5) { vec3 oc = gotG ? mix(objC, colG, 0.55) : objC; acc += (1.0 - a) * oc; a = 1.0; break; }
     vec3 tc = tcOf(ro + rd * t);
     float v = val(tc);
     if (fuse > 0 && mode == 0) {
@@ -203,6 +212,15 @@ void main(){
       if (gotA && gotB) break;
       if (fuse == 2 && gotB) break;
       continue;
+    }
+    if (hasGuide == 1 && !gotG && (mode == 0 || mode == 4)) {
+      float gg = gv(tc);
+      if (gg > 0.5 && prevG <= 0.5) {
+        float a0 = prevT, b0 = t;
+        for (int k = 0; k < 5; k++) { float m = 0.5 * (a0 + b0); if (gv(tcOf(ro + rd * m)) > 0.5) b0 = m; else a0 = m; }
+        colG = shade(normalize(-gradG(tcOf(ro + rd * b0)) + 1e-6), rd, vec3(0.32, 0.84, 0.76), 0.38, 40.0); tG = b0; gotG = true;
+      }
+      prevG = gg;
     }
     if (hasAir == 1 && (mode == 2 || mode == 3)) {
       float m = texture(air, tc).r * 255.0;
@@ -236,6 +254,7 @@ void main(){
         }
         if (hasObj) c = mix(c, objC, boneSee * (objK > 3.5 ? 0.85 : 1.0));   // implants / nerve seen through the bone
         if (airA > 0.01) c = mix(c, airC / airA, (tAir < hitT ? 1.0 : boneSee) * airA);
+        if (gotG) c = mix(c, colG, 0.8);                                       // the guide sits on top
         acc += (1.0 - a) * c; a = 1.0; break;
       }
     } else {
@@ -273,6 +292,7 @@ void main(){
   }
   if (mode == 1) { float g = clamp((mx - thr) / max(1.0 - thr, 0.01), 0.0, 1.0); vec3 c = vec3(pow(g, 1.15)); color = vec4(hasObj ? mix(c, objC, 0.8) : c, 1.0); return; }
   if (mode == 5) { float g = 1.0 - exp(-sum * 9.0 / diag); vec3 c = vec3(pow(g, 1.25)); color = vec4(hasObj ? mix(c, objC, 0.8) : c, 1.0); return; }
+  if (gotG && a < 1.0) { acc += (1.0 - a) * 0.85 * colG; a += (1.0 - a) * 0.85; }
   if (airA > 0.01 && a < 1.0) { acc += (1.0 - a) * airC; a += (1.0 - a) * airA; }
   if (hasObj && a < 1.0) { acc += (1.0 - a) * objC; a = 1.0; }
   color = vec4(acc + (1.0 - a) * bg, 1.0);
@@ -374,7 +394,7 @@ export class Renderer3D {
     const m = Math.max(vol.X, vol.Y, vol.Z);
     this.box = [vol.X / m, vol.Y / m, vol.Z / m];
     this.mm = m;
-    this.u = Object.fromEntries(["vol", "invVP", "boxSize", "mode", "thr", "steps", "clipLo", "clipHi", "texel", "flipZ", "softLo", "toothLo", "airV", "camR", "camU", "nCone", "cA", "cB", "cP", "nSeg", "sA", "sB", "boneSee", "air", "hasAir", "fuse", "volB", "distA", "bM", "bC", "thrB"].map((n) => [n, gl.getUniformLocation(prog, n)]));
+    this.u = Object.fromEntries(["vol", "invVP", "boxSize", "mode", "thr", "steps", "clipLo", "clipHi", "texel", "flipZ", "softLo", "toothLo", "airV", "camR", "camU", "nCone", "cA", "cB", "cP", "nSeg", "sA", "sB", "boneSee", "air", "hasAir", "fuse", "volB", "distA", "bM", "bC", "thrB", "guideTex", "hasGuide"].map((n) => [n, gl.getUniformLocation(prog, n)]));
     this.yaw = 0; this.pitch = 0.12; this.zoom = 1.35;
     this.objs = { nCone: 0, cA: new Float32Array(96), cB: new Float32Array(96), cP: new Float32Array(96), nSeg: 0, sA: new Float32Array(160), sB: new Float32Array(160) };
     this.boneSee = 0.6;
@@ -435,6 +455,7 @@ export class Renderer3D {
     const F = this.fusion;
     gl.uniform1i(this.u.fuse, F ? (F.mode === "change" ? 2 : 1) : 0);
     gl.uniform1i(this.u.volB, 2); gl.uniform1i(this.u.distA, 3);
+    gl.uniform1i(this.u.guideTex, 4); gl.uniform1i(this.u.hasGuide, this.guideTex && !this.fusion ? 1 : 0);
     if (F) { gl.uniformMatrix3fv(this.u.bM, false, F.M); gl.uniform3fv(this.u.bC, F.C); gl.uniform1f(this.u.thrB, Math.max(0, Math.min(1, F.volB.valueOfHu(thresholdHu) / 255))); }
     gl.uniform1i(this.u.vol, 0);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
@@ -470,6 +491,22 @@ export class Renderer3D {
     f.M = new Float32Array([cx[0] - c0[0], cx[1] - c0[1], cx[2] - c0[2], cy[0] - c0[0], cy[1] - c0[1], cy[2] - c0[2], cz[0] - c0[0], cz[1] - c0[1], cz[2] - c0[2]]);
     f.C = new Float32Array(c0);
     this.fusion = f;
+  }
+  /* the surgical guide on the scan's grid (1 = guide) — or null */
+  setGuide(mask) {
+    const { gl, vol } = this;
+    if (mask === this.guideSrc) return;
+    this.guideSrc = mask;
+    if (this.guideTex) { gl.deleteTexture(this.guideTex); this.guideTex = null; }
+    if (!mask) return;
+    const v = new Uint8Array(mask.length); for (let i = 0; i < mask.length; i++) v[i] = mask[i] ? 255 : 0;
+    gl.activeTexture(gl.TEXTURE4);
+    this.guideTex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_3D, this.guideTex);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texImage3D(gl.TEXTURE_3D, 0, gl.R8, vol.nx, vol.ny, vol.nz, 0, gl.RED, gl.UNSIGNED_BYTE, smooth3({ nx: vol.nx, ny: vol.ny, nz: vol.nz, data: v }));
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    for (const w of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T, gl.TEXTURE_WRAP_R]) gl.texParameteri(gl.TEXTURE_3D, w, gl.CLAMP_TO_EDGE);
+    gl.activeTexture(gl.TEXTURE0);
   }
   /* the airway mask (values 2..255 = area level) or null */
   setAirway(mask) {
