@@ -1,8 +1,10 @@
 /* ═══════════════════════════════════════════════════════════════════════
    3-D VIEW — the scan rendered on the graphics card (WebGL 2), so it turns
    smoothly on phones, tablets and computers.
-   Modes: "bone" (surface of bone and teeth, shaded), "mip" (brightest
-   point, like an X-ray), "soft" (see-through).
+   Modes: "bone" (ivory bone and teeth surface, lit like a photo), "skin"
+   (skin over the bone), "color" (volume rendering), "xray" (a radiograph
+   made through the head), "mip" (brightest point), "soft" (see-through).
+   The scan is lightly smoothed for 3-D only, so grain does not show as dots.
    Implants and the nerve are drawn on top in their true positions.
    ═══════════════════════════════════════════════════════════════════════ */
 
@@ -16,83 +18,121 @@ in vec2 uv; out vec4 color;
 uniform sampler3D vol;
 uniform mat4 invVP;
 uniform vec3 boxSize;      // physical size, largest side = 1
-uniform int mode;          // 0 bone, 1 mip, 2 soft, 3 colour (VR)
-uniform float softLo;
-uniform float thr;         // threshold (0..1 of the value range)
+uniform int mode;          // 0 bone surface, 1 MIP, 2 see-through, 3 colour VR, 4 skin + bone, 5 X-ray (ray sum)
+uniform float softLo;      // soft tissue / skin level (0..1)
+uniform float thr;         // bone level (0..1)
+uniform float toothLo;     // enamel / dentine level (0..1)
+uniform float airV;        // air level (0..1)
 uniform float steps;
 uniform vec3 clipLo; uniform vec3 clipHi;
 uniform vec3 texel;
 uniform float flipZ;
+uniform vec3 camR; uniform vec3 camU;
+
 float val(vec3 t){ return texture(vol, t).r; }
+vec3 tcOf(vec3 p){ vec3 t = p / boxSize + 0.5; if (flipZ > 0.5) t.z = 1.0 - t.z; return t; }
+vec3 gradAt(vec3 t){
+  vec3 h = texel * 1.25;
+  vec3 g = vec3(val(t + vec3(h.x,0,0)) - val(t - vec3(h.x,0,0)),
+                val(t + vec3(0,h.y,0)) - val(t - vec3(0,h.y,0)),
+                val(t + vec3(0,0,h.z)) - val(t - vec3(0,0,h.z)));
+  if (flipZ > 0.5) g.z = -g.z;
+  return g / (h * boxSize);              // per box unit (correct for unequal voxel sizes)
+}
+vec3 bgCol(){ return mix(vec3(0.010, 0.014, 0.024), vec3(0.105, 0.128, 0.170), uv.y); }
+/* two lights that follow the camera (key from upper right, soft fill from lower left) + specular */
+vec3 shade(vec3 n, vec3 rd, vec3 base, float specK, float shin){
+  if (dot(n, rd) > 0.0) n = -n;
+  vec3 L1 = normalize(-rd + 0.55 * camU + 0.40 * camR);
+  vec3 L2 = normalize(-rd - 0.35 * camU - 0.55 * camR);
+  float d1 = max(dot(n, L1), 0.0), d2 = max(dot(n, L2), 0.0);
+  float rim = pow(1.0 - max(dot(n, -rd), 0.0), 3.0);
+  float sp = pow(max(dot(n, normalize(L1 - rd)), 0.0), shin) * specK;
+  return base * (0.16 + 0.74 * d1 + 0.20 * d2) + vec3(sp) + base * rim * 0.06;
+}
+vec3 boneCol(float inside){
+  float tooth = smoothstep(toothLo - 0.04, toothLo + 0.10, inside);
+  return mix(vec3(0.93, 0.86, 0.73), vec3(0.98, 0.965, 0.92), tooth);
+}
+float hash(vec2 p){ return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+
 void main(){
   vec4 nearP = invVP * vec4(uv * 2.0 - 1.0, -1.0, 1.0); nearP /= nearP.w;
   vec4 farP  = invVP * vec4(uv * 2.0 - 1.0,  1.0, 1.0); farP /= farP.w;
   vec3 ro = nearP.xyz, rd = normalize(farP.xyz - nearP.xyz);
+  bool dark = (mode == 1 || mode == 5);
+  vec3 bg = dark ? vec3(0.0) : bgCol();
   vec3 lo = -boxSize * 0.5 + clipLo * boxSize, hi = -boxSize * 0.5 + clipHi * boxSize;
   vec3 inv = 1.0 / rd;
   vec3 t0 = (lo - ro) * inv, t1 = (hi - ro) * inv;
   vec3 tmin = min(t0, t1), tmax = max(t0, t1);
   float tn = max(max(tmin.x, tmin.y), tmin.z), tf = min(min(tmax.x, tmax.y), tmax.z);
-  if (tf <= max(tn, 0.0)) { color = vec4(0.03, 0.05, 0.09, 1.0); return; }
+  if (tf <= max(tn, 0.0)) { color = vec4(bg, 1.0); return; }
   tn = max(tn, 0.0);
   float dt = length(boxSize) / steps;
-  vec3 acc = vec3(0.0); float a = 0.0; float mx = 0.0;
-  for (float t = tn; t < tf; t += dt) {
-    vec3 pos = ro + rd * t;
-    vec3 tc = pos / boxSize + 0.5;
-    if (flipZ > 0.5) tc.z = 1.0 - tc.z;
+  float diag = length(boxSize);
+  float t = tn + dt * hash(gl_FragCoord.xy);           // jitter: no wood-grain rings
+  vec3 acc = vec3(0.0); float a = 0.0, mx = 0.0, sum = 0.0;
+  float prevV = val(tcOf(ro + rd * tn)), prevT = tn;
+  bool skinDone = false;
+  bool startInside = prevV > thr;                       // ray starts in bone at a cut face
+  for (int i = 0; i < 2400; i++) {
+    if (t > tf) break;
+    vec3 tc = tcOf(ro + rd * t);
     float v = val(tc);
-    if (mode == 1) { mx = max(mx, v); continue; }
-    if (mode == 3) {
-      // colour volume rendering: faint soft tissue, orange → ivory bone and teeth, lit
-      float soft = smoothstep(softLo, softLo + 0.03, v) * (1.0 - smoothstep(thr - 0.03, thr, v));
-      float bone = smoothstep(thr - 0.02, thr + 0.08, v);
-      float o = soft * 0.006 + bone * 0.30;
-      if (o > 0.002) {
-        vec3 g = vec3(val(tc + vec3(texel.x,0,0)) - val(tc - vec3(texel.x,0,0)),
-                      val(tc + vec3(0,texel.y,0)) - val(tc - vec3(0,texel.y,0)),
-                      val(tc + vec3(0,0,texel.z)) - val(tc - vec3(0,0,texel.z)));
-        if (flipZ > 0.5) g.z = -g.z;
-        vec3 n = normalize(-g + 1e-6);
-        vec3 l = normalize(-rd + vec3(0.25, 0.45, 0.5));
-        float lit = 0.32 + 0.8 * abs(dot(n, l));
-        float spec = pow(max(dot(reflect(-l, n), -rd), 0.0), 20.0) * 0.18 * bone;
-        vec3 c = bone > 0.02
-          ? mix(vec3(0.80, 0.42, 0.16), vec3(1.0, 0.94, 0.80), clamp((v - thr) * 3.2, 0.0, 1.0))
-          : vec3(0.85, 0.42, 0.36);
-        c = c * lit + spec;
-        acc += (1.0 - a) * o * c; a += (1.0 - a) * o;
-        if (a > 0.97) break;
+    if (mode == 1) { mx = max(mx, v); }
+    else if (mode == 5) { sum += max(v - airV, 0.0) * dt; }
+    else if (mode == 0 || mode == 4) {
+      if (mode == 4 && !skinDone && v > softLo && prevV <= softLo) {
+        float a0 = prevT, b0 = t;
+        for (int k = 0; k < 5; k++) { float m = 0.5 * (a0 + b0); if (val(tcOf(ro + rd * m)) > softLo) b0 = m; else a0 = m; }
+        vec3 n = normalize(-gradAt(tcOf(ro + rd * b0)) + 1e-6);
+        vec3 sc = shade(n, rd, vec3(0.86, 0.64, 0.54), 0.10, 18.0);
+        float op = 0.42;
+        acc += (1.0 - a) * op * sc; a += (1.0 - a) * op; skinDone = true;
       }
-      continue;
-    }
-    if (mode == 0) {
       if (v > thr) {
-        // refine and shade
-        vec3 g = vec3(val(tc + vec3(texel.x,0,0)) - val(tc - vec3(texel.x,0,0)),
-                      val(tc + vec3(0,texel.y,0)) - val(tc - vec3(0,texel.y,0)),
-                      val(tc + vec3(0,0,texel.z)) - val(tc - vec3(0,0,texel.z)));
-        if (flipZ > 0.5) g.z = -g.z;
-        vec3 n = normalize(-g + 1e-6);
-        vec3 l = normalize(-rd + vec3(0.3, 0.5, 0.4));
-        float diff = max(dot(n, l), 0.0), amb = 0.25;
-        float spec = pow(max(dot(reflect(-l, n), -rd), 0.0), 24.0) * 0.25;
-        float dens = clamp((v - thr) * 4.0, 0.0, 1.0);
-        vec3 base = mix(vec3(0.93, 0.86, 0.72), vec3(1.0, 0.98, 0.93), dens);
-        color = vec4(base * (amb + diff * 0.85) + spec, 1.0);
-        return;
+        vec3 c;
+        if (startInside && i == 0) {
+          c = boneCol(v) * 0.62;                         // flat cut face
+        } else {
+          float a0 = prevT, b0 = t;
+          for (int k = 0; k < 6; k++) { float m = 0.5 * (a0 + b0); if (val(tcOf(ro + rd * m)) > thr) b0 = m; else a0 = m; }
+          vec3 p = ro + rd * b0;
+          vec3 n = normalize(-gradAt(tcOf(p)) + 1e-6);
+          float inside = val(tcOf(p + rd * 1.6 * texel.x * boxSize.x));
+          float tooth = smoothstep(toothLo - 0.04, toothLo + 0.10, inside);
+          c = shade(n, rd, boneCol(inside), 0.18 + 0.30 * tooth, 28.0 + 30.0 * tooth);
+          c *= mix(1.0, 0.72, clamp((b0 - tn) / diag, 0.0, 1.0));   // depth cue
+        }
+        acc += (1.0 - a) * c; a = 1.0; break;
       }
     } else {
-      float o = clamp((v - thr) * 3.0, 0.0, 1.0) * 0.08;
-      vec3 c = mix(vec3(0.9, 0.55, 0.45), vec3(1.0, 0.97, 0.9), clamp((v - thr) * 2.0, 0.0, 1.0));
-      acc += (1.0 - a) * o * c; a += (1.0 - a) * o;
-      if (a > 0.97) break;
+      float o; vec3 base;
+      if (mode == 3) {
+        float soft = smoothstep(softLo, softLo + 0.04, v) * (1.0 - smoothstep(thr - 0.03, thr, v));
+        float bone = smoothstep(thr - 0.02, thr + 0.07, v);
+        o = soft * 0.010 + bone * 0.55;
+        base = bone > 0.05 ? boneCol(v) : vec3(0.80, 0.42, 0.34);
+      } else {
+        o = clamp((v - thr) * 3.0, 0.0, 1.0) * 0.10;
+        base = boneCol(v);
+      }
+      if (o > 0.001) {
+        o = 1.0 - pow(1.0 - o, dt * 900.0 / diag);       // same look at any quality
+        vec3 g = gradAt(tc);
+        float gm = clamp(length(g) * 0.35, 0.0, 1.0);
+        vec3 lit = shade(normalize(-g + 1e-6), rd, base, 0.15, 24.0);
+        vec3 c = mix(base * 0.42, lit, gm);
+        acc += (1.0 - a) * o * c; a += (1.0 - a) * o;
+        if (a > 0.985) break;
+      }
     }
+    prevV = v; prevT = t; t += dt;
   }
-  if (mode == 1) { float g = clamp((mx - thr) / max(1.0 - thr, 0.01), 0.0, 1.0); color = vec4(vec3(g), 1.0); return; }
-  if (mode == 0) { color = vec4(0.03, 0.05, 0.09, 1.0); return; }
-  if (mode == 3) { color = vec4(acc + (1.0 - a) * vec3(0.02, 0.03, 0.06), 1.0); return; }
-  color = vec4(acc + (1.0 - a) * vec3(0.03, 0.05, 0.09), 1.0);
+  if (mode == 1) { float g = clamp((mx - thr) / max(1.0 - thr, 0.01), 0.0, 1.0); color = vec4(vec3(pow(g, 1.15)), 1.0); return; }
+  if (mode == 5) { float g = 1.0 - exp(-sum * 9.0 / diag); color = vec4(vec3(pow(g, 1.25)), 1.0); return; }
+  color = vec4(acc + (1.0 - a) * bg, 1.0);
 }`;
 
 /* small matrix helpers (column-major, like WebGL) */
@@ -142,6 +182,28 @@ const dot3 = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 const cross3 = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 const norm3 = (a) => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; };
 
+/* light [1 2 1] smoothing along x, y and z — for the 3-D view only (the slices stay sharp) */
+function smooth3(vol) {
+  const { nx, ny, nz, data } = vol, nxy = nx * ny;
+  const a = new Uint8Array(data.length), b = new Uint8Array(data.length);
+  for (let i = 0; i < data.length; i++) {
+    const x = i % nx;
+    const l = x > 0 ? data[i - 1] : data[i], r = x < nx - 1 ? data[i + 1] : data[i];
+    a[i] = (l + 2 * data[i] + r + 2) >> 2;
+  }
+  for (let i = 0; i < data.length; i++) {
+    const y = ((i % nxy) / nx) | 0;
+    const u = y > 0 ? a[i - nx] : a[i], d = y < ny - 1 ? a[i + nx] : a[i];
+    b[i] = (u + 2 * a[i] + d + 2) >> 2;
+  }
+  for (let i = 0; i < data.length; i++) {
+    const z = (i / nxy) | 0;
+    const u = z > 0 ? b[i - nxy] : b[i], d = z < nz - 1 ? b[i + nxy] : b[i];
+    a[i] = (u + 2 * b[i] + d + 2) >> 2;
+  }
+  return a;
+}
+
 export function webgl2Supported() {
   try { const c = document.createElement("canvas"); return Boolean(c.getContext("webgl2")); } catch { return false; }
 }
@@ -163,14 +225,14 @@ export class Renderer3D {
     const loc = gl.getAttribLocation(prog, "p"); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
     const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_3D, tex);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    gl.texImage3D(gl.TEXTURE_3D, 0, gl.R8, vol.nx, vol.ny, vol.nz, 0, gl.RED, gl.UNSIGNED_BYTE, vol.data);
+    gl.texImage3D(gl.TEXTURE_3D, 0, gl.R8, vol.nx, vol.ny, vol.nz, 0, gl.RED, gl.UNSIGNED_BYTE, smooth3(vol));
     gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     for (const w of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T, gl.TEXTURE_WRAP_R]) gl.texParameteri(gl.TEXTURE_3D, w, gl.CLAMP_TO_EDGE);
     const m = Math.max(vol.X, vol.Y, vol.Z);
     this.box = [vol.X / m, vol.Y / m, vol.Z / m];
     this.mm = m;
-    this.u = Object.fromEntries(["vol", "invVP", "boxSize", "mode", "thr", "steps", "clipLo", "clipHi", "texel", "flipZ", "softLo"].map((n) => [n, gl.getUniformLocation(prog, n)]));
-    this.yaw = 0; this.pitch = 0.15; this.zoom = 1;
+    this.u = Object.fromEntries(["vol", "invVP", "boxSize", "mode", "thr", "steps", "clipLo", "clipHi", "texel", "flipZ", "softLo", "toothLo", "airV", "camR", "camU"].map((n) => [n, gl.getUniformLocation(prog, n)]));
+    this.yaw = 0; this.pitch = 0.12; this.zoom = 1.35;
   }
   /* box coordinates: x → right, y → front-to-back, z → head (flipped when the scan's z goes down) */
   toBox(p) {
@@ -188,7 +250,7 @@ export class Renderer3D {
     const view = lookAt(eye, [0, 0, 0], [0, 0, sup]);
     const proj = perspective(0.6, W / H, 0.05, 10);
     const vp = mat4Mul(proj, view);
-    return { vp, inv: mat4Inv(vp) };
+    return { vp, inv: mat4Inv(vp), right: [view[0], view[4], view[8]], up: [view[1], view[5], view[9]] };
   }
   project(p, W, H) {
     const { vp } = this.matrices(W, H);
@@ -203,17 +265,23 @@ export class Renderer3D {
     const W = canvas.width, H = canvas.height;
     gl.viewport(0, 0, W, H);
     gl.useProgram(this.prog);
-    const { inv } = this.matrices(W, H);
+    const { inv, right, up } = this.matrices(W, H);
+    const v01 = (hu) => Math.max(0, Math.min(1, vol.valueOfHu(hu) / 255));
+    const MODES = { bone: 0, teeth: 0, mip: 1, soft: 2, color: 3, skin: 4, xray: 5 };
     gl.uniformMatrix4fv(this.u.invVP, false, inv);
     gl.uniform3fv(this.u.boxSize, this.box);
-    gl.uniform1i(this.u.mode, mode === "mip" ? 1 : mode === "soft" ? 2 : mode === "color" ? 3 : 0);
-    gl.uniform1f(this.u.softLo, Math.max(0, Math.min(1, vol.valueOfHu(-200) / 255)));
-    gl.uniform1f(this.u.thr, Math.max(0, Math.min(1, vol.valueOfHu(thresholdHu) / 255)));
-    gl.uniform1f(this.u.steps, quick ? 180 : mode === "color" ? 520 : 420);
+    gl.uniform1i(this.u.mode, MODES[mode] ?? 0);
+    gl.uniform1f(this.u.softLo, v01(mode === "skin" ? -450 : -200));
+    gl.uniform1f(this.u.thr, v01(thresholdHu));
+    gl.uniform1f(this.u.toothLo, v01(Math.max(thresholdHu + 400, 1500)));
+    gl.uniform1f(this.u.airV, v01(mode === "xray" ? -150 : -850));
+    const full = Math.min(1100, Math.round(Math.max(vol.nx, vol.ny, vol.nz) * 2.4));
+    gl.uniform1f(this.u.steps, quick ? Math.min(260, full) : full);
     gl.uniform3fv(this.u.clipLo, clip ? clip.lo : [0, 0, 0]);
     gl.uniform3fv(this.u.clipHi, clip ? clip.hi : [1, 1, 1]);
     gl.uniform3fv(this.u.texel, [1 / vol.nx, 1 / vol.ny, 1 / vol.nz]);
     gl.uniform1f(this.u.flipZ, vol.zUp ? 0 : 1);
+    gl.uniform3fv(this.u.camR, right); gl.uniform3fv(this.u.camU, up);
     gl.uniform1i(this.u.vol, 0);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   }

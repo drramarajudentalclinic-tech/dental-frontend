@@ -37,6 +37,33 @@ const VIEW_TITLE = {
   "3d": "3-D", tmjRs: "Right TMJ · sagittal", tmjRc: "Right TMJ · coronal", tmjLs: "Left TMJ · sagittal", tmjLc: "Left TMJ · coronal",
 };
 const KIND_COLOR = (k) => COLORS[k] || (k.startsWith("tmj") ? (k[3] === "R" ? "#38bdf8" : "#f472b6") : k === "strip" ? COLORS.cross : "#94a3b8");
+const THREE_PRESETS = [
+  ["bone", "Bone", 400], ["teeth", "Teeth", 1300], ["skin", "Skin + bone", 400], ["color", "Colour", 400],
+  ["xray", "X-ray", 400], ["mip", "MIP", 300], ["soft", "See-through", 300],
+];
+/* contrast that suits this scan: from soft tissue to the brightest enamel (every machine's grey values differ) */
+function autoWindow(vol) {
+  const h = new Float64Array(256), d = vol.data, step = Math.max(1, Math.floor(d.length / 3e6));
+  for (let i = 0; i < d.length; i += step) h[d[i]]++;
+  const start = Math.max(1, Math.ceil(vol.valueOfHu(-400)));
+  let tot = 0; for (let v = start; v < 256; v++) tot += h[v];
+  if (!tot) return { w: 4000, l: 1200 };
+  const pct = (q) => { let c = 0; for (let v = start; v < 256; v++) { c += h[v]; if (c >= tot * q) return v; } return 255; };
+  const lo = vol.hu(pct(0.03)) - 450, hi = vol.hu(pct(0.9985));
+  return { w: Math.max(400, Math.round((hi - lo) / 50) * 50), l: Math.round((hi + lo) / 2 / 25) * 25 };
+}
+/* unsharp mask on a rendered slice (OnDemand-style "Sharpen") */
+function sharpenImage(img, amount = 0.7) {
+  const { width: W, height: H, data } = img, src = new Uint8ClampedArray(data);
+  for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) {
+    const i = (y * W + x) * 4;
+    for (let c = 0; c < 3; c++) {
+      const k = i + c, blur = (src[k - 4] + src[k + 4] + src[k - W * 4] + src[k + W * 4]) * 0.25;
+      data[k] = src[k] + (src[k] - blur) * amount;
+    }
+  }
+  return img;
+}
 const PRESETS = [
   { name: "Dental", w: 4000, l: 1200 }, { name: "Bone", w: 2500, l: 700 }, { name: "Teeth", w: 2200, l: 1600 }, { name: "Soft", w: 700, l: 100 }, { name: "Airway", w: 1400, l: -300 },
 ];
@@ -119,7 +146,17 @@ function Pane({ kind, scene, cam, setCam, act, quick, onMax, maxed, active, onAc
     });
   }, [strip, kind, vol, st, scene.arch, scene.plan.crossStep]);
   const view = views[0] || null;
-  const camNow = useMemo(() => (view ? (cam || { scale: fitScale(view, vol, subW, H), panX: 0, panY: 0 }) : null), [cam, view, vol, subW, H]);
+  // like OnDemand: cross-sections and the panoramic open zoomed on the jaw (at the level the arch was drawn)
+  const jawZ = scene.plan.archZ != null ? scene.plan.archZ + (scene.plan.jaw === "upper" ? 1 : -1) * vol.zSign * (kind === "pano" ? 4 : 8) : vol.Z / 2;   // a little towards the roots
+  const camNow = useMemo(() => {
+    if (!view) return null;
+    if (cam) return cam;
+    let scale = fitScale(view, vol, subW, H), panY = 0;
+    const focus = (sc) => { const b = view.plane([scene.cursor[0], scene.cursor[1], jawZ])[1]; panY = -(b - view.b0) * sc; };
+    if (kind === "cross" || strip) { const w = scene.plan.crossWidth; scale = Math.min(subW / w, H / (w * 1.25)) * 0.98; focus(scale); }
+    else if (kind === "pano" && scene.arch) { scale = Math.min(subW / scene.arch.length, H / Math.max(45, scene.arch.length * 0.5)) * 0.98; focus(scale); }
+    return { scale, panX: 0, panY };
+  }, [cam, view, vol, subW, H, kind, strip, jawZ, scene.plan.crossWidth, scene.arch, scene.plan.jaw]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     cancelAnimationFrame(raf.current);
@@ -150,6 +187,7 @@ function Pane({ kind, scene, cam, setCam, act, quick, onMax, maxed, active, onAc
           ctx.drawImage(tmp, x0, 0, subW, H);
         } else {
           const img = renderView(v, vol, camNow, subW, H, scene.lut, { slab, mip: scene.mip && kind !== "cross", img: imgCache.current[key], mask: scene.mask });
+          if (scene.sharp) sharpenImage(img, 0.75);
           imgCache.current[key] = img;
           ctx.putImageData(img, x0, 0);
         }
@@ -166,7 +204,7 @@ function Pane({ kind, scene, cam, setCam, act, quick, onMax, maxed, active, onAc
       });
     });
     return () => cancelAnimationFrame(raf.current);
-  }, [W, H, views, camNow, quick, scene.lut, scene.plan, scene.temp, scene.selectedId, scene.slab, scene.mip, scene.cursor, scene.arch, scene.mask, scene.tool, scene.rotatable, f, kind, vol]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [W, H, views, camNow, quick, scene.lut, scene.plan, scene.temp, scene.selectedId, scene.slab, scene.mip, scene.cursor, scene.arch, scene.mask, scene.tool, scene.rotatable, scene.sharp, f, kind, vol]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const el = over.current; if (!el) return undefined;
@@ -326,8 +364,8 @@ function Pane3D({ scene, settings, setSettings, onMax, maxed, rendererRef, activ
     <div className={`cv-pane ${active ? "active" : ""}`} style={{ "--vc": COLORS["3d"] }}>
       <div className="cv-pane-head">
         <span className="cv-pane-title" style={{ color: COLORS["3d"] }}>3-D</span>
-        <select className="cv-sel" value={settings.mode} onChange={(e) => setSettings((s) => ({ ...s, mode: e.target.value }))} aria-label="3-D style">
-          <option value="color">Colour (VR)</option><option value="bone">Bone surface</option><option value="mip">X-ray (MIP)</option><option value="soft">See-through</option>
+        <select className="cv-sel" value={settings.mode} onChange={(e) => { const pr = THREE_PRESETS.find(([k]) => k === e.target.value); setSettings((s) => ({ ...s, mode: pr[0], thr: pr[2] })); }} aria-label="3-D style">
+          {THREE_PRESETS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
         </select>
         <span style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
           <button type="button" className="cv-mini" title="Front" onClick={() => preset(0, 0.1)}>F</button>
@@ -452,6 +490,8 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
   const [frame, setFrame] = useState(IDENTITY_FRAME);
   const [wl, setWl] = useState({ w: 4000, l: 1200 });
   const [invert, setInvert] = useState(false);
+  const [sharp, setSharp] = useState(false);
+  const [autoWl, setAutoWl] = useState(null);
   const [slab, setSlab] = useState(0);
   const [mip, setMip] = useState(false);
   const [cams, setCams] = useState({});
@@ -465,7 +505,7 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
   const [toast, setToast] = useState(null);
   const [saveState, setSaveState] = useState("");
   const [dirty, setDirty] = useState(false);
-  const [three, setThree] = useState({ mode: "color", thr: 450, clipTop: 1, clipBottom: 0, clipFront: 0, clipLeft: 0, clipRight: 0 });
+  const [three, setThree] = useState({ mode: "bone", thr: 400, clipTop: 1, clipBottom: 0, clipFront: 0, clipLeft: 0, clipRight: 0 });
   const [busy, setBusy] = useState("");
   const [crossMode, setCrossMode] = useState("single");
   const [tmjOffset, setTmjOffset] = useState({});
@@ -505,7 +545,7 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
         if (!alive) return;
         setVol(v);
         setCursor([v.X / 2, v.Y / 2, v.Z / 2]);
-        if (v.source === "slices") setWl({ w: 2500, l: 500 });
+        const aw = autoWindow(v); setAutoWl(aw); setWl(aw);
         const ann = await fetch(`${apiBase}/cbct/${volumeId}/annotations`, { headers: authHeaders() }).then((r) => (r.ok ? r.json() : [])).catch(() => []);
         if (!alive) return;
         const saved = (Array.isArray(ann) ? ann : []).find((a) => a && a.type === "plan" && a.version >= 2);
@@ -687,7 +727,7 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
   const finishArch = () => {
     if (!temp || temp.kind !== "arch" || temp.points.length < 3) { say("Tap at least 3 points along the jaw on the axial view.", "warn"); return; }
     const a = buildArch(temp.points);
-    setPlan((p) => ({ ...p, archPoints: a.points, crossS: a.length / 2 }));
+    setPlan((p) => ({ ...p, archPoints: a.points, crossS: a.length / 2, archZ: cursor[2] }));
     setTemp(null); setTool("nav"); setCams((c) => ({ ...c, pano: null, cross: null, strip: null }));
     say("Arch ready — the panoramic and cross-section views are made from it.");
   };
@@ -887,7 +927,7 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
   );
 
   const scene = {
-    vol, plan, arch, cursor, lut, slab, mip, selectedId, temp, tool, phone: screen.phone, frame: mprFrame, tmjOffset, rotatable,
+    vol, plan, arch, cursor, lut, slab, mip, sharp, selectedId, temp, tool, phone: screen.phone, frame: mprFrame, tmjOffset, rotatable,
     mask: tab === "airway" && airway && !airway.error ? airway.mask : null,
     cursorCss: { nav: "crosshair", pan: "grab", zoom: "zoom-in", wl: "ew-resize", dist: "crosshair", angle: "crosshair", hu: "cell", arch: "copy", nerve: "copy", implant: "copy", condyle: "copy", airseed: "copy", erase: "not-allowed" }[tool],
   };
@@ -934,7 +974,7 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
   ) : null;
 
   const panelProps = { tab, plan, setPlan, arch, vol, tool, setTool, temp, setTemp, finishArch, finishNerve, sel, selNerve, selectImplant, setSelectedId, selectedId,
-    wl, setWl, invert, setInvert, slab, setSlab, mip, setMip, removeSelected, setCursor, rebuild, frame, setFrame, three, setThree,
+    wl, setWl, autoWl, invert, setInvert, sharp, setSharp, slab, setSlab, mip, setMip, removeSelected, setCursor, rebuild, frame, setFrame, three, setThree,
     airway, cephKind, setCephKind, cephActive, setCephActive, cephLook, setCephLook, doExport, setTmjOffset };
 
   const openTab = (k) => {
@@ -1027,7 +1067,7 @@ export default function CBCTViewer({ volumeId, apiBase = "/api", onClose }) {
    ═════════════════════════════════════════════════════════════════════════ */
 function Panel(P) {
   const { tab, plan, setPlan, arch, vol, tool, setTool, temp, setTemp, finishArch, finishNerve, sel, selNerve, selectImplant, setSelectedId, selectedId,
-    wl, setWl, invert, setInvert, slab, setSlab, mip, setMip, removeSelected, setCursor, rebuild, frame, setFrame, three, setThree,
+    wl, setWl, autoWl, invert, setInvert, sharp, setSharp, slab, setSlab, mip, setMip, removeSelected, setCursor, rebuild, frame, setFrame, three, setThree,
     airway, cephKind, setCephKind, cephActive, setCephActive, cephLook, setCephLook, doExport, setTmjOffset } = P;
   const upd = (id, patch) => setPlan((p) => ({ ...p, implants: p.implants.map((i) => (i.id === id ? { ...i, ...patch } : i)) }));
   const rows = useMemo(() => (tab === "implant" ? implantRows(plan, vol) : []), [tab, plan, vol]);
@@ -1040,10 +1080,11 @@ function Panel(P) {
   const rotated = Math.abs(frame.ez[2] - 1) > 1e-4 || Math.abs(frame.ex[0] - 1) > 1e-4;
   const display = (
     <Sec title="Display">
-      <div className="cv-row wrap">{PRESETS.map((p) => <button key={p.name} type="button" className={`cv-btn sm ${wl.w === p.w && wl.l === p.l ? "primary" : "ghost"}`} onClick={() => setWl({ w: p.w, l: p.l })}>{p.name}</button>)}</div>
+      <div className="cv-row wrap">{[...(autoWl ? [{ name: "Auto", ...autoWl }] : []), ...PRESETS].map((p) => <button key={p.name} type="button" className={`cv-btn sm ${wl.w === p.w && wl.l === p.l ? "primary" : "ghost"}`} onClick={() => setWl({ w: p.w, l: p.l })}>{p.name}</button>)}</div>
       <Range label="Contrast (window)" min={50} max={8000} step={50} value={wl.w} set={(v) => setWl((x) => ({ ...x, w: v }))} />
       <Range label="Brightness (level)" min={-1000} max={4000} step={25} value={wl.l} set={(v) => setWl((x) => ({ ...x, l: v }))} />
       <label className="cv-check"><input type="checkbox" checked={invert} onChange={(e) => setInvert(e.target.checked)} /> Invert (black bone)</label>
+      <label className="cv-check"><input type="checkbox" checked={sharp} onChange={(e) => setSharp(e.target.checked)} /> Sharpen (crisper edges)</label>
       {(tab === "mpr" || tab === "airway") && (
         <>
           <Range label="Slab thickness" unit="mm" min={0} max={30} step={1} value={slab} set={setSlab} />
@@ -1202,7 +1243,7 @@ function Panel(P) {
 
       {tab === "3d" && (
         <Sec title="3D">
-          <div className="cv-row wrap">{[["color", "Colour"], ["bone", "Bone"], ["mip", "X-ray"], ["soft", "See-through"]].map(([k, l]) => <button key={k} type="button" className={`cv-btn sm ${three.mode === k ? "primary" : "ghost"}`} onClick={() => setThree((s) => ({ ...s, mode: k }))}>{l}</button>)}</div>
+          <div className="cv-row wrap">{THREE_PRESETS.map(([k, l, t]) => <button key={k} type="button" className={`cv-btn sm ${three.mode === k ? "primary" : "ghost"}`} onClick={() => setThree((s) => ({ ...s, mode: k, thr: t }))}>{l}</button>)}</div>
           <Range label="Bone level" unit="HU" min={-300} max={2000} step={25} value={three.thr} set={(v) => setThree((s) => ({ ...s, thr: v }))} />
           <Range label="Cut from top" unit="%" min={0} max={95} step={1} value={Math.round((1 - three.clipTop) * 100)} set={(v) => setThree((s) => ({ ...s, clipTop: Math.max(1 - v / 100, s.clipBottom + 0.05) }))} />
           <Range label="Cut from bottom" unit="%" min={0} max={95} step={1} value={Math.round(three.clipBottom * 100)} set={(v) => setThree((s) => ({ ...s, clipBottom: Math.min(v / 100, s.clipTop - 0.05) }))} />
