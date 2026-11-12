@@ -83,11 +83,11 @@ export const IRRIGANTS = ["NaOCl 1%", "NaOCl 2.5%", "NaOCl 3%", "NaOCl 5.25%", "
   "Saline", "Citric acid 10%", "QMix", "MTAD"];
 export const ACTIVATION = [
   "None", "EndoActivator (Dentsply) – sonic", "Ultrasonic – passive (PUI)", "Irrisafe ultrasonic tip", "EDDY (VDW) – sonic",
-  "XP-endo Finisher (FKG)", "Manual dynamic (GP cone)", "Negative pressure (EndoVac)", "Laser (PIPS / SWEEPS)", "GentleWave",
+  "XP-endo Finisher (FKG)", "Manual dynamic (GP cone)", "Negative pressure (EndoVac)", "Laser (PIPS / SWEEPS)", "GentleWave", "Other",
 ];
 
-export const MEDICAMENTS = ["None", "Calcium hydroxide", "Triple antibiotic paste", "Ledermix", "Formocresol", "CMCP", "Odontopaste"];
-export const TEMP_SEALS = ["Cavit", "IRM", "GIC", "Zinc oxide eugenol", "Composite", "Temp filling (other)"];
+export const MEDICAMENTS = ["None", "Calcium hydroxide", "Metapex", "Triple antibiotic paste", "Ledermix", "Formocresol", "CMCP", "Odontopaste", "Other"];
+export const TEMP_SEALS = ["Cavit", "IRM", "GIC", "Zinc oxide eugenol", "Composite", "Other"];
 
 export const OBT_TECHNIQUES = [
   "Single cone", "Cold lateral condensation", "Warm vertical compaction", "Continuous wave (obturation pen)",
@@ -117,7 +117,7 @@ export const EMPTY_RCT = {
   canals: [], wl: {}, wlMethod: "", diagnosis: "",
   system: "", systemOther: "", fileLength: "", maf: "", taper: "", glide: "", glideOther: "",
   handBrand: "", handBrandOther: "", handType: "", handLength: "", handFrom: "", handTo: "",
-  irrigants: [], activation: "", medicament: "", tempSeal: "",
+  irrigants: [], activation: "", activationOther: "", medicament: "", medicamentOther: "", tempSeal: "", tempSealOther: "",
   technique: "", sealer: "", sealerOther: "", masterCone: "", core: "",
   removal: [], pulpMaterial: "", pulpMaterialOther: "", restoration: "",
 };
@@ -132,6 +132,8 @@ export const STAGE_FIELDS = {
 };
 
 const join = (xs) => xs.filter(Boolean).join(", ");
+// "Other" → the text typed in its box (empty if nothing typed)
+const pick = (d, k) => (d[k] === "Other" ? (d[k + "Other"] || "").trim() : d[k]);
 
 /* The details as one line of text (only what was filled in). " · " separates parts,
    so it never splits like the "; " between treatments does. */
@@ -163,8 +165,9 @@ export function formatRct(d, stage) {
     const line = join([[sys, d.fileLength ? `${d.fileLength} mm` : ""].filter(Boolean).join(" "), maf]);
     if (line) parts.push(line);
   }
-  if ((has("irrigation") || has("pirrigation")) && (d.irrigants?.length || (d.activation && d.activation !== "None")))
-    parts.push(`Irrigation ${join(d.irrigants || [])}${d.activation && d.activation !== "None" ? ` + ${d.activation}` : ""}`);
+  const act = d.activation && d.activation !== "None" ? pick(d, "activation") : "";
+  if ((has("irrigation") || has("pirrigation")) && (d.irrigants?.length || act))
+    parts.push(`Irrigation ${join(d.irrigants || [])}${act ? ` + ${act}` : ""}`);
   if (has("obturation")) {
     const sealer = d.sealer === "Other" ? (d.sealerOther || "").trim() : d.sealer;
     const ob = join([d.technique, sealer, d.masterCone ? `GP ${d.masterCone}` : ""]);
@@ -174,8 +177,10 @@ export function formatRct(d, stage) {
     const m = d.pulpMaterial === "Other" ? (d.pulpMaterialOther || "").trim() : d.pulpMaterial;
     if (m) parts.push(`Obturated with ${m}`);
   }
-  if (has("medicament") && d.medicament && d.medicament !== "None") parts.push(`${d.medicament} dressing`);
-  if (has("tempSeal") && d.tempSeal) parts.push(`Temp: ${d.tempSeal}`);
+  const med = d.medicament && d.medicament !== "None" ? pick(d, "medicament") : "";
+  if (has("medicament") && med) parts.push(`${med} dressing`);
+  const seal = d.tempSeal ? pick(d, "tempSeal") : "";
+  if (has("tempSeal") && seal) parts.push(`Temp: ${seal}`);
   if (has("core") && d.core) parts.push(`Core: ${d.core}`);
   if (has("prestoration") && d.restoration) parts.push(`Restored: ${d.restoration}`);
   return parts.join(" · ");

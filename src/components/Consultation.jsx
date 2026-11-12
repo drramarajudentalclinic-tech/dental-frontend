@@ -578,6 +578,44 @@ function RctFields({ stage, value, onChange }) {
       </div>
     </div>
   );
+  // Canals + working length + "Length taken with". Shown inside the Rotary section
+  // when the step has one (BMP, Obturation, Re-RCT); otherwise at the top (A/O, Pulpectomy).
+  const canalsInRotary = has("files");
+  const CanalBlock = () => (
+    <>
+      {has("canals") && (
+        <div className="crct-wide">
+          <span className="crct-lbl">Canals</span>
+          <div className="crct-chips" role="group" aria-label="Canals">
+            {CANALS.map(c => (
+              <button key={c} type="button" className={`crct-chip${(value.canals || []).includes(c) ? " on" : ""}`}
+                aria-pressed={(value.canals || []).includes(c)} onClick={() => toggleCanal(c)}>{c}</button>
+            ))}
+          </div>
+        </div>
+      )}
+      {has("wl") && (value.canals || []).length > 0 && (
+        <div className="crct-wide">
+          <span className="crct-lbl">Working length (mm)</span>
+          <div className="crct-wl">
+            {value.canals.map(c => (
+              <label key={c}><b>{c}</b>
+                <input type="number" inputMode="decimal" step="0.5" min="5" max="35" placeholder="mm" aria-label={`Working length ${c}`}
+                  value={value.wl?.[c] || ""} onChange={e => set("wl", { ...(value.wl || {}), [c]: e.target.value })}/>
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
+      {has("wl") && Sel({ k: "wlMethod", label: "Length taken with", options: WL_METHOD })}
+    </>
+  );
+  // "Other" chosen → a text box to write what was used
+  const OtherText = ({ k, label }) => value[k] === "Other" && (
+    <label key={k + "Other"} className="crct-wide">{label}
+      <textarea rows={2} value={value[k + "Other"] || ""} onChange={sel(k + "Other")} aria-label={label} placeholder="Type what was used…"/>
+    </label>
+  );
   const summary = formatRct(value, stage);
   const paed = stage === "pulp";
 
@@ -585,31 +623,7 @@ function RctFields({ stage, value, onChange }) {
     <div className="crct">
       <div className="crct-head">🦷 Root canal details — {RCT_TITLES[stage]} <span>all optional · fill what you used</span></div>
       <div className="crct-grid">
-        {has("canals") && (
-          <div className="crct-wide">
-            <span className="crct-lbl">Canals</span>
-            <div className="crct-chips" role="group" aria-label="Canals">
-              {CANALS.map(c => (
-                <button key={c} type="button" className={`crct-chip${(value.canals || []).includes(c) ? " on" : ""}`}
-                  aria-pressed={(value.canals || []).includes(c)} onClick={() => toggleCanal(c)}>{c}</button>
-              ))}
-            </div>
-          </div>
-        )}
-        {has("wl") && (value.canals || []).length > 0 && (
-          <div className="crct-wide">
-            <span className="crct-lbl">Working length (mm)</span>
-            <div className="crct-wl">
-              {value.canals.map(c => (
-                <label key={c}><b>{c}</b>
-                  <input type="number" inputMode="decimal" step="0.5" min="5" max="35" placeholder="mm" aria-label={`Working length ${c}`}
-                    value={value.wl?.[c] || ""} onChange={e => set("wl", { ...(value.wl || {}), [c]: e.target.value })}/>
-                </label>
-              ))}
-            </div>
-          </div>
-        )}
-        {has("wl") && Sel({ k: "wlMethod", label: "Length taken with", options: WL_METHOD })}
+        {!canalsInRotary && CanalBlock()}
         {has("diagnosis") && Sel({ k: "diagnosis", label: "Pulp / periapical diagnosis", options: PULP_DIAGNOSIS, wide: true })}
         {has("removal") && ChipRow({ k: "removal", options: RETX_REMOVAL, label: "Old filling removed with" })}
         {has("hand") && (
@@ -643,6 +657,7 @@ function RctFields({ stage, value, onChange }) {
         {(has("files") || has("pfiles")) && (
           <>
             <span className="crct-sub crct-wide">{paed ? "🧒 Files" : "⚙️ Rotary / reciprocating"}</span>
+            {canalsInRotary && CanalBlock()}
             {Sel({ k: "system", label: paed ? "Files (paediatric)" : "Rotary / file system", options: paed ? PAEDIATRIC_FILES : ROTARY_SYSTEMS, wide: true })}
             {value.system === "Other" && (
               <label className="crct-wide">System name
@@ -659,6 +674,7 @@ function RctFields({ stage, value, onChange }) {
             <span className="crct-sub crct-wide">💧 Irrigation</span>
             {ChipRow({ k: "irrigants", options: paed ? PULP_IRRIGANTS : IRRIGANTS, label: "Irrigation" })}
             {!paed && Sel({ k: "activation", label: "Irrigant activation", options: ACTIVATION })}
+            {!paed && OtherText({ k: "activation", label: "Irrigant activation — other" })}
           </>
         )}
         {has("obturation") && (
@@ -692,6 +708,8 @@ function RctFields({ stage, value, onChange }) {
         )}
         {has("medicament") && Sel({ k: "medicament", label: "Intracanal dressing", options: MEDICAMENTS })}
         {has("tempSeal") && Sel({ k: "tempSeal", label: "Temporary seal", options: TEMP_SEALS })}
+        {has("medicament") && OtherText({ k: "medicament", label: "Intracanal dressing — other" })}
+        {has("tempSeal") && OtherText({ k: "tempSeal", label: "Temporary seal — other" })}
         {has("core") && Sel({ k: "core", label: "Post-endo restoration", options: CORE_RESTORATIONS })}
         {has("prestoration") && Sel({ k: "restoration", label: "Final restoration", options: PULP_RESTORATION })}
       </div>
@@ -2301,8 +2319,9 @@ button.ctp-tooth:focus-visible, .ctp-qbtn:focus-visible, .copt-btn:focus-visible
 .crct-grid { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:8px 10px; max-height:46vh; overflow-y:auto; padding-right:2px; }
 .crct-grid label, .crct-lbl { display:flex; flex-direction:column; gap:3px; font-size:11px; font-weight:600; color:#475569; min-width:0; }
 .crct-wide { grid-column:1 / -1; }
-.crct-grid select, .crct-grid input { width:100%; box-sizing:border-box; padding:7px 8px; border:1.5px solid #cbd5e1; border-radius:7px; font-family:inherit; font-size:12.5px; color:#0f172a; background:#fff; outline:none; }
-.crct-grid select:focus, .crct-grid input:focus { border-color:#4f46e5; box-shadow:0 0 0 3px rgba(79,70,229,.12); }
+.crct-grid select, .crct-grid input, .crct-grid textarea { width:100%; box-sizing:border-box; padding:7px 8px; border:1.5px solid #cbd5e1; border-radius:7px; font-family:inherit; font-size:12.5px; color:#0f172a; background:#fff; outline:none; }
+.crct-grid textarea { resize:vertical; min-height:48px; }
+.crct-grid select:focus, .crct-grid input:focus, .crct-grid textarea:focus { border-color:#4f46e5; box-shadow:0 0 0 3px rgba(79,70,229,.12); }
 .crct-chips { display:flex; flex-wrap:wrap; gap:5px; margin-top:3px; }
 .crct-chip { border:1.5px solid #c7d2fe; background:#fff; color:#3730a3; border-radius:999px; padding:4px 10px; font:600 11.5px inherit; font-family:inherit; cursor:pointer; transition:background .15s, color .15s; }
 .crct-chip.on { background:#4f46e5; border-color:#4f46e5; color:#fff; }
