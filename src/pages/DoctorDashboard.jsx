@@ -202,6 +202,27 @@ const injectStyles = () => {
     .dd-complete-btn:active { transform: translateY(0); }
     .dd-complete-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none; }
 
+    /* missed appointment btn */
+    .dd-missed-btn {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 7px 13px; border-radius: 9px;
+      background: #fff7ed; color: #9a3412;
+      border: 1.5px solid #fdba74;
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      font-size: 12px; font-weight: 700; cursor: pointer; white-space: nowrap;
+      transition: all 0.18s;
+    }
+    .dd-missed-btn:hover:not(:disabled) {
+      background: #ffedd5; border-color: #f97316; color: #7c2d12;
+      transform: translateY(-1px); box-shadow: 0 4px 10px rgba(249,115,22,0.2);
+    }
+    .dd-missed-btn:active { transform: translateY(0); }
+    .dd-missed-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+    .dd-confirm-icon.missed { background: linear-gradient(135deg,#fff7ed,#ffedd5); border-color: #fdba74; }
+    .dd-confirm-yes.missed { background: linear-gradient(135deg,#ea580c,#f97316); box-shadow: 0 4px 12px rgba(234,88,12,0.3); }
+    .dd-confirm-yes.missed:hover { box-shadow: 0 6px 16px rgba(234,88,12,0.38); }
+    .pld-visit-status.missed { background: #fff7ed; color: #9a3412; border: 1px solid #fdba74; }
+
     /* action cell */
     .dd-action-cell { display: flex; align-items: center; gap: 8px; }
 
@@ -770,6 +791,7 @@ const VisitHistoryItem = ({ visit, onOpenVisit }) => {
   const [open, setOpen] = useState(false);
   const isClosed = (visit.status || "").toLowerCase() === "closed" ||
                    (visit.status || "").toLowerCase() === "completed";
+  const isMissed = (visit.status || "").toLowerCase() === "missed";
 
   const complaint = resolveComplaint(visit);
   const followup  = resolveFollowup(visit);
@@ -784,8 +806,8 @@ const VisitHistoryItem = ({ visit, onOpenVisit }) => {
           {complaint && <span style={{ fontWeight:500, color:"#0e7490", fontSize:11 }}>· {complaint.slice(0,40)}{complaint.length>40?"…":""}</span>}
         </div>
         <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-          <span className={`pld-visit-status ${isClosed ? "closed" : "open"}`}>
-            {isClosed ? "✔ Closed" : "🟢 Open"}
+          <span className={`pld-visit-status ${isMissed ? "missed" : isClosed ? "closed" : "open"}`}>
+            {isMissed ? "✖ Missed" : isClosed ? "✔ Closed" : "🟢 Open"}
           </span>
           <span style={{ fontSize:14, color:"#b0bad0", transition:"transform 0.2s", transform: open?"rotate(90deg)":"none", display:"inline-block" }}>›</span>
         </div>
@@ -1090,6 +1112,32 @@ const [historyPatientId, setHistoryPatientId] = useState(null);
 };
 
 /* ═══════════════════════════════════════════
+   MISSED APPOINTMENT MODAL
+   The patient did not come: the visit leaves the open list and stays in the
+   patient's visit history as "Missed" (not sent to Reception for billing).
+═══════════════════════════════════════════ */
+const MissedModal = ({ visit, onConfirm, onCancel, saving }) => (
+  <div className="dd-overlay" onClick={onCancel}>
+    <div className="dd-confirm-box" onClick={(e) => e.stopPropagation()}>
+      <div className="dd-confirm-icon missed">🚫</div>
+      <div className="dd-confirm-title">Mark as Missed Appointment?</div>
+      <div className="dd-confirm-sub">
+        <span className="dd-confirm-name">{visit.name}</span>
+        {visit.case_number ? ` (Case: ${visit.case_number})` : ""} did not come for this visit.
+        <br />The visit will be removed from the open list and saved in the patient&apos;s visit history as <strong>MISSED</strong>.
+        It will not be sent to Reception for billing.
+      </div>
+      <div className="dd-confirm-btns">
+        <button className="dd-confirm-no" onClick={onCancel}>Cancel</button>
+        <button className="dd-confirm-yes missed" onClick={onConfirm} disabled={saving}>
+          {saving ? "Saving…" : "🚫 Yes, Mark Missed"}
+        </button>
+      </div>
+    </div>
+  </div>
+);
+
+/* ═══════════════════════════════════════════
    CONFIRM MODAL
 ═══════════════════════════════════════════ */
 const ConfirmModal = ({ visit, onConfirm, onCancel, closing }) => (
@@ -1136,6 +1184,8 @@ export default function DoctorDashboard() {
   const [search,      setSearch]      = useState("");
   const [confirm,     setConfirm]     = useState(null);
   const [closing,     setClosing]     = useState(false);
+  const [missed,      setMissed]      = useState(null);    // visit waiting for "Mark missed" confirmation
+  const [savingMiss,  setSavingMiss]  = useState(false);
   const [lookupOpen,  setLookupOpen]  = useState(false);
   const [apptOpen,    setApptOpen]    = useState(false);
   const [storageOpen, setStorageOpen] = useState(false);   // ☁️ Cloud storage (R2)
@@ -1215,7 +1265,7 @@ export default function DoctorDashboard() {
           const openPatients = new Set(data.map(v => v.patient_id));
           const today = iso(new Date());
           setExpected((Array.isArray(ap.data) ? ap.data : [])
-            .filter(a => a.date === today && a.state === "SCHEDULED" && !a.in_clinic_visit_id
+            .filter(a => a.date === today && a.state === "SCHEDULED" && !a.in_clinic_visit_id && !a.missed_visit_id
               && !(a.visit_id && openVisitIds.has(a.visit_id)) && !(a.patient_id && openPatients.has(a.patient_id)))
             .sort((x, y) => String(x.time).localeCompare(String(y.time))));
         } catch { setExpected([]); /* appointments not connected: the table still works */ }
@@ -1261,6 +1311,23 @@ export default function DoctorDashboard() {
       alert("Failed to close visit. Please try again.");
     } finally {
       setClosing(false);
+    }
+  };
+
+  // 🚫 Missed appointment: the patient did not come → visit saved as MISSED in the history
+  const handleMissed = async () => {
+    if (!missed) return;
+    setSavingMiss(true);
+    try {
+      await api.put(`/visits/${missed.visit_id}/missed`, { reason: "Patient did not come for the appointment" });
+      setVisits((prev) => prev.filter((v) => v.visit_id !== missed.visit_id));
+      setMissed(null);
+      announceAppointmentsChanged();       // the booking now shows "Missed" in Appointments
+    } catch (err) {
+      console.error(err);
+      alert(err?.response?.data?.error || "Could not mark the visit as missed. Please try again.");
+    } finally {
+      setSavingMiss(false);
     }
   };
 
@@ -1348,6 +1415,15 @@ export default function DoctorDashboard() {
           onConfirm={handleComplete}
           onCancel={() => !closing && setConfirm(null)}
           closing={closing}
+        />
+      )}
+
+      {missed && (
+        <MissedModal
+          visit={missed}
+          onConfirm={handleMissed}
+          onCancel={() => !savingMiss && setMissed(null)}
+          saving={savingMiss}
         />
       )}
 
@@ -1626,6 +1702,13 @@ export default function DoctorDashboard() {
                           </button>
                           <button className="dd-complete-btn" onClick={() => setConfirm(v)}>
                             ✔ Complete
+                          </button>
+                          <button className="dd-missed-btn" onClick={() => setMissed(v)}
+                            disabled={!!v.has_clinical_notes}
+                            title={v.has_clinical_notes
+                              ? "Notes are already saved in this visit — use Complete"
+                              : "Patient did not come — save this visit as a missed appointment"}>
+                            🚫 Missed
                           </button>
                         </div>
                       </td>

@@ -420,7 +420,7 @@ export default function PatientCompleteHistory({ patientId, onBack, onCreateVisi
         setData(res.data);
         // the latest visit is opened; when that is today's visit still in progress, the one before it too
         const vs = res.data?.visits || [];
-        const done = (v) => /^(closed|completed)$/i.test(String(v?.status || ""));
+        const done = (v) => /^(closed|completed|missed)$/i.test(String(v?.status || ""));
         setOpen(new Set(vs.slice(0, vs[0] && !done(vs[0]) ? 2 : 1).map((v) => v.visit_id)));
       } catch (err) {
         console.error(err);
@@ -600,6 +600,7 @@ export default function PatientCompleteHistory({ patientId, onBack, onCreateVisi
                     const paid = v.receipts.reduce((s, r) => s + (Number(r.amount_paid) || 0), 0);
                     const statusLc = v.status.toLowerCase();
                     const closed = statusLc === "closed" || statusLc === "completed";
+                    const missedVisit = statusLc === "missed";
                     const teeth = [...new Set(v.chart.map((d) => String(d.tooth_number)))];
                     const doctors = v.doctors.map((d) => (/^dr\.?\s/i.test(d) ? d : `Dr. ${d}`));
                     let n = 0;
@@ -618,7 +619,7 @@ export default function PatientCompleteHistory({ patientId, onBack, onCreateVisi
                         <button type="button" className="pch-row" aria-expanded={isOpen} onClick={() => toggle(v.id)}>
                           <span className="pch-c-date">
                             <b>{fmtDate(v.date)}</b>
-                            <span className={`pch-status ${closed ? "" : "pch-status-live"}`}>{closed ? "Closed" : statusLc === "in_progress" ? "With doctor" : statusLc === "created" ? "Waiting" : v.status || "—"}</span>
+                            <span className={`pch-status ${missedVisit ? "pch-status-missed" : closed ? "" : "pch-status-live"}`}>{missedVisit ? "Missed" : closed ? "Closed" : statusLc === "in_progress" ? "With doctor" : statusLc === "created" ? "Waiting" : v.status || "—"}</span>
                           </span>
                           <span className="pch-c-teeth" data-label="Teeth">{teeth.length ? teeth.map((t) => <span key={t} className="pch-tooth">{t}</span>) : <span className="pch-muted pch-none">—</span>}</span>
                           <span className="pch-c-text" data-label="Diagnosis">{v.diagnosis.join("; ") || <span className="pch-muted">{v.complaint || "—"}</span>}</span>
@@ -829,9 +830,12 @@ export default function PatientCompleteHistory({ patientId, onBack, onCreateVisi
             // A visit on the appointment's day means the patient came, even if the
             // appointment itself was never marked done (for example a visit opened
             // one day and closed the next with the first day's date).
-            const visitDays = new Set(visits.map((v) => String(v.date || "").slice(0, 10)).filter(Boolean));
+            const isMissed = (v) => /^missed$/i.test(String(v.status || ""));
+            const visitDays = new Set(visits.filter((v) => !isMissed(v)).map((v) => String(v.date || "").slice(0, 10)).filter(Boolean));
+            const missedDays = new Set(visits.filter(isMissed).map((v) => String(v.date || "").slice(0, 10)).filter(Boolean));
             const status = (a) => {
               const day = String(a.date || "").slice(0, 10);
+              if (a.state === "SCHEDULED" && missedDays.has(day) && !visitDays.has(day)) return ["missed", "Missed"];
               if (a.state === "SCHEDULED" && visitDays.has(day)) return ["completed", "Attended"];
               if (a.state === "SCHEDULED" && day < today) return ["missed", "Not attended"];
               return [String(a.state || "").toLowerCase(), STATE[a.state] || a.state];
@@ -970,6 +974,7 @@ function Styles() {
       .pch-c-rec { display: flex; gap: 10px; align-items: center; justify-content: flex-end; font-size: 12px; color: #475569; font-weight: 700; white-space: nowrap; }
       .pch-status { font-size: 10.5px; font-weight: 700; padding: 1px 8px; border-radius: 6px; background: #f1f5f9; color: #475569; }
       .pch-status-live { background: #dcfce7; color: #166534; }
+      .pch-status-missed { background: #ffedd5; color: #9a3412; }
       .pch-chev { font-size: 14px; color: #94a3b8; transition: transform .15s; }
       .pch-chev.open { transform: rotate(180deg); }
       .pch-sheet { padding: 6px 18px 14px; }

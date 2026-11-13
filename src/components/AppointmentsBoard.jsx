@@ -80,6 +80,7 @@ function stateOf(a) {
   if (a.state === "CANCELLED") return { key: "cancelled", label: "Cancelled" };
   if (a.state === "COMPLETED") return { key: "completed", label: "Completed" };
   if (a.in_clinic_visit_id) return { key: "inclinic", label: "Visit open" };
+  if (a.missed_visit_id) return { key: "missed", label: "Missed" };          // the doctor marked today's visit as missed
   if (a.date < today()) return { key: "missed", label: "Not attended" };
   return { key: "scheduled", label: "Scheduled" };
 }
