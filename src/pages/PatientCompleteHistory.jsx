@@ -835,6 +835,7 @@ export default function PatientCompleteHistory({ patientId, onBack, onCreateVisi
             const missedDays = new Set(visits.filter(isMissed).map((v) => String(v.date || "").slice(0, 10)).filter(Boolean));
             const status = (a) => {
               const day = String(a.date || "").slice(0, 10);
+              if (a.missed) return ["missed", "Missed"];
               if (a.state === "SCHEDULED" && missedDays.has(day) && !visitDays.has(day)) return ["missed", "Missed"];
               if (a.state === "SCHEDULED" && visitDays.has(day)) return ["completed", "Attended"];
               if (a.state === "SCHEDULED" && day < today) return ["missed", "Not attended"];

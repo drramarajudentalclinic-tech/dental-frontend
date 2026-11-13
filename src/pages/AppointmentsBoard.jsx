@@ -2,6 +2,26 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import api from "../api/api";
 
+/* ── "appointments changed" signal ──
+   Any screen that creates a visit or books an appointment calls
+   announceAppointmentsChanged(); every appointment list open on this computer
+   (this tab and other tabs) reloads at once instead of waiting for its timer. */
+const CHANGED = "clinic:appointments-changed";
+let channel = null;
+try { channel = typeof BroadcastChannel !== "undefined" ? new BroadcastChannel(CHANGED) : null; } catch { channel = null; }
+export function announceAppointmentsChanged() {
+  try { window.dispatchEvent(new Event(CHANGED)); } catch { /* ignore */ }
+  try { if (channel) channel.postMessage(Date.now()); } catch { /* ignore */ }
+}
+export function onAppointmentsChanged(fn) {
+  const local = () => fn();
+  window.addEventListener(CHANGED, local);
+  let ch = null;
+  try { ch = typeof BroadcastChannel !== "undefined" ? new BroadcastChannel(CHANGED) : null; } catch { ch = null; }
+  if (ch) ch.onmessage = local;
+  return () => { window.removeEventListener(CHANGED, local); if (ch) ch.close(); };
+}
+
 /*
   <AppointmentsBoard />  — appointments from Supabase (the same list the
   Appointments app uses), linked to this clinic's patients.
@@ -11,16 +31,17 @@ import api from "../api/api";
 
   Shows        Today · Tomorrow · Upcoming · Past · any date
   Each row     time, patient (case no.), treatment, who booked it, status
-               (Scheduled / In clinic / Completed / Cancelled)
-  Actions      Create visit · Open visit · History · Change date/time ·
+               (Scheduled / Visit open / Completed / Cancelled)
+  Actions      Create visit · Open visit (doctor) / View history (reception) · Change date/time ·
                Completed · Cancel · Link to patient (bookings from the
                Appointments app that could not be matched automatically)
   New          ＋ New appointment — choose the patient (or type a name for
                someone not registered yet)
 
-  The doctor's follow-up dates (consultation / prescription) are booked by
-  the server automatically; closing a visit marks today's appointment
-  Completed. The list refreshes itself every minute, so bookings made in
+  Kept in step by the server: on the appointment day every booking gets its
+  visit (at the booked time) on the Doctor's and Reception's lists; a visit
+  created here appears in the Appointments app; the doctor's follow-up dates
+  are booked automatically; closing a visit marks the appointment Completed. The list refreshes itself every minute, so bookings made in
   the Appointments app appear here on their own.
 
   Props
@@ -56,9 +77,11 @@ function fmtTime(t) {
 const errText = (e, fb) => e?.response?.data?.error || e?.response?.data?.message || fb;
 
 function stateOf(a) {
+  if (a.missed) return { key: "missed", label: "Missed" };                  // the doctor marked the visit as missed
   if (a.state === "CANCELLED") return { key: "cancelled", label: "Cancelled" };
   if (a.state === "COMPLETED") return { key: "completed", label: "Completed" };
-  if (a.in_clinic_visit_id) return { key: "inclinic", label: "In clinic" };
+  if (a.in_clinic_visit_id) return { key: "inclinic", label: "Visit open" };
+  if (a.missed_visit_id) return { key: "missed", label: "Missed" };          // the doctor marked today's visit as missed
   if (a.date < today()) return { key: "missed", label: "Not attended" };
   return { key: "scheduled", label: "Scheduled" };
 }
@@ -69,7 +92,7 @@ function sourceLabel(a) {
 }
 
 /* ── patient picker (search existing patients) ── */
-function PatientPicker({ onPick, autoFocus }) {
+function PatientPicker({ onPick, autoFocus, onState }) {
   const [q, setQ] = useState("");
   const [list, setList] = useState([]);
   const [busy, setBusy] = useState(false);
@@ -87,6 +110,7 @@ function PatientPicker({ onPick, autoFocus }) {
     }, 250);
     return () => { stop = true; clearTimeout(t); };
   }, [q]);
+  useEffect(() => { if (onState) onState({ q: q.trim(), count: list.length, busy }); }, [q, list.length, busy]); // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <div>
       <input className="apb-in" placeholder="Search patient by name, case no. or mobile…" value={q} autoFocus={autoFocus}
@@ -103,7 +127,7 @@ function PatientPicker({ onPick, autoFocus }) {
           ))}
         </ul>
       )}
-      {!busy && q.trim().length >= 2 && list.length === 0 && <div className="apb-hint">No patient found.</div>}
+      {!busy && q.trim().length >= 2 && list.length === 0 && !onState && <div className="apb-hint">No patient found.</div>}
     </div>
   );
 }
@@ -127,30 +151,54 @@ function Dialog({ title, onClose, children, footer, width = 520 }) {
 }
 
 /* ── new / change appointment ── */
+function nextQuarter() {
+  const d = new Date(); d.setMinutes(Math.ceil((d.getMinutes() + 1) / 15) * 15, 0, 0);
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
 function ApptForm({ initial, onSaved, onClose }) {
   const editing = Boolean(initial?.id);
   const [patient, setPatient] = useState(initial?.patient || null);
-  const [walkIn, setWalkIn] = useState(false);
+  const [search, setSearch] = useState({ q: "", count: 0, busy: false });
   const [f, setF] = useState({
-    date: initial?.date || today(), time: initial?.time || "", treatment: initial?.treatment || "", notes: initial?.notes || "",
+    date: initial?.date || today(), time: initial?.time || nextQuarter(), treatment: initial?.treatment || "", notes: initial?.notes || "",
+    doctor: initial?.doctor_name || "",
     name: "", mobile: "", age: "",
   });
+  const [typed, setTyped] = useState({ name: false, mobile: false });
+  const [doctors, setDoctors] = useState([]);
+  useEffect(() => {
+    api.get("/appointments/doctors").then((r) => setDoctors(Array.isArray(r.data) ? r.data : [])).catch(() => {});
+  }, []);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const set = (k, v) => setF((x) => ({ ...x, [k]: v }));
-  const ready = f.date && f.time && (editing || patient || (walkIn && f.name.trim()));
+  // nobody found → the search text becomes the new person's name (or mobile, when it is a number)
+  // "nobody found" is kept while a new search is running, so the boxes do not flicker
+  const [settledNoMatch, setSettledNoMatch] = useState(false);
+  useEffect(() => { if (!search.busy) setSettledNoMatch(search.q.length >= 2 && search.count === 0); }, [search]);
+  const noMatch = !patient && search.q.length >= 2 && settledNoMatch;
+  const isNumber = /^[+\d\s-]{6,}$/.test(search.q);
+  const newName = typed.name ? f.name : (isNumber ? "" : search.q);
+  const newMobile = typed.mobile ? f.mobile : (isNumber ? search.q.replace(/[^\d+]/g, "") : "");
+  const why = editing ? (!f.date ? "Choose the date." : !f.time ? "Choose the time." : "")
+    : patient || (noMatch && newName.trim()) ? (!f.date ? "Choose the date." : !f.time ? "Choose the time." : "")
+    : search.count > 0 ? "Choose the patient from the list."
+    : noMatch ? "Type the patient's name."
+    : "Search the patient by name, case no. or mobile.";
+  const ready = !why;
   const save = async () => {
     setBusy(true); setErr("");
     try {
       let res;
       if (editing) {
-        res = await api.put(`/appointments/${initial.id}`, { date: f.date, time: f.time, treatment: f.treatment, notes: f.notes });
+        res = await api.put(`/appointments/${initial.id}`, { date: f.date, time: f.time, treatment: f.treatment, notes: f.notes, doctor_name: f.doctor });
       } else {
         res = await api.post("/appointments", {
-          ...(patient ? { patient_id: patient.id } : { name: f.name, mobile: f.mobile, age: f.age }),
-          date: f.date, time: f.time, treatment: f.treatment, notes: f.notes, source: "clinic",
+          ...(patient ? { patient_id: patient.id } : { name: newName.trim(), mobile: newMobile.trim(), age: f.age }),
+          date: f.date, time: f.time, treatment: f.treatment, notes: f.notes, doctor_name: f.doctor, source: "clinic",
         });
       }
+      announceAppointmentsChanged();
       onSaved(res.data);
     } catch (e) { setErr(errText(e, "The appointment could not be saved. Please try again.")); }
     finally { setBusy(false); }
@@ -158,6 +206,7 @@ function ApptForm({ initial, onSaved, onClose }) {
   return (
     <Dialog title={editing ? `Change appointment — ${initial.name}` : "New appointment"} onClose={onClose}
       footer={<>
+        {why && <span className="apb-why" role="status">{why}</span>}
         <button type="button" className="apb-btn" onClick={onClose}>Cancel</button>
         <button type="button" className="apb-btn apb-main" disabled={!ready || busy} onClick={save}>{busy ? "Saving…" : editing ? "Save changes" : "Book appointment"}</button>
       </>}>
@@ -167,24 +216,33 @@ function ApptForm({ initial, onSaved, onClose }) {
             <div><b>{patient.name}</b> <span>#{patient.case_number}{patient.mobile ? ` · ${patient.mobile}` : ""}</span></div>
             <button type="button" className="apb-link" onClick={() => setPatient(null)}>Change</button>
           </div>
-        ) : walkIn ? (
-          <div className="apb-grid">
-            <label className="apb-f apb-wide"><span>Name *</span><input className="apb-in" value={f.name} onChange={(e) => set("name", e.target.value)} autoFocus /></label>
-            <label className="apb-f"><span>Mobile</span><input className="apb-in" inputMode="tel" value={f.mobile} onChange={(e) => set("mobile", e.target.value)} /></label>
-            <label className="apb-f"><span>Age</span><input className="apb-in" inputMode="numeric" value={f.age} onChange={(e) => set("age", e.target.value.replace(/\D/g, "").slice(0, 3))} /></label>
-            <div className="apb-wide apb-hint">Not registered yet — link the booking to the patient after registration (🔗 Link).
-              {" "}<button type="button" className="apb-link" onClick={() => setWalkIn(false)}>Search registered patients instead</button></div>
-          </div>
         ) : (
           <>
-            <PatientPicker onPick={setPatient} autoFocus />
-            <div className="apb-hint" style={{ marginTop: 8 }}>New patient, not registered yet? <button type="button" className="apb-link" onClick={() => setWalkIn(true)}>Type the name</button></div>
+            <label className="apb-f"><span>Patient *</span></label>
+            <PatientPicker onPick={setPatient} autoFocus onState={setSearch} />
+            {noMatch && (
+              <div className="apb-newperson">
+                <div className="apb-newperson-h">🆕 Not registered yet — book with name and mobile</div>
+                <div className="apb-grid">
+                  <label className="apb-f apb-wide"><span>Name *</span><input className="apb-in" value={newName}
+                    onChange={(e) => { setTyped((t) => ({ ...t, name: true })); set("name", e.target.value); }} /></label>
+                  <label className="apb-f"><span>Mobile</span><input className="apb-in" inputMode="tel" value={newMobile}
+                    onChange={(e) => { setTyped((t) => ({ ...t, mobile: true })); set("mobile", e.target.value); }} /></label>
+                  <label className="apb-f"><span>Age</span><input className="apb-in" inputMode="numeric" value={f.age} onChange={(e) => set("age", e.target.value.replace(/\D/g, "").slice(0, 3))} /></label>
+                </div>
+                <div className="apb-hint" style={{ marginTop: 6 }}>When the patient comes, register them — the booking is linked by mobile and gets the case number.</div>
+              </div>
+            )}
           </>
         )
       )}
       <div className="apb-grid" style={{ marginTop: 12 }}>
-        <label className="apb-f"><span>Date *</span><input className="apb-in" type="date" value={f.date} onChange={(e) => set("date", e.target.value)} /></label>
+        <label className="apb-f"><span>Date *</span><input className="apb-in" type="date" min={editing ? undefined : today()} value={f.date} onChange={(e) => set("date", e.target.value)} /></label>
         <label className="apb-f"><span>Time *</span><input className="apb-in" type="time" value={f.time} onChange={(e) => set("time", e.target.value)} /></label>
+        <label className="apb-f apb-wide"><span>Doctor <i className="apb-opt">(optional)</i></span>
+          <input className="apb-in" list="apb-doctors" placeholder="e.g. Dr Rama Raju" value={f.doctor} onChange={(e) => set("doctor", e.target.value)} aria-label="Doctor" />
+          <datalist id="apb-doctors">{doctors.map((d) => <option key={d} value={d} />)}</datalist>
+        </label>
         <label className="apb-f apb-wide"><span>Treatment</span><input className="apb-in" placeholder="e.g. RCT IRT 47 – 2nd sitting" value={f.treatment} onChange={(e) => set("treatment", e.target.value)} /></label>
         <label className="apb-f apb-wide"><span>Notes</span><input className="apb-in" value={f.notes} onChange={(e) => set("notes", e.target.value)} /></label>
       </div>
@@ -202,7 +260,8 @@ function CreateVisitDialog({ appt, onDone, onClose }) {
   const save = async () => {
     setBusy(true); setErr("");
     try {
-      const res = await api.post("/visits", { patient_id: appt.patient_id, chief_complaint: complaint.trim(), followup_treatment: followup.trim() });
+      const res = await api.post("/visits", { patient_id: appt.patient_id, chief_complaint: complaint.trim(), followup_treatment: followup.trim(), visit_time: appt.time });
+      announceAppointmentsChanged();
       onDone(res.data?.id || res.data?.visit_id || res.data?.visit?.id || null);
     } catch (e) { setErr(errText(e, "The visit could not be created. Please try again.")); setBusy(false); }
   };
@@ -262,14 +321,26 @@ export default function AppointmentsBoard({ role = "reception", compact = false,
 
   useEffect(() => { load(); }, [load]);
   useEffect(() => {
-    const t = setInterval(() => { if (!document.hidden) load(true); }, 60000);
-    return () => clearInterval(t);
+    // other computers (Reception / Doctor / the Appointments app): re-read every 20 s
+    // while the page is visible, and at once when the page is shown again
+    const t = setInterval(() => { if (!document.hidden) load(true); }, 20000);
+    const onShow = () => { if (!document.hidden) load(true); };
+    document.addEventListener("visibilitychange", onShow);
+    window.addEventListener("focus", onShow);
+    // this computer: reload the moment a visit or booking is made anywhere in the app
+    const stop = onAppointmentsChanged(() => load(true));
+    return () => {
+      clearInterval(t);
+      document.removeEventListener("visibilitychange", onShow);
+      window.removeEventListener("focus", onShow);
+      stop();
+    };
   }, [load]);
   useEffect(() => { if (!notice) return undefined; const t = setTimeout(() => setNotice(""), 5000); return () => clearTimeout(t); }, [notice]);
 
   const shown = useMemo(() => {
     const s = q.trim().toLowerCase();
-    return rows.filter((a) => (showCancelled || a.state !== "CANCELLED")
+    return rows.filter((a) => (showCancelled || a.state !== "CANCELLED" || a.missed)
       && (!s || [a.name, a.case_number, a.mobile, a.treatment].some((x) => String(x || "").toLowerCase().includes(s))));
   }, [rows, q, showCancelled]);
   const groups = useMemo(() => {
@@ -282,13 +353,13 @@ export default function AppointmentsBoard({ role = "reception", compact = false,
     waiting: rows.filter((a) => stateOf(a).key === "scheduled").length,
     inclinic: rows.filter((a) => stateOf(a).key === "inclinic").length,
     done: rows.filter((a) => a.state === "COMPLETED").length,
-    cancelled: rows.filter((a) => a.state === "CANCELLED").length,
+    cancelled: rows.filter((a) => a.state === "CANCELLED" && !a.missed).length,
   }), [rows]);
 
   const replace = (row) => setRows((list) => list.map((x) => (x.id === row.id ? { ...x, ...row } : x)));
   const act = async (a, fn, okText) => {
     setBusyId(a.id);
-    try { const res = await fn(); if (res?.data?.id) replace(res.data); if (okText) setNotice(okText); }
+    try { const res = await fn(); if (res?.data?.id) replace(res.data); if (okText) setNotice(okText); announceAppointmentsChanged(); }
     catch (e) { setNotice(errText(e, "That did not work. Please try again.")); }
     finally { setBusyId(null); }
   };
@@ -316,7 +387,7 @@ export default function AppointmentsBoard({ role = "reception", compact = false,
         <div>
           <h3 className="apb-title">📅 {compact ? "Today's appointments" : "Appointments"}</h3>
           <div className="apb-sub">
-            {loading ? "Loading…" : error ? "" : `${counts.total} booked · ${counts.waiting} to come · ${counts.inclinic} in clinic · ${counts.done} completed`}
+            {loading ? "Loading…" : error ? "" : `${counts.total} booked · ${counts.waiting} to come · ${counts.inclinic} visit open · ${counts.done} completed`}
           </div>
         </div>
         <div className="apb-head-actions">
@@ -374,8 +445,11 @@ export default function AppointmentsBoard({ role = "reception", compact = false,
                       {st.key === "scheduled" && a.date === today() && a.linked && role === "reception" && (
                         <button type="button" className="apb-btn apb-main apb-sm" disabled={busy} onClick={() => (onCreateVisit ? onCreateVisit(patientOf(a)) : setVisitFor(a))}>Create visit</button>
                       )}
-                      {st.key === "inclinic" && onOpenVisit && (
+                      {st.key === "inclinic" && role === "doctor" && onOpenVisit && (
                         <button type="button" className="apb-btn apb-sm" onClick={() => onOpenVisit(a.in_clinic_visit_id)}>Open visit</button>
+                      )}
+                      {a.linked && role === "reception" && onOpenHistory && (
+                        <button type="button" className="apb-btn apb-sm" onClick={() => onOpenHistory(a.patient_id)}>📋 View history</button>
                       )}
                       {!a.linked && <button type="button" className="apb-btn apb-sm" disabled={busy} onClick={() => setLinking(a)}>🔗 Link</button>}
                       {a.state === "SCHEDULED" && (
@@ -503,6 +577,10 @@ function Styles() {
       .apb-picks button { width: 100%; text-align: left; background: #fff; border: 0; border-bottom: 1px solid #f1f4f8; padding: 9px 12px; font: inherit; font-size: 13.5px; cursor: pointer; }
       .apb-picks button:hover { background: #f3f7fc; }
       .apb-picks span { color: #64748b; font-size: 12.5px; }
+      .apb-opt { font-style: normal; font-weight: 500; text-transform: none; letter-spacing: 0; color: #94a3b8; }
+      .apb-why { margin-right: auto; align-self: center; font-size: 12.5px; color: #92400e; }
+      .apb-newperson { margin-top: 10px; border: 1px dashed #fcd34d; background: #fffbeb; border-radius: 10px; padding: 10px 12px; }
+      .apb-newperson-h { font-size: 12.5px; font-weight: 800; color: #92400e; margin-bottom: 8px; }
       .apb-chosen { display: flex; justify-content: space-between; align-items: center; gap: 10px; background: #f3f7fc; border: 1px solid #c9daee; border-radius: 9px; padding: 9px 12px; font-size: 14px; }
       .apb-chosen span { color: #64748b; font-size: 12.5px; }
       @media (max-width: 680px) {

@@ -77,6 +77,7 @@ function fmtTime(t) {
 const errText = (e, fb) => e?.response?.data?.error || e?.response?.data?.message || fb;
 
 function stateOf(a) {
+  if (a.missed) return { key: "missed", label: "Missed" };                  // the doctor marked the visit as missed
   if (a.state === "CANCELLED") return { key: "cancelled", label: "Cancelled" };
   if (a.state === "COMPLETED") return { key: "completed", label: "Completed" };
   if (a.in_clinic_visit_id) return { key: "inclinic", label: "Visit open" };
@@ -339,7 +340,7 @@ export default function AppointmentsBoard({ role = "reception", compact = false,
 
   const shown = useMemo(() => {
     const s = q.trim().toLowerCase();
-    return rows.filter((a) => (showCancelled || a.state !== "CANCELLED")
+    return rows.filter((a) => (showCancelled || a.state !== "CANCELLED" || a.missed)
       && (!s || [a.name, a.case_number, a.mobile, a.treatment].some((x) => String(x || "").toLowerCase().includes(s))));
   }, [rows, q, showCancelled]);
   const groups = useMemo(() => {
@@ -352,7 +353,7 @@ export default function AppointmentsBoard({ role = "reception", compact = false,
     waiting: rows.filter((a) => stateOf(a).key === "scheduled").length,
     inclinic: rows.filter((a) => stateOf(a).key === "inclinic").length,
     done: rows.filter((a) => a.state === "COMPLETED").length,
-    cancelled: rows.filter((a) => a.state === "CANCELLED").length,
+    cancelled: rows.filter((a) => a.state === "CANCELLED" && !a.missed).length,
   }), [rows]);
 
   const replace = (row) => setRows((list) => list.map((x) => (x.id === row.id ? { ...x, ...row } : x)));
