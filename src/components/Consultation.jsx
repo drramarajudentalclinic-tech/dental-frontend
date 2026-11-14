@@ -546,7 +546,9 @@ function ImplantFields({ value, onChange }) {
 // ── Root canal details — shown for A/O, BMP, Obturation, Re-RCT and Pulpectomy ──
 const RCT_TITLES = { ao: "Access opening", bmp: "Cleaning & shaping", obt: "Obturation", retx: "Re-treatment", pulp: "Pulpectomy" };
 function RctFields({ stage, value, onChange }) {
-  const f = STAGE_FIELDS[stage] || [];
+  // one step ("bmp") or several chosen together (["ao", "bmp"]) → the fields of all of them
+  const stages = [].concat(stage).filter(Boolean);
+  const f = [...new Set(stages.flatMap(s => STAGE_FIELDS[s] || []))];
   const has = k => f.includes(k);
   const set = (k, v) => onChange({ ...value, [k]: v });
   const sel = k => e => set(k, e.target.value);
@@ -639,12 +641,14 @@ function RctFields({ stage, value, onChange }) {
         ref={el => { if (el && !el.dataset.shown) { el.dataset.shown = "1"; el.scrollIntoView({ block: "nearest", behavior: "smooth" }); el.focus({ preventScroll: true }); } }}/>
     </label>
   );
-  const summary = formatRct(value, stage);
-  const paed = stage === "pulp";
+  const summary = stages.length > 1
+    ? stages.map(s => { const t = formatRct(value, s); return t ? `${RCT_TITLES[s]}: ${t}` : ""; }).filter(Boolean).join("  |  ")
+    : formatRct(value, stages[0]);
+  const paed = stages.length > 0 && stages.every(s => s === "pulp");
 
   return (
     <div className="crct">
-      <div className="crct-head">🦷 Root canal details — {RCT_TITLES[stage]} <span>all optional · fill what you used</span></div>
+      <div className="crct-head">🦷 Root canal details — {stages.map(s => RCT_TITLES[s]).join(" + ")} <span>all optional · fill what you used</span></div>
       <div className="crct-grid">
         {!canalsInRotary && CanalBlock()}
         {has("diagnosis") && Sel({ k: "diagnosis", label: "Pulp / periapical diagnosis", options: PULP_DIAGNOSIS, wide: true })}
@@ -758,10 +762,12 @@ function TreatmentChartModal({
   itemWord = "treatment" // "treatment" or "condition" — only changes the wording
 }) {
   const [chartType,  setChartType]  = useState("permanent");
-  const [assign,     setAssign]     = useState({});          // { toothNum: { label, note, color } }
-  const [selected,   setSelected]   = useState(new Set());   // teeth picked, waiting for a treatment
-  const [draftLabel, setDraftLabel] = useState(null);        // treatment picked, waiting for "Apply"
-  const [noteDraft,  setNoteDraft]  = useState("");
+  const [assign,     setAssign]     = useState({});          // { toothNum: [ { label, note, color, implant, rct }, … ] } — several per tooth
+  const [selected,   setSelected]   = useState(new Set());   // teeth picked, waiting for treatments
+  const [draftLabels, setDraftLabels] = useState([]);        // treatments picked (one or more), waiting for "Apply"
+  const [noteDraft,  setNoteDraft]  = useState("");          // optional note for the chosen treatments
+  const [otherDraft, setOtherDraft] = useState("");          // description for "Other" (needed when "Other" is chosen)
+  const [editTooth,  setEditTooth]  = useState(null);        // a single tooth whose treatments were loaded for editing
   const [implant,    setImplant]    = useState(EMPTY_IMPLANT);  // details for "Implant Done"
   const [rct,        setRct]        = useState(EMPTY_RCT);      // root canal details (kept when moving A/O → BMP → Obturation)
   const [query,      setQuery]      = useState("");
@@ -779,20 +785,36 @@ function TreatmentChartModal({
     ? options.filter(o => o.label.toLowerCase().includes(query.trim().toLowerCase()))
     : options;
 
-  const resetDraft = () => { setDraftLabel(null); setNoteDraft(""); setImplant(EMPTY_IMPLANT); setRct(EMPTY_RCT); };
-  const isImplant = draftLabel === IMPLANT_LABEL;
+  const resetDraft = () => { setDraftLabels([]); setNoteDraft(""); setOtherDraft(""); setImplant(EMPTY_IMPLANT); setRct(EMPTY_RCT); setEditTooth(null); };
+  const isImplant = draftLabels.includes(IMPLANT_LABEL);
+  const hasOther  = draftLabels.includes("Other");
+  const hasFixed  = draftLabels.some(l => l !== "Other");
   // only the "Treatment Done" chart gets root canal details (not Advice or Diagnosis)
-  const stage = itemWord === "treatment" && title !== undefined && !String(title).startsWith("💊") ? rctStage(draftLabel) : null;
+  const rctAllowed = itemWord === "treatment" && title !== undefined && !String(title).startsWith("💊");
+  const stages = rctAllowed ? draftLabels.map(rctStage).filter(Boolean) : [];
+  const toggleLabel = l => { setDraftLabels(p => (p.includes(l) ? p.filter(x => x !== l) : [...p, l])); setError(""); };
+
+  // load a tooth's saved treatments into the right-hand side, to change them
+  const loadTooth = (n, list) => {
+    setDraftLabels(list.map(e => e.label));
+    setNoteDraft(list.find(e => e.label !== "Other")?.note || "");
+    setOtherDraft(list.find(e => e.label === "Other")?.note || "");
+    setImplant(list.find(e => e.implant)?.implant || EMPTY_IMPLANT);
+    const r = list.find(e => e.rct)?.rct;
+    setRct(r ? { ...EMPTY_RCT, ...r } : EMPTY_RCT);
+    setEditTooth(n);
+  };
 
   const toggleTooth = n => {
     const next = new Set(selected);
     if (next.has(n)) next.delete(n); else next.add(n);
     setSelected(next);
-    // Tapping a single tooth that already has a treatment loads it for editing.
-    if (next.size === 1 && !draftLabel) {
+    // Tapping a single tooth that already has treatments loads them for editing.
+    if (next.size === 1 && draftLabels.length === 0) {
       const only = [...next][0];
-      if (assign[only]) { setDraftLabel(assign[only].label); setNoteDraft(assign[only].note || ""); setImplant(assign[only].implant || EMPTY_IMPLANT); setRct(assign[only].rct || EMPTY_RCT); }
+      if (assign[only]?.length) loadTooth(only, assign[only]);
     }
+    if (next.size !== 1) setEditTooth(null);
   };
 
   const switchChart = t => {
@@ -801,15 +823,28 @@ function TreatmentChartModal({
   };
 
   const selectedList = sortedTeeth(selected);
-  const canApply = selectedList.length > 0 && !!draftLabel && (draftLabel !== "Other" || !!noteDraft.trim())
+  const canApply = selectedList.length > 0 && draftLabels.length > 0 && (!hasOther || !!otherDraft.trim())
     && (!isImplant || implantReady(implant));
 
+  // Every chosen treatment is added to every selected tooth. A treatment the tooth already
+  // has is replaced (not doubled); its other treatments stay. A tooth opened for editing gets
+  // exactly what is ticked now.
   const withDraftApplied = base => {
-    const color = options.find(o => o.label === draftLabel)?.color || colorForLabel(draftLabel);
     const next = { ...base };
-    const details = isImplant ? { ...implant } : null;
-    const rctDetails = stage ? { ...rct, stage } : null;
-    selectedList.forEach(n => { next[n] = { label: draftLabel, note: noteDraft.trim(), color, implant: details, rct: rctDetails }; });
+    const entries = draftLabels.map(label => {
+      const st = rctAllowed ? rctStage(label) : null;
+      return {
+        label,
+        note: label === "Other" ? otherDraft.trim() : noteDraft.trim(),
+        color: options.find(o => o.label === label)?.color || colorForLabel(label),
+        implant: label === IMPLANT_LABEL ? { ...implant } : null,
+        rct: st ? { ...rct, stage: st } : null,
+      };
+    });
+    selectedList.forEach(n => {
+      const keep = editTooth === n && selectedList.length === 1 ? [] : (next[n] || []).filter(e => !draftLabels.includes(e.label));
+      next[n] = [...keep, ...entries];
+    });
     return next;
   };
 
@@ -826,6 +861,16 @@ function TreatmentChartModal({
     setAssign(p => { const c = { ...p }; list.forEach(n => { delete c[n]; }); return c; });
     setSelected(p => { const s = new Set(p); list.forEach(n => s.delete(n)); return s; });
     resetDraft();
+  };
+  // remove one treatment from one tooth (the ✕ on a tooth in "Ready to add")
+  const removeEntry = (n, label) => {
+    setAssign(p => {
+      const c = { ...p };
+      const left = (c[n] || []).filter(e => e.label !== label);
+      if (left.length) c[n] = left; else delete c[n];
+      return c;
+    });
+    if (editTooth === n) { setSelected(new Set()); resetDraft(); }
   };
 
   // How a tooth's treatment renders as text, e.g. "Extraction — deep decay" or just the "Other" text
@@ -848,10 +893,12 @@ function TreatmentChartModal({
   // Group teeth by identical treatment+note text — mirrors auto-diagnosis grouping
   const buildGroups = map => {
     const groups = {};
-    Object.entries(map).sort((a, b) => Number(a[0]) - Number(b[0])).forEach(([tooth, info]) => {
-      const text = fmtInfo(info);
-      if (!groups[text]) groups[text] = { note: text, label: info.label, freeText: info.note || "", teeth: [], color: info.color || null };
-      groups[text].teeth.push(Number(tooth));
+    Object.entries(map).sort((a, b) => Number(a[0]) - Number(b[0])).forEach(([tooth, list]) => {
+      (list || []).forEach(info => {
+        const text = fmtInfo(info);
+        if (!groups[text]) groups[text] = { note: text, label: info.label, freeText: info.note || "", teeth: [], color: info.color || null };
+        groups[text].teeth.push(Number(tooth));
+      });
     });
     return Object.values(groups);
   };
@@ -883,7 +930,7 @@ function TreatmentChartModal({
   };
 
   const marks = {};
-  Object.entries(assign).forEach(([tooth, info]) => { marks[tooth] = { color: info.color, label: fmtInfo(info) }; });
+  Object.entries(assign).forEach(([tooth, list]) => { marks[tooth] = { color: list[0]?.color, label: list.map(fmtInfo).join(" + ") }; });
 
   const selectedAssigned = selectedList.filter(n => assign[n]);
   const selectedHints = hints ? selectedList.filter(n => hints[n] && hints[n].length) : [];
@@ -910,7 +957,7 @@ function TreatmentChartModal({
 
           <div className="csteps">
             <span><b>1</b> Tap one or more teeth</span>
-            <span><b>2</b> Choose the {itemWord}</span>
+            <span><b>2</b> Choose one or more {itemWord}s</span>
             <span><b>3</b> Press Apply</span>
           </div>
 
@@ -929,8 +976,8 @@ function TreatmentChartModal({
                     {g.teeth.map(n => (
                       <span key={n} className="ctag" style={{ background: g.color || "#3b82f6" }}>
                         {n}
-                        <button type="button" className="ctag-x" aria-label={`Remove tooth ${n}`} title={`Remove tooth ${n}`}
-                          onClick={() => removeTeeth([n])}>✕</button>
+                        <button type="button" className="ctag-x" aria-label={`Remove ${g.label} from tooth ${n}`} title={`Remove from tooth ${n}`}
+                          onClick={() => removeEntry(n, g.label)}>✕</button>
                       </span>
                     ))}
                   </span>
@@ -945,7 +992,7 @@ function TreatmentChartModal({
           <div className="copt-head" aria-live="polite">
             {selectedList.length ? (
               <>
-                <span className="copt-title">{itemWord === "condition" ? "Condition" : "Treatment"} for tooth</span>
+                <span className="copt-title">{itemWord === "condition" ? "Conditions" : "Treatments"} for tooth</span>
                 <span className="csel-teeth">{selectedList.map(n => <span key={n} className="ctag">{n}</span>)}</span>
                 <button type="button" className="csel-clear" onClick={() => { setSelected(new Set()); resetDraft(); }}>Clear selection</button>
               </>
@@ -969,10 +1016,11 @@ function TreatmentChartModal({
           <div className={`copt-grid${options.length > 16 ? " scroll" : ""}`} role="group" aria-label={`${itemWord}s`}>
             {shownOptions.map(opt => (
               <button key={opt.label} type="button"
-                className={`copt-btn${draftLabel === opt.label ? " on" : ""}`}
+                className={`copt-btn${draftLabels.includes(opt.label) ? " on" : ""}`}
                 style={{ "--c": opt.color || "#3b82f6" }}
-                aria-pressed={draftLabel === opt.label}
-                onClick={() => { setDraftLabel(opt.label); setError(""); }}>
+                aria-pressed={draftLabels.includes(opt.label)}
+                onClick={() => toggleLabel(opt.label)}>
+                {draftLabels.length > 1 && draftLabels.includes(opt.label) && <span className="copt-check" aria-hidden="true">✓</span>}
                 <span className="copt-dot"/>
                 {itemWord === "condition" && DENTAL_CHART_CMAP[opt.label]?.emoji && <span className="copt-emoji">{DENTAL_CHART_CMAP[opt.label].emoji}</span>}
                 <span className="copt-lbl">{opt.label}</span>
@@ -982,12 +1030,20 @@ function TreatmentChartModal({
           </div>
 
           {isImplant && <ImplantFields value={implant} onChange={setImplant}/>}
-          {stage && <RctFields stage={stage} value={rct} onChange={setRct}/>}
+          {stages.length > 0 && <RctFields stage={stages} value={rct} onChange={setRct}/>}
 
-          {draftLabel && (
+          {hasOther && (
             <div className="copt-note">
               <textarea className="cmod-textarea small" rows={1}
-                placeholder={draftLabel === "Other" ? `Describe the ${itemWord} (needed for "Other")…` : "Add a note (optional)…"}
+                placeholder={`Describe the "Other" ${itemWord} (needed)…`}
+                aria-label={`Other ${itemWord}`}
+                value={otherDraft} onChange={e => setOtherDraft(e.target.value)}/>
+            </div>
+          )}
+          {hasFixed && (
+            <div className="copt-note">
+              <textarea className="cmod-textarea small" rows={1}
+                placeholder={draftLabels.filter(l => l !== "Other").length > 1 ? "Add a note (optional, saved with each of them)…" : "Add a note (optional)…"}
                 aria-label="Note"
                 value={noteDraft} onChange={e => setNoteDraft(e.target.value)}/>
             </div>
@@ -996,8 +1052,8 @@ function TreatmentChartModal({
           <div className="copt-actions">
             <span className="copt-why">
               {!selectedList.length ? "Select a tooth first."
-                : !draftLabel ? `Now choose the ${itemWord}.`
-                : draftLabel === "Other" && !noteDraft.trim() ? `Type a description for "Other".`
+                : !draftLabels.length ? `Now choose one or more ${itemWord}s.`
+                : hasOther && !otherDraft.trim() ? `Type a description for "Other".`
                 : isImplant && !implantReady(implant) ? "Choose the implant system."
                 : ""}
             </span>
@@ -1007,7 +1063,9 @@ function TreatmentChartModal({
               </button>
             )}
             <button type="button" className="cbtn apply" disabled={!canApply} onClick={applyDraft}>
-              {canApply ? `Apply ${draftLabel} to tooth ${selectedList.join(", ")}` : "Apply"}
+              {canApply
+                ? `Apply ${draftLabels.length === 1 ? draftLabels[0] : `${draftLabels.length} ${itemWord}s`} to tooth ${selectedList.join(", ")}`
+                : "Apply"}
             </button>
           </div>
 
@@ -2327,6 +2385,8 @@ button.ctp-tooth:focus-visible, .ctp-qbtn:focus-visible, .copt-btn:focus-visible
 .copt-lbl { min-width:0; overflow-wrap:anywhere; }
 .copt-none { grid-column:1/-1; font-size:12.5px; color:#64748b; padding:8px 2px; }
 .copt-note { margin-top:10px; }
+.copt-check { order:9; margin-left:auto; font-weight:800; font-size:12px; color:var(--c); background:#fff; border-radius:999px; width:18px; height:18px; display:inline-grid; place-items:center; flex-shrink:0; }
+.copt-note + .copt-note { margin-top:6px; }
 .cimp { margin-top:10px; border:1.5px solid #99f6e4; background:linear-gradient(180deg,#f0fdfa,#fff); border-radius:10px; padding:10px 12px; animation:fadeIn .2s ease both; }
 .cimp-head { font-size:12.5px; font-weight:700; color:#0f766e; margin-bottom:8px; display:flex; gap:8px; align-items:baseline; flex-wrap:wrap; }
 .cimp-head span { font-size:11px; font-weight:500; color:#64748b; }
