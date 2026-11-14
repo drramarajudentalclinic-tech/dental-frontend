@@ -610,10 +610,11 @@ function RctFields({ stage, value, onChange }) {
       {has("wl") && Sel({ k: "wlMethod", label: "Length taken with", options: WL_METHOD })}
     </>
   );
-  // "Other" chosen → a text box to write what was used
+  // "Other" chosen → a text box right under that dropdown, scrolled into view and ready to type in
   const OtherText = ({ k, label }) => value[k] === "Other" && (
-    <label key={k + "Other"} className="crct-wide">{label}
-      <textarea rows={2} value={value[k + "Other"] || ""} onChange={sel(k + "Other")} aria-label={label} placeholder="Type what was used…"/>
+    <label key={k + "Other"} className="crct-wide crct-other">{label}
+      <textarea rows={2} value={value[k + "Other"] || ""} onChange={sel(k + "Other")} aria-label={label} placeholder="Type what was used…"
+        ref={el => { if (el && !el.dataset.shown) { el.dataset.shown = "1"; el.scrollIntoView({ block: "nearest", behavior: "smooth" }); el.focus({ preventScroll: true }); } }}/>
     </label>
   );
   const summary = formatRct(value, stage);
@@ -725,8 +726,8 @@ function RctFields({ stage, value, onChange }) {
           </>
         )}
         {has("medicament") && Sel({ k: "medicament", label: "Intracanal dressing", options: MEDICAMENTS })}
-        {has("tempSeal") && Sel({ k: "tempSeal", label: "Temporary seal", options: TEMP_SEALS })}
         {has("medicament") && OtherText({ k: "medicament", label: "Intracanal dressing — other" })}
+        {has("tempSeal") && Sel({ k: "tempSeal", label: "Temporary seal", options: TEMP_SEALS })}
         {has("tempSeal") && OtherText({ k: "tempSeal", label: "Temporary seal — other" })}
         {has("core") && Sel({ k: "core", label: "Post-endo restoration", options: CORE_RESTORATIONS })}
         {has("prestoration") && Sel({ k: "restoration", label: "Final restoration", options: PULP_RESTORATION })}
@@ -2339,6 +2340,8 @@ button.ctp-tooth:focus-visible, .ctp-qbtn:focus-visible, .copt-btn:focus-visible
 .crct-wide { grid-column:1 / -1; }
 .crct-grid select, .crct-grid input, .crct-grid textarea { width:100%; box-sizing:border-box; padding:7px 8px; border:1.5px solid #cbd5e1; border-radius:7px; font-family:inherit; font-size:12.5px; color:#0f172a; background:#fff; outline:none; }
 .crct-grid textarea { resize:vertical; min-height:48px; }
+.crct-other { margin-top:-2px; }
+.crct-other textarea { border-color:#a5b4fc; background:#f8faff; }
 .crct-grid select:focus, .crct-grid input:focus, .crct-grid textarea:focus { border-color:#4f46e5; box-shadow:0 0 0 3px rgba(79,70,229,.12); }
 .crct-chips { display:flex; flex-wrap:wrap; gap:5px; margin-top:3px; }
 .crct-chip { border:1.5px solid #c7d2fe; background:#fff; color:#3730a3; border-radius:999px; padding:4px 10px; font:600 11.5px inherit; font-family:inherit; cursor:pointer; transition:background .15s, color .15s; }
