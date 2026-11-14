@@ -6,7 +6,7 @@ import "./voice/VoiceTyping";   // 🎙 dictation into any text box
 import { CONDITIONS as DENTAL_CHART_CONDITIONS, CMAP as DENTAL_CHART_CMAP } from "./DentalChart";
 import { IMPLANT_SYSTEMS, IMPLANT_DIAMETERS, IMPLANT_LENGTHS, IMPLANT_TORQUES, EMPTY_IMPLANT, formatImplant, implantReady } from "./implantOptions";
 import { rctStage, STAGE_FIELDS, EMPTY_RCT, formatRct, CANALS, PULP_DIAGNOSIS, WL_METHOD, ROTARY_SYSTEMS, PAEDIATRIC_FILES,
-  FILE_LENGTHS, MAF_SIZES, mafList, TAPERS, IRRIGANTS, ACTIVATION, MEDICAMENTS, TEMP_SEALS, OBT_TECHNIQUES, SEALERS,
+  FILE_LENGTHS, MAF_SIZES, CONE_SIZES, TAPERS, IRRIGANTS, ACTIVATION, MEDICAMENTS, TEMP_SEALS, OBT_TECHNIQUES, SEALERS,
   CORE_RESTORATIONS, RETX_REMOVAL, PULP_OBTURATION, PULP_RESTORATION, PULP_IRRIGANTS,
   GLIDE_PATH, HAND_FILE_BRANDS, HAND_FILE_TYPES, HAND_SIZES } from "./rctOptions";
 
@@ -582,10 +582,25 @@ function RctFields({ stage, value, onChange }) {
       </div>
     </div>
   );
-  // Canals + working length + "Length taken with". Shown inside the Rotary section
-  // when the step has one (BMP, Obturation, Re-RCT); otherwise at the top (A/O, Pulpectomy).
-  const canalsInRotary = has("files");
-  const hasMaf = has("files") || has("pfiles");
+  // Canals + one row per canal + "Length taken with". Where they are shown:
+  //   Obturation / Re-RCT → in the Obturation section, each canal with its master cone
+  //   BMP               → in the Rotary section, each canal with its master apical file
+  //   A/O, Pulpectomy   → at the top
+  const canalsWhere = has("obturation") ? "obt" : has("files") ? "rotary" : "top";
+  const fieldsOf = s => STAGE_FIELDS[s] || [];
+  // master apical file column: for a step that shapes but does not fill (BMP, Pulpectomy)
+  const hasMaf = stages.some(s => (fieldsOf(s).includes("files") || fieldsOf(s).includes("pfiles")) && !fieldsOf(s).includes("obturation"));
+  const hasCone = has("obturation");
+  const cols = 1 + (has("wl") ? 1 : 0) + (hasMaf ? 1 : 0) + (hasCone ? 1 : 0);
+  const rowStyle = { gridTemplateColumns: `52px repeat(${cols - 1}, minmax(0,1fr))` };
+  const autoOpen = c => el => {                 // the list of the canal just ticked opens by itself
+    if (el && justAdded.current === c) {
+      justAdded.current = null;
+      el.focus({ preventScroll: true });
+      el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      try { el.showPicker?.(); } catch { /* the browser may not allow opening it by itself */ }
+    }
+  };
   const CanalBlock = () => (
     <>
       {has("canals") && (
@@ -600,13 +615,14 @@ function RctFields({ stage, value, onChange }) {
         </div>
       )}
       {/* one row for each ticked canal: working length and, where files are used, its master apical file */}
-      {(has("wl") || hasMaf) && (value.canals || []).length > 0 && (
+      {cols > 1 && (value.canals || []).length > 0 && (
         <div className="crct-wide">
-          <div className={`crct-crow crct-chead${hasMaf ? " maf" : ""}`}>
+          <div className="crct-crow crct-chead" style={rowStyle}>
             <span>Canal</span>{has("wl") && <span>Working length (mm)</span>}{hasMaf && <span>Master apical file (ISO)</span>}
+            {hasCone && <span>Master cone (GP)</span>}
           </div>
           {value.canals.map(c => (
-            <div key={c} className={`crct-crow${hasMaf ? " maf" : ""}`}>
+            <div key={c} className="crct-crow" style={rowStyle}>
               <b>{c}</b>
               {has("wl") && (
                 <input type="number" inputMode="decimal" step="0.5" min="5" max="35" placeholder="mm" aria-label={`Working length ${c}`}
@@ -615,16 +631,17 @@ function RctFields({ stage, value, onChange }) {
               {hasMaf && (
                 <select value={value.mafs?.[c] || ""} aria-label={`Master apical file ${c}`}
                   onChange={e => set("mafs", { ...(value.mafs || {}), [c]: e.target.value })}
-                  ref={el => {
-                    if (el && justAdded.current === c) {
-                      justAdded.current = null;
-                      el.focus({ preventScroll: true });
-                      el.scrollIntoView({ block: "nearest", behavior: "smooth" });
-                      try { el.showPicker?.(); } catch { /* the browser may not allow opening it by itself */ }
-                    }
-                  }}>
+                  ref={hasCone ? undefined : autoOpen(c)}>
                   <option value="">— ISO —</option>
                   {MAF_SIZES.map(o => <option key={o} value={o}>{o}</option>)}
+                </select>
+              )}
+              {hasCone && (
+                <select value={value.cones?.[c] || ""} aria-label={`Master cone ${c}`}
+                  onChange={e => set("cones", { ...(value.cones || {}), [c]: e.target.value })}
+                  ref={autoOpen(c)}>
+                  <option value="">{value.mafs?.[c] ? `— (MAF ${value.mafs[c]}) —` : "— size —"}</option>
+                  {CONE_SIZES.map(o => <option key={o} value={o}>{o}</option>)}
                 </select>
               )}
             </div>
@@ -650,7 +667,7 @@ function RctFields({ stage, value, onChange }) {
     <div className="crct">
       <div className="crct-head">🦷 Root canal details — {stages.map(s => RCT_TITLES[s]).join(" + ")} <span>all optional · fill what you used</span></div>
       <div className="crct-grid">
-        {!canalsInRotary && CanalBlock()}
+        {canalsWhere === "top" && CanalBlock()}
         {has("diagnosis") && Sel({ k: "diagnosis", label: "Pulp / periapical diagnosis", options: PULP_DIAGNOSIS, wide: true })}
         {has("removal") && ChipRow({ k: "removal", options: RETX_REMOVAL, label: "Old filling removed with" })}
         {has("hand") && (
@@ -684,14 +701,13 @@ function RctFields({ stage, value, onChange }) {
         {(has("files") || has("pfiles")) && (
           <>
             <span className="crct-sub crct-wide">{paed ? "🧒 Files" : "⚙️ Rotary / reciprocating"}</span>
-            {canalsInRotary && CanalBlock()}
+            {canalsWhere === "rotary" && CanalBlock()}
             {Sel({ k: "system", label: paed ? "Files (paediatric)" : "Rotary / file system", options: paed ? PAEDIATRIC_FILES : ROTARY_SYSTEMS, wide: true })}
             {value.system === "Other" && (
               <label className="crct-wide">System name
                 <input value={value.systemOther || ""} onChange={sel("systemOther")} placeholder="e.g. Dentsply Wave One, Fanta…" aria-label="Other file system"/>
               </label>
             )}
-            {!paed && Sel({ k: "fileLength", label: "File length", options: FILE_LENGTHS, suffix: " mm" })}
             {!paed && Sel({ k: "taper", label: "Taper", options: TAPERS })}
           </>
         )}
@@ -706,17 +722,9 @@ function RctFields({ stage, value, onChange }) {
         {has("obturation") && (
           <>
             <span className="crct-sub crct-wide">🔥 Obturation</span>
+            {canalsWhere === "obt" && CanalBlock()}
             {Sel({ k: "technique", label: "Obturation technique", options: OBT_TECHNIQUES, wide: true })}
             {Sel({ k: "sealer", label: "Sealer", options: SEALERS })}
-            <label>Master cone (GP)
-              <input value={value.masterCone || ""} onChange={sel("masterCone")} aria-label="Master cone"
-                placeholder={mafList(value).length ? mafList(value).join(", ") : "e.g. 25/.06 or F2"}/>
-              {!value.masterCone && mafList(value).length > 0 && (
-                <button type="button" className="crct-same" onClick={() => set("masterCone", mafList(value).join(", "))}>
-                  Same as MAF
-                </button>
-              )}
-            </label>
             {value.sealer === "Other" && (
               <label className="crct-wide">Sealer name
                 <input value={value.sealerOther || ""} onChange={sel("sealerOther")} aria-label="Other sealer"/>

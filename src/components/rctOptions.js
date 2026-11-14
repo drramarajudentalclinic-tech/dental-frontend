@@ -76,6 +76,8 @@ export const HAND_SIZES = ["06", "08", "10", "15", "20", "25", "30", "35", "40",
 export const PAEDIATRIC_FILES = ["Kedo-S (Reeganz)", "Kedo-SG Blue (Reeganz)", "Pro AF Baby Gold", "Hand files (K / H files)", "Other"];
 
 export const FILE_LENGTHS = ["21", "25", "31"];                        // mm
+// gutta-percha master cone: ISO tip sizes, and the ProTaper-matched cones
+export const CONE_SIZES = ["15", "20", "25", "30", "35", "40", "45", "50", "55", "60", "70", "80", "F1", "F2", "F3", "F4", "F5"];
 export const MAF_SIZES = ["15", "17", "20", "25", "30", "35", "40", "45", "50", "55", "60", "70", "80"];   // ISO tip
 export const TAPERS = [".02", ".04", ".06", ".08", "Variable"];
 
@@ -115,7 +117,7 @@ export const PULP_IRRIGANTS = ["Saline", "NaOCl 1%", "NaOCl 2.5%", "Chlorhexidin
 
 export const EMPTY_RCT = {
   canals: [], wl: {}, wlMethod: "", diagnosis: "",
-  system: "", systemOther: "", fileLength: "", mafs: {}, taper: "", glide: "", glideOther: "",
+  system: "", systemOther: "", mafs: {}, cones: {}, taper: "", glide: "", glideOther: "",
   handBrand: "", handBrandOther: "", handType: "", handLength: "", handFrom: "", handTo: "",
   irrigants: [], activation: "", activationOther: "", medicament: "", medicamentOther: "", tempSeal: "", tempSealOther: "",
   technique: "", sealer: "", sealerOther: "", masterCone: "", core: "",
@@ -141,6 +143,15 @@ const pick = (d, k) => (d[k] === "Other" ? (d[k + "Other"] || "").trim() : d[k])
 export function mafList(d) {
   const tap = d?.taper && d.taper !== "Variable" ? `/${d.taper}` : "";
   return (d?.canals || []).map((c) => (d.mafs?.[c] ? `${c} ${d.mafs[c]}${tap}` : "")).filter(Boolean);
+}
+
+// Master cone of each selected canal, e.g. ["MB 25/.06", "DB F2"] (the taper is added to ISO sizes only)
+export function coneList(d) {
+  const tap = d?.taper && d.taper !== "Variable" ? `/${d.taper}` : "";
+  return (d?.canals || []).map((c) => {
+    const v = d.cones?.[c];
+    return v ? `${c} ${v}${/^\d+$/.test(v) ? tap : ""}` : "";
+  }).filter(Boolean);
 }
 
 export function formatRct(d, stage) {
@@ -169,7 +180,7 @@ export function formatRct(d, stage) {
     const mafs = mafList(d);
     const maf = mafs.length ? `MAF ${mafs.join(", ")}${d.taper === "Variable" ? " (variable taper)" : ""}`
       : d.taper ? `taper ${d.taper}` : "";
-    const line = join([[sys, d.fileLength ? `${d.fileLength} mm` : ""].filter(Boolean).join(" "), maf]);
+    const line = join([sys, maf]);
     if (line) parts.push(line);
   }
   const act = d.activation && d.activation !== "None" ? pick(d, "activation") : "";
@@ -177,7 +188,8 @@ export function formatRct(d, stage) {
     parts.push(`Irrigation ${join(d.irrigants || [])}${act ? ` + ${act}` : ""}`);
   if (has("obturation")) {
     const sealer = d.sealer === "Other" ? (d.sealerOther || "").trim() : d.sealer;
-    const ob = join([d.technique, sealer, d.masterCone ? `GP ${d.masterCone}` : ""]);
+    const cones = coneList(d);
+    const ob = join([d.technique, sealer, cones.length ? `GP ${cones.join(", ")}` : d.masterCone ? `GP ${d.masterCone}` : ""]);
     if (ob) parts.push(ob);
   }
   if (has("pobturation")) {
