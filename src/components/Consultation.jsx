@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import api from "../api/api";
 import VoicePanel, { VoiceButton } from "./voice/VoicePanel";
@@ -554,9 +554,11 @@ function RctFields({ stage, value, onChange }) {
     const list = value[k] || [];
     set(k, list.includes(item) ? list.filter(x => x !== item) : [...list, item]);
   };
+  const justAdded = useRef(null);            // the canal just ticked → its MAF list opens by itself
   const toggleCanal = c => {
     const list = value.canals || [];
     const next = list.includes(c) ? list.filter(x => x !== c) : [...list, c];
+    justAdded.current = list.includes(c) ? null : c;
     onChange({ ...value, canals: CANALS.filter(x => next.includes(x)) });
   };
   const Sel = ({ k, label, options, wide, suffix = "" }) => (
@@ -581,6 +583,7 @@ function RctFields({ stage, value, onChange }) {
   // Canals + working length + "Length taken with". Shown inside the Rotary section
   // when the step has one (BMP, Obturation, Re-RCT); otherwise at the top (A/O, Pulpectomy).
   const canalsInRotary = has("files");
+  const hasMaf = has("files") || has("pfiles");
   const CanalBlock = () => (
     <>
       {has("canals") && (
@@ -594,17 +597,36 @@ function RctFields({ stage, value, onChange }) {
           </div>
         </div>
       )}
-      {has("wl") && (value.canals || []).length > 0 && (
+      {/* one row for each ticked canal: working length and, where files are used, its master apical file */}
+      {(has("wl") || hasMaf) && (value.canals || []).length > 0 && (
         <div className="crct-wide">
-          <span className="crct-lbl">Working length (mm)</span>
-          <div className="crct-wl">
-            {value.canals.map(c => (
-              <label key={c}><b>{c}</b>
+          <div className={`crct-crow crct-chead${hasMaf ? " maf" : ""}`}>
+            <span>Canal</span>{has("wl") && <span>Working length (mm)</span>}{hasMaf && <span>Master apical file (ISO)</span>}
+          </div>
+          {value.canals.map(c => (
+            <div key={c} className={`crct-crow${hasMaf ? " maf" : ""}`}>
+              <b>{c}</b>
+              {has("wl") && (
                 <input type="number" inputMode="decimal" step="0.5" min="5" max="35" placeholder="mm" aria-label={`Working length ${c}`}
                   value={value.wl?.[c] || ""} onChange={e => set("wl", { ...(value.wl || {}), [c]: e.target.value })}/>
-              </label>
-            ))}
-          </div>
+              )}
+              {hasMaf && (
+                <select value={value.mafs?.[c] || ""} aria-label={`Master apical file ${c}`}
+                  onChange={e => set("mafs", { ...(value.mafs || {}), [c]: e.target.value })}
+                  ref={el => {
+                    if (el && justAdded.current === c) {
+                      justAdded.current = null;
+                      el.focus({ preventScroll: true });
+                      el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+                      try { el.showPicker?.(); } catch { /* the browser may not allow opening it by itself */ }
+                    }
+                  }}>
+                  <option value="">— ISO —</option>
+                  {MAF_SIZES.map(o => <option key={o} value={o}>{o}</option>)}
+                </select>
+              )}
+            </div>
+          ))}
         </div>
       )}
       {has("wl") && Sel({ k: "wlMethod", label: "Length taken with", options: WL_METHOD })}
@@ -666,25 +688,6 @@ function RctFields({ stage, value, onChange }) {
               </label>
             )}
             {!paed && Sel({ k: "fileLength", label: "File length", options: FILE_LENGTHS, suffix: " mm" })}
-            {/* Master apical file: one dropdown for each selected canal */}
-            <div className="crct-wide">
-              <span className="crct-lbl">Master apical file (ISO)</span>
-              {(value.canals || []).length > 0 ? (
-                <div className="crct-wl crct-maf">
-                  {value.canals.map(c => (
-                    <label key={c}><b>{c}</b>
-                      <select value={value.mafs?.[c] || ""} aria-label={`Master apical file ${c}`}
-                        onChange={e => set("mafs", { ...(value.mafs || {}), [c]: e.target.value })}>
-                        <option value="">—</option>
-                        {MAF_SIZES.map(o => <option key={o} value={o}>{o}</option>)}
-                      </select>
-                    </label>
-                  ))}
-                </div>
-              ) : (
-                <span className="crct-hint">Select the canals above to choose the master apical file for each.</span>
-              )}
-            </div>
             {!paed && Sel({ k: "taper", label: "Taper", options: TAPERS })}
           </>
         )}
@@ -2350,9 +2353,11 @@ button.ctp-tooth:focus-visible, .ctp-qbtn:focus-visible, .copt-btn:focus-visible
 .crct-wl input { min-width:58px; padding:6px 6px; }
 .crct-wl label { flex-direction:row; align-items:center; gap:5px; }
 .crct-wl b { font-size:11.5px; color:#3730a3; min-width:26px; }
-.crct-maf { grid-template-columns:repeat(auto-fill, minmax(118px,1fr)); }
-.crct-maf select { min-width:64px; padding:6px 6px; }
-.crct-hint { display:block; font-size:12px; color:#64748b; font-style:italic; margin-top:3px; }
+.crct-crow { display:grid; grid-template-columns:52px minmax(0,1fr); gap:8px; align-items:center; margin-top:5px; }
+.crct-crow.maf { grid-template-columns:52px minmax(0,1fr) minmax(0,1fr); }
+.crct-crow > b { font-size:12px; color:#3730a3; background:#e0e7ff; border-radius:999px; text-align:center; padding:5px 0; }
+.crct-grid .crct-crow input, .crct-grid .crct-crow select { padding:6px 8px; }
+.crct-chead { margin-top:2px; font-size:10.5px; font-weight:700; color:#64748b; text-transform:uppercase; letter-spacing:.03em; }
 .crct-sub { font-size:11px; font-weight:800; color:#3730a3; text-transform:uppercase; letter-spacing:.05em; border-top:1px dashed #c7d2fe; padding-top:7px; margin-top:2px; }
 .crct-pair { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
 .crct-same { margin-top:4px; align-self:flex-start; border:1px dashed #818cf8; background:#fff; color:#4338ca; border-radius:6px; padding:2px 8px; font-size:11px; font-weight:600; cursor:pointer; font-family:inherit; }
