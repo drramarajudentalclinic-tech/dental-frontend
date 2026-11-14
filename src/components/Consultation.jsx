@@ -6,7 +6,7 @@ import "./voice/VoiceTyping";   // 🎙 dictation into any text box
 import { CONDITIONS as DENTAL_CHART_CONDITIONS, CMAP as DENTAL_CHART_CMAP } from "./DentalChart";
 import { IMPLANT_SYSTEMS, IMPLANT_DIAMETERS, IMPLANT_LENGTHS, IMPLANT_TORQUES, EMPTY_IMPLANT, formatImplant, implantReady } from "./implantOptions";
 import { rctStage, STAGE_FIELDS, EMPTY_RCT, formatRct, CANALS, PULP_DIAGNOSIS, WL_METHOD, ROTARY_SYSTEMS, PAEDIATRIC_FILES,
-  FILE_LENGTHS, MAF_SIZES, TAPERS, IRRIGANTS, ACTIVATION, MEDICAMENTS, TEMP_SEALS, OBT_TECHNIQUES, SEALERS,
+  FILE_LENGTHS, MAF_SIZES, mafList, TAPERS, IRRIGANTS, ACTIVATION, MEDICAMENTS, TEMP_SEALS, OBT_TECHNIQUES, SEALERS,
   CORE_RESTORATIONS, RETX_REMOVAL, PULP_OBTURATION, PULP_RESTORATION, PULP_IRRIGANTS,
   GLIDE_PATH, HAND_FILE_BRANDS, HAND_FILE_TYPES, HAND_SIZES } from "./rctOptions";
 
@@ -665,7 +665,25 @@ function RctFields({ stage, value, onChange }) {
               </label>
             )}
             {!paed && Sel({ k: "fileLength", label: "File length", options: FILE_LENGTHS, suffix: " mm" })}
-            {Sel({ k: "maf", label: "Master apical file (ISO)", options: MAF_SIZES })}
+            {/* Master apical file: one dropdown for each selected canal */}
+            <div className="crct-wide">
+              <span className="crct-lbl">Master apical file (ISO)</span>
+              {(value.canals || []).length > 0 ? (
+                <div className="crct-wl crct-maf">
+                  {value.canals.map(c => (
+                    <label key={c}><b>{c}</b>
+                      <select value={value.mafs?.[c] || ""} aria-label={`Master apical file ${c}`}
+                        onChange={e => set("mafs", { ...(value.mafs || {}), [c]: e.target.value })}>
+                        <option value="">—</option>
+                        {MAF_SIZES.map(o => <option key={o} value={o}>{o}</option>)}
+                      </select>
+                    </label>
+                  ))}
+                </div>
+              ) : (
+                <span className="crct-hint">Select the canals above to choose the master apical file for each.</span>
+              )}
+            </div>
             {!paed && Sel({ k: "taper", label: "Taper", options: TAPERS })}
           </>
         )}
@@ -684,9 +702,9 @@ function RctFields({ stage, value, onChange }) {
             {Sel({ k: "sealer", label: "Sealer", options: SEALERS })}
             <label>Master cone (GP)
               <input value={value.masterCone || ""} onChange={sel("masterCone")} aria-label="Master cone"
-                placeholder={value.maf ? `${value.maf}${value.taper && value.taper !== "Variable" ? `/${value.taper}` : ""}` : "e.g. 25/.06 or F2"}/>
-              {!value.masterCone && value.maf && (
-                <button type="button" className="crct-same" onClick={() => set("masterCone", `${value.maf}${value.taper && value.taper !== "Variable" ? `/${value.taper}` : ""}`)}>
+                placeholder={mafList(value).length ? mafList(value).join(", ") : "e.g. 25/.06 or F2"}/>
+              {!value.masterCone && mafList(value).length > 0 && (
+                <button type="button" className="crct-same" onClick={() => set("masterCone", mafList(value).join(", "))}>
                   Same as MAF
                 </button>
               )}
@@ -2329,6 +2347,9 @@ button.ctp-tooth:focus-visible, .ctp-qbtn:focus-visible, .copt-btn:focus-visible
 .crct-wl input { min-width:58px; padding:6px 6px; }
 .crct-wl label { flex-direction:row; align-items:center; gap:5px; }
 .crct-wl b { font-size:11.5px; color:#3730a3; min-width:26px; }
+.crct-maf { grid-template-columns:repeat(auto-fill, minmax(118px,1fr)); }
+.crct-maf select { min-width:64px; padding:6px 6px; }
+.crct-hint { display:block; font-size:12px; color:#64748b; font-style:italic; margin-top:3px; }
 .crct-sub { font-size:11px; font-weight:800; color:#3730a3; text-transform:uppercase; letter-spacing:.05em; border-top:1px dashed #c7d2fe; padding-top:7px; margin-top:2px; }
 .crct-pair { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
 .crct-same { margin-top:4px; align-self:flex-start; border:1px dashed #818cf8; background:#fff; color:#4338ca; border-radius:6px; padding:2px 8px; font-size:11px; font-weight:600; cursor:pointer; font-family:inherit; }

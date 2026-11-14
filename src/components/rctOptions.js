@@ -115,7 +115,7 @@ export const PULP_IRRIGANTS = ["Saline", "NaOCl 1%", "NaOCl 2.5%", "Chlorhexidin
 
 export const EMPTY_RCT = {
   canals: [], wl: {}, wlMethod: "", diagnosis: "",
-  system: "", systemOther: "", fileLength: "", maf: "", taper: "", glide: "", glideOther: "",
+  system: "", systemOther: "", fileLength: "", mafs: {}, taper: "", glide: "", glideOther: "",
   handBrand: "", handBrandOther: "", handType: "", handLength: "", handFrom: "", handTo: "",
   irrigants: [], activation: "", activationOther: "", medicament: "", medicamentOther: "", tempSeal: "", tempSealOther: "",
   technique: "", sealer: "", sealerOther: "", masterCone: "", core: "",
@@ -137,6 +137,12 @@ const pick = (d, k) => (d[k] === "Other" ? (d[k + "Other"] || "").trim() : d[k])
 
 /* The details as one line of text (only what was filled in). " · " separates parts,
    so it never splits like the "; " between treatments does. */
+// Master apical file of each selected canal, e.g. ["MB 25/.06", "DB 25/.06", "P 40/.06"]
+export function mafList(d) {
+  const tap = d?.taper && d.taper !== "Variable" ? `/${d.taper}` : "";
+  return (d?.canals || []).map((c) => (d.mafs?.[c] ? `${c} ${d.mafs[c]}${tap}` : "")).filter(Boolean);
+}
+
 export function formatRct(d, stage) {
   if (!d || !stage) return "";
   const f = STAGE_FIELDS[stage] || [];
@@ -160,7 +166,8 @@ export function formatRct(d, stage) {
   if (has("glide") && d.glide) parts.push(`Glide path ${d.glide === "Other" ? (d.glideOther || "other").trim() : d.glide}`);
   if (has("files") || has("pfiles")) {
     const sys = d.system === "Other" ? (d.systemOther || "").trim() : d.system === "None – hand files only" ? "" : d.system;
-    const maf = d.maf ? `MAF ${d.maf}${d.taper && d.taper !== "Variable" ? `/${d.taper}` : d.taper === "Variable" ? " (variable taper)" : ""}`
+    const mafs = mafList(d);
+    const maf = mafs.length ? `MAF ${mafs.join(", ")}${d.taper === "Variable" ? " (variable taper)" : ""}`
       : d.taper ? `taper ${d.taper}` : "";
     const line = join([[sys, d.fileLength ? `${d.fileLength} mm` : ""].filter(Boolean).join(" "), maf]);
     if (line) parts.push(line);
